@@ -13,5 +13,8 @@ export * from './db/index';
 // Re-export queue module
 export * from './queue/index';
 
+// Re-export job service
+export * from './jobs/index';
+
 // Re-export utilities (to be implemented)
-// export * from './utils/index.js';
+// export * from './utils/index';
