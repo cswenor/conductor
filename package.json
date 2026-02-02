@@ -4,17 +4,23 @@
   "private": true,
   "description": "External control plane for AI coding agents",
   "scripts": {
-    "dev": "turbo dev",
+    "dev": "concurrently -k -p \"[{name}]\" -n \"redis,web,worker\" -c \"red,blue,green\" \"pnpm dev:redis\" \"pnpm dev:web\" \"pnpm dev:worker\"",
+    "dev:redis": "docker compose up redis",
+    "dev:web": "pnpm --filter @conductor/web dev",
+    "dev:worker": "pnpm --filter @conductor/worker dev",
     "build": "turbo build",
     "lint": "turbo lint",
     "lint:fix": "turbo lint:fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "turbo typecheck",
-    "clean": "turbo clean && rm -rf node_modules"
+    "clean": "turbo clean && rm -rf node_modules",
+    "services:start": "docker compose up -d",
+    "services:stop": "docker compose down"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "concurrently": "^9.2.1",
     "eslint": "^8.56.0",
     "prettier": "^3.2.0",
     "turbo": "^2.0.0",

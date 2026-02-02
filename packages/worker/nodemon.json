@@ -1,0 +1,8 @@
+{
+  "watch": ["src", "../shared/src"],
+  "ext": "ts,json",
+  "ignore": ["dist/*", "*.test.ts"],
+  "exec": "tsx src/index.ts",
+  "signal": "SIGTERM",
+  "delay": "500"
+}
