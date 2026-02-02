@@ -27,3 +27,6 @@ export * from './config/index';
 
 // Re-export bootstrap module
 export * from './bootstrap/index';
+
+// Re-export GitHub module
+export * from './github/index';

@@ -1,0 +1,31 @@
+{
+  "name": "Conductor",
+  "url": "https://github.com/your-org/conductor",
+  "hook_attributes": {
+    "url": "https://your-conductor-host.com/api/webhooks/github",
+    "active": true
+  },
+  "redirect_url": "https://your-conductor-host.com/api/github/callback",
+  "callback_urls": [
+    "https://your-conductor-host.com/api/github/callback"
+  ],
+  "setup_url": "https://your-conductor-host.com/settings/github/setup",
+  "setup_on_update": true,
+  "public": false,
+  "default_permissions": {
+    "metadata": "read",
+    "contents": "write",
+    "issues": "write",
+    "pull_requests": "write",
+    "checks": "write"
+  },
+  "default_events": [
+    "issues",
+    "issue_comment",
+    "pull_request",
+    "pull_request_review",
+    "push",
+    "check_suite",
+    "check_run"
+  ]
+}

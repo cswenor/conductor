@@ -44,3 +44,8 @@ docker-compose.override.yml
 tmp
 temp
 .tmp
+
+# Database
+*.db
+*.db-wal
+*.db-shm
