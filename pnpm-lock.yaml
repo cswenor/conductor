@@ -91,6 +91,9 @@ importers:
       '@conductor/shared':
         specifier: workspace:*
         version: link:../shared
+      bullmq:
+        specifier: ^5.67.2
+        version: 5.67.2
     devDependencies:
       '@typescript-eslint/eslint-plugin':
         specifier: ^7.0.0
