@@ -125,22 +125,17 @@ A CLI may exist for self-hosting operations (backup/restore, migrations, diagnos
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Conductor Host                           │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │  Conductor   │  │   Agent      │  │   Worktree &         │  │
-│  │  Core        │◄─┤   Runtime    │◄─┤   Environment Mgr    │  │
-│  │  (Orchest.)  │  │              │  │                      │  │
-│  └──────┬───────┘  └──────────────┘  └──────────────────────┘  │
-│         │                                                       │
-│  ┌──────┴───────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   Database   │  │  MCP Tool    │  │   Control Plane      │  │
-│  │              │  │  Layer       │  │   UI                 │  │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    GitHub Integration                           │
-│         (Webhooks, API, App Authentication)                     │
+│                                                                  │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────┐  │
+│  │    Next.js      │    │     Redis       │    │   Worker    │  │
+│  │   (UI + API +   │───▶│   + BullMQ      │───▶│ (Orchestr.) │  │
+│  │    Webhooks)    │    │   Job Queue     │    │             │  │
+│  └─────────────────┘    └─────────────────┘    └─────────────┘  │
+│          │                                            │          │
+│          │              ┌─────────────────┐           │          │
+│          └─────────────▶│     SQLite      │◀──────────┘          │
+│                         │   (state only)  │                      │
+│                         └─────────────────┘                      │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -151,13 +146,11 @@ A CLI may exist for self-hosting operations (backup/restore, migrations, diagnos
 ```
 
 **Components:**
-- **Conductor Core** — Orchestrator, state machine, policy enforcement
-- **Agent Runtime** — Executes Planner, Implementer, Reviewer, Tester agents
-- **MCP Tool Layer** — Sandboxed tools, GitHub write proxy, audit logging
-- **Worktree Manager** — Per-run isolation, port allocation, cleanup
+- **Next.js** — UI, API routes, webhook receiver, enqueues jobs
+- **Redis + BullMQ** — Durable job queue with retries
+- **Worker** — Orchestrator, agent runtime, worktree management
+- **SQLite** — Runs, policies, events, artifacts (not file content)
 - **GitHub Integration** — Webhooks, API auth, rate limiting
-- **Database** — Runs, policies, events, artifacts (not file content)
-- **Control Plane UI** — Start, approve, cancel, observe
 
 ---
 

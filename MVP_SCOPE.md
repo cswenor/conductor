@@ -41,13 +41,14 @@ v0.1 is complete when all of these work:
 │                     Conductor Host                           │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │ Control     │  │ Orchestrator │  │ Agent Runtime       │  │
-│  │ Plane UI    │  │ (Core)       │  │                     │  │
-│  │ (React)     │  │              │  │ Planner │ Implement │  │
-│  └─────────────┘  └─────────────┘  │ Reviewer│ Tester    │  │
-│         │                │          └─────────────────────┘  │
-│         │                │                    │              │
-│  ┌──────┴────────────────┴────────────────────┴──────────┐  │
+│  │   Next.js   │  │    Redis    │  │       Worker        │  │
+│  │  (UI + API  │─▶│  + BullMQ   │─▶│   (Orchestrator)    │  │
+│  │  + Webhooks)│  │             │  │   + Agent Runtime   │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+│         │                                    │               │
+│         └──────────────┬─────────────────────┘               │
+│                        ▼                                     │
+│  ┌───────────────────────────────────────────────────────┐  │
 │  │                    SQLite Database                     │  │
 │  │  projects │ repos │ runs │ events │ artifacts │ gates │  │
 │  └───────────────────────────────────────────────────────┘  │
@@ -69,11 +70,12 @@ v0.1 is complete when all of these work:
 
 | Component | Technology | Notes |
 |-----------|------------|-------|
-| Runtime | Node.js 20+ | Single process |
+| Runtime | Node.js 20+ | Three processes: Next.js, Redis, Worker |
 | Language | TypeScript | Strict mode |
 | Database | SQLite | Single file, WAL mode |
-| UI Framework | React + shadcn/ui | Tailwind, Radix |
-| HTTP Server | Fastify | API + webhook handler |
+| Job Queue | Redis + BullMQ | Durable job processing, retries |
+| UI + API | Next.js 14+ | App Router, Server Actions, API routes |
+| UI Components | shadcn/ui | Tailwind, Radix primitives |
 | GitHub | Octokit | GitHub App auth |
 | Agents | Claude API | Anthropic SDK |
 
@@ -85,17 +87,19 @@ Each work package maps to a set of issues. Dependencies are explicit.
 
 ### WP1: Project Foundation
 
-**Goal:** Runnable process with database and basic UI shell.
+**Goal:** Runnable system with database, job queue, and basic UI shell.
 
 | Task | Description | Output |
 |------|-------------|--------|
-| WP1.1 | Project scaffolding | TypeScript, ESLint, build system |
+| WP1.1 | Project scaffolding | TypeScript, ESLint, build system, monorepo structure |
 | WP1.2 | Database schema | SQLite with migrations, core tables |
-| WP1.3 | Fastify server | HTTP server, health endpoint |
-| WP1.4 | UI shell | React app, shadcn/ui, routing, layout |
-| WP1.5 | Dev environment | Hot reload, local HTTPS (optional) |
+| WP1.3 | Next.js application | App Router, API routes, health endpoint |
+| WP1.4 | Redis + BullMQ setup | Job queue infrastructure, Docker Compose for local Redis |
+| WP1.5 | Worker process | Standalone Node.js process consuming from queues |
+| WP1.6 | UI shell | shadcn/ui, routing, layout, global nav |
+| WP1.7 | Dev environment | `pnpm dev` starts Next.js + Redis + Worker |
 
-**Exit criteria:** `pnpm dev` starts server + UI; database initializes.
+**Exit criteria:** `pnpm dev` starts all three processes; database initializes; job enqueue/dequeue works.
 
 ---
 

@@ -7,16 +7,22 @@ Conductor is an external control plane that orchestrates AI agents to perform en
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        Conductor Host                           │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │  Conductor   │  │   Agent      │  │   Worktree &         │  │
-│  │  Core        │◄─┤   Runtime    │◄─┤   Environment Mgr    │  │
-│  │  (Orchest.)  │  │              │  │                      │  │
-│  └──────┬───────┘  └──────────────┘  └──────────────────────┘  │
-│         │                                                       │
-│  ┌──────┴───────┐  ┌──────────────┐  ┌──────────────────────┐  │
-│  │   Database   │  │  MCP Tool    │  │   Control Plane      │  │
-│  │              │  │  Layer       │  │   UI                 │  │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘  │
+│                                                                  │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────┐  │
+│  │    Next.js      │    │     Redis       │    │   Worker    │  │
+│  │   (UI + API +   │───▶│   + BullMQ      │───▶│ (Orchestr.) │  │
+│  │    Webhooks)    │    │   Job Queue     │    │             │  │
+│  └─────────────────┘    └─────────────────┘    └─────────────┘  │
+│          │                                            │          │
+│          │    ┌──────────────┐  ┌──────────────┐     │          │
+│          │    │   Agent      │  │  Worktree &  │     │          │
+│          │    │   Runtime    │◀─┤  Env Manager │◀────┘          │
+│          │    └──────────────┘  └──────────────┘                │
+│          │                                                       │
+│          │              ┌─────────────────┐                      │
+│          └─────────────▶│     SQLite      │◀─────────────────────┤
+│                         │   (state only)  │                      │
+│                         └─────────────────┘                      │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -149,21 +155,47 @@ Agent → MCP Tool → Conductor Core (Policy Check) → GitHub Integration → 
 - Merge PRs (humans do that)
 - Allow unconstrained agent writes (writes must pass policy)
 
-### Control Plane UI
+### Next.js Application (UI + API + Webhooks)
 
-Web interface for configuration and observability.
+Web application serving the control plane UI and handling inbound requests.
 
 **Responsibilities:**
-- Display Projects, Repos, and Runs
-- Configure policies, prompts, and MCP servers
-- Show real-time Run progress
-- Provide audit log search
-- Enable bulk operations (cancel all, reprioritize)
+- Serve the React-based control plane UI
+- Handle GitHub webhook delivery (verify signature, normalize, enqueue)
+- Expose API endpoints for UI actions (start run, approve, cancel)
+- Enqueue jobs to Redis/BullMQ for async processing
+- Display real-time Run progress (via SSE/WebSocket from Worker)
+- Provide audit log search and bulk operations
 
 **Does not:**
-- Replace GitHub for collaboration (issues/PRs stay there)
-- Execute agents
-- Store its own state (reads from DB)
+- Execute agents (Worker does)
+- Process jobs synchronously (enqueues to Redis)
+- Make orchestration decisions (Worker does)
+
+### Job Queue (Redis + BullMQ)
+
+Durable message queue connecting the API layer to the Worker.
+
+**Responsibilities:**
+- Receive jobs from Next.js (webhooks, operator actions)
+- Deliver jobs to Worker with guaranteed at-least-once processing
+- Handle retries with configurable backoff
+- Provide job visibility (pending, active, completed, failed)
+- Enable delayed/scheduled jobs (future: time-delayed merges)
+
+**Queues:**
+
+| Queue | Producer | Consumer | Payload |
+|-------|----------|----------|---------|
+| `webhooks` | Next.js API | Worker | Normalized GitHub event |
+| `runs` | Next.js API | Worker | Run commands (start, retry, cancel) |
+| `agents` | Worker | Worker | Agent invocation requests |
+| `cleanup` | Worker | Worker | Worktree/resource cleanup tasks |
+
+**Does not:**
+- Make decisions (just delivers messages)
+- Store run state (SQLite does)
+- Replace the database for queries
 
 ### Database
 
@@ -560,25 +592,30 @@ Conductor runs identically in local and remote modes. The difference is only whe
 ### Local Mode
 
 ```
-┌─────────────────────────────────────────┐
-│            Your Machine                 │
-│  ┌─────────────────────────────────┐   │
-│  │         Conductor                │   │
-│  │  (all components in one process) │   │
-│  └─────────────────────────────────┘   │
-│              │                          │
-│              ▼                          │
-│  ┌─────────────────────────────────┐   │
-│  │  SQLite DB    Local Filesystem   │   │
-│  └─────────────────────────────────┘   │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Your Machine                            │
+│                                                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │   Next.js   │  │    Redis    │  │       Worker        │  │
+│  │  (UI + API) │─▶│  + BullMQ   │─▶│   (Orchestrator)    │  │
+│  │  Port 3000  │  │  Port 6379  │  │                     │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+│         │                                    │               │
+│         └──────────────┬─────────────────────┘               │
+│                        ▼                                     │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │          SQLite DB          Local Filesystem         │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-- Single binary, single process
+- Three processes: Next.js, Redis, Worker
+- `pnpm dev` starts all three via process manager (or Docker Compose)
+- Redis via Docker: `docker run -p 6379:6379 redis:alpine`
 - SQLite for persistence
 - Repos clone to local disk
 - Ports allocated from local range
-- UI served on localhost
+- UI served on localhost:3000
 
 **Webhook Reception (Local Mode):**
 
@@ -594,22 +631,26 @@ Default: Polling fallback with 60-second interval. Run `conductor tunnel` for re
 ### Remote Mode
 
 ```
-┌─────────────────────────────────────────┐
-│           Linux Instance                │
-│  ┌─────────────────────────────────┐   │
-│  │         Conductor                │   │
-│  │  (all components in one process) │   │
-│  └─────────────────────────────────┘   │
-│              │                          │
-│              ▼                          │
-│  ┌─────────────────────────────────┐   │
-│  │  PostgreSQL   Attached Storage   │   │
-│  └─────────────────────────────────┘   │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                     Linux Instance(s)                        │
+│                                                              │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
+│  │   Next.js   │  │    Redis    │  │   Worker(s)         │  │
+│  │  (UI + API) │─▶│  + BullMQ   │─▶│   (can scale out)   │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+│         │                                    │               │
+│         └──────────────┬─────────────────────┘               │
+│                        ▼                                     │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │       PostgreSQL (optional)      Attached Storage        ││
+│  └─────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────┘
 ```
 
-- Same binary, same process model
-- PostgreSQL for persistence (optional, SQLite still works)
+- Same architecture, containerized or on bare metal
+- Redis can be managed (ElastiCache, Upstash) or self-hosted
+- PostgreSQL for persistence (optional, SQLite still works for single-node)
+- Workers can scale horizontally (multiple instances consuming from same queues)
 - Repos clone to attached storage
 - Ports allocated from configured range
 - UI accessible via HTTPS

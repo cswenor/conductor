@@ -57,6 +57,24 @@ Conductor runs on your personal machine. Repos, worktrees, and dev servers all l
 | RAM | 8GB | 16GB |
 | Disk | 10GB free | 50GB free |
 | Git | 2.30+ | 2.40+ |
+| Docker | Docker Desktop or Docker Engine | For Redis (or install Redis natively) |
+
+### Services (Local)
+
+Local mode runs three processes:
+
+| Service | Default Port | Started By |
+|---------|--------------|------------|
+| Next.js (UI + API) | 3000 | `pnpm dev` |
+| Redis | 6379 | Docker Compose or native |
+| Worker | N/A | `pnpm dev` |
+
+`pnpm dev` orchestrates all three. Redis runs via Docker Compose by default:
+
+```bash
+docker compose up -d redis  # Starts Redis in background
+pnpm dev                    # Starts Next.js + Worker
+```
 
 ### Webhook Delivery (Local)
 
@@ -84,8 +102,9 @@ PAT support exists only as a local development escape hatch. It is not supported
 | Worktrees | Local filesystem |
 | Dev servers | Local ports |
 | Database | SQLite |
-| UI | `localhost:4000` |
-| Persistence | While process runs |
+| Job Queue | Redis (Docker) |
+| UI | `localhost:3000` |
+| Persistence | While processes run |
 
 ---
 
@@ -125,6 +144,17 @@ These are deployment concerns, not operator concerns.
 | RAM | 4GB | 8GB+ |
 | Disk | 50GB | 100GB+ SSD |
 | Network | Public IP or tunnel | Static IP + domain |
+| Redis | 7.0+ | Managed Redis (Upstash, ElastiCache) or self-hosted |
+
+### Services (Remote)
+
+Remote mode runs the same three processes, typically as systemd services or containers:
+
+| Service | Deployment | Notes |
+|---------|------------|-------|
+| Next.js | Container or Node.js service | Behind reverse proxy (nginx, Caddy) |
+| Redis | Managed or self-hosted | Can use ElastiCache, Upstash, or Docker |
+| Worker | Container or Node.js service | Can scale horizontally |
 
 ### Remote Capabilities
 
@@ -134,9 +164,11 @@ These are deployment concerns, not operator concerns.
 | Worktrees | Server filesystem |
 | Dev servers | Server ports |
 | Database | SQLite or PostgreSQL |
+| Job Queue | Redis (managed or self-hosted) |
 | UI | HTTPS via domain |
-| Persistence | Always (service) |
+| Persistence | Always (services) |
 | GitHub auth | App only (PAT not supported) |
+| Worker scaling | Horizontal (multiple workers on same queue) |
 
 ---
 
