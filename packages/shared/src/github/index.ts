@@ -227,3 +227,6 @@ export type {
   CheckSuiteEvent,
   CheckRunEvent,
 } from '@octokit/webhooks-types';
+
+// Re-export client
+export * from './client';

@@ -33,3 +33,6 @@ export * from './github/index';
 
 // Re-export webhooks module
 export * from './webhooks/index';
+
+// Re-export events module
+export * from './events/index';
