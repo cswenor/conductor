@@ -19,5 +19,8 @@ export * from './jobs/index';
 // Re-export redaction utility
 export * from './redact/index';
 
-// Re-export utilities (to be implemented)
-// export * from './utils/index';
+// Re-export logger
+export * from './logger/index';
+
+// Re-export config validation
+export * from './config/index';

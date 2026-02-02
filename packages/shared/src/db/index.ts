@@ -8,6 +8,9 @@
 import Database from 'better-sqlite3';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import { migrations } from './migrations/index';
+import { createLogger } from '../logger/index';
+
+const log = createLogger({ name: 'conductor:db' });
 
 export type { DatabaseType as Database };
 
@@ -26,8 +29,7 @@ export interface DatabaseConfig {
  */
 export function initDatabase(config: DatabaseConfig): DatabaseType {
   const db = new Database(config.path, {
-    // eslint-disable-next-line no-console
-    verbose: config.verbose === true ? console.log : undefined,
+    verbose: config.verbose === true ? (msg: unknown) => log.debug({ sql: msg }, 'SQL') : undefined,
   });
 
   // Enable WAL mode for better concurrent access
@@ -74,8 +76,7 @@ function runMigrations(db: DatabaseType): void {
   // Apply pending migrations
   for (const migration of migrations) {
     if (migration.version > appliedVersion) {
-      // eslint-disable-next-line no-console
-      console.log(`Applying migration ${migration.version}: ${migration.name}`);
+      log.info({ version: migration.version, name: migration.name }, 'Applying migration');
 
       db.transaction(() => {
         migration.up(db);
@@ -85,8 +86,7 @@ function runMigrations(db: DatabaseType): void {
         ).run(migration.version, migration.name);
       })();
 
-      // eslint-disable-next-line no-console
-      console.log(`Migration ${migration.version} applied successfully`);
+      log.info({ version: migration.version }, 'Migration applied successfully');
     }
   }
 }

@@ -92,61 +92,80 @@ const DEFAULT_SENSITIVE_FIELDS = new Set([
 
 /**
  * Secret patterns to detect in values
+ *
+ * Patterns are designed to be specific enough to avoid false positives
+ * while still catching real secrets. Each pattern should have clear
+ * indicators (prefixes, structure) that distinguish it from random text.
  */
 const SECRET_PATTERNS: Array<{ name: string; pattern: RegExp }> = [
-  // GitHub tokens
+  // GitHub tokens - all have distinctive prefixes
   { name: 'github_pat', pattern: /ghp_[a-zA-Z0-9]{36,}/ },
   { name: 'github_oauth', pattern: /gho_[a-zA-Z0-9]{36,}/ },
   { name: 'github_app', pattern: /ghu_[a-zA-Z0-9]{36,}/ },
   { name: 'github_refresh', pattern: /ghr_[a-zA-Z0-9]{36,}/ },
   { name: 'github_fine_grained', pattern: /github_pat_[a-zA-Z0-9]{22}_[a-zA-Z0-9]{59}/ },
 
-  // AWS credentials
+  // AWS credentials - AKIA prefix is distinctive
   { name: 'aws_access_key', pattern: /AKIA[0-9A-Z]{16}/ },
-  { name: 'aws_secret_key', pattern: /[a-zA-Z0-9/+=]{40}/ },
+  // AWS secret keys only when paired with context (assignment, header, JSON)
+  // The raw 40-char pattern is too loose - require preceding context
+  { name: 'aws_secret_key', pattern: /(?:aws_secret_access_key|secret_access_key|secretaccesskey|AWS_SECRET)[\s]*[=:]["']?\s*[a-zA-Z0-9/+=]{40}/i },
 
-  // Generic API keys
-  { name: 'api_key_generic', pattern: /[a-zA-Z0-9_-]*api[_-]?key[a-zA-Z0-9_-]*[:=]["']?[a-zA-Z0-9_-]{20,}["']?/i },
+  // API keys - require explicit key assignment context
+  { name: 'api_key_assignment', pattern: /(?:api[_-]?key|apikey)[\s]*[=:]["']?\s*[a-zA-Z0-9_-]{20,}/i },
 
-  // Bearer tokens
-  { name: 'bearer_token', pattern: /Bearer\s+[a-zA-Z0-9_-]{20,}/i },
+  // Authorization header values
+  { name: 'auth_header', pattern: /(?:authorization|x-api-key)[\s]*[=:][\s]*["']?(?:Bearer|Basic|Token)\s+[a-zA-Z0-9_.-]{20,}/i },
 
-  // JWT tokens
-  { name: 'jwt', pattern: /eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*/ },
+  // JWT tokens - distinctive three-part base64 structure
+  { name: 'jwt', pattern: /eyJ[a-zA-Z0-9_-]{10,}\.eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}/ },
 
-  // Private keys
+  // Private keys - clear BEGIN markers
   { name: 'rsa_private_key', pattern: /-----BEGIN RSA PRIVATE KEY-----/ },
   { name: 'openssh_private_key', pattern: /-----BEGIN OPENSSH PRIVATE KEY-----/ },
   { name: 'private_key_generic', pattern: /-----BEGIN PRIVATE KEY-----/ },
   { name: 'ec_private_key', pattern: /-----BEGIN EC PRIVATE KEY-----/ },
+  { name: 'encrypted_private_key', pattern: /-----BEGIN ENCRYPTED PRIVATE KEY-----/ },
 
-  // Database connection strings
-  { name: 'postgres_url', pattern: /postgres(ql)?:\/\/[^:]+:[^@]+@/ },
-  { name: 'mysql_url', pattern: /mysql:\/\/[^:]+:[^@]+@/ },
-  { name: 'mongodb_url', pattern: /mongodb(\+srv)?:\/\/[^:]+:[^@]+@/ },
-  { name: 'redis_url', pattern: /redis:\/\/[^:]+:[^@]+@/ },
+  // Database connection strings - require password in URL
+  { name: 'postgres_url', pattern: /postgres(?:ql)?:\/\/[^:]+:[^@]+@[^\s]+/ },
+  { name: 'mysql_url', pattern: /mysql:\/\/[^:]+:[^@]+@[^\s]+/ },
+  { name: 'mongodb_url', pattern: /mongodb(?:\+srv)?:\/\/[^:]+:[^@]+@[^\s]+/ },
+  { name: 'redis_url_auth', pattern: /rediss?:\/\/[^:]+:[^@]+@[^\s]+/ },
 
-  // Slack tokens
-  { name: 'slack_token', pattern: /xox[baprs]-[0-9]+-[0-9]+-[a-zA-Z0-9]+/ },
+  // Slack tokens - distinctive xox prefix
+  { name: 'slack_token', pattern: /xox[baprs]-[0-9]{10,}-[0-9]+-[a-zA-Z0-9]+/ },
 
-  // Stripe keys
-  { name: 'stripe_key', pattern: /sk_live_[a-zA-Z0-9]{24,}/ },
+  // Stripe keys - distinctive prefixes
+  { name: 'stripe_live_key', pattern: /sk_live_[a-zA-Z0-9]{24,}/ },
   { name: 'stripe_test_key', pattern: /sk_test_[a-zA-Z0-9]{24,}/ },
+  { name: 'stripe_restricted', pattern: /rk_live_[a-zA-Z0-9]{24,}/ },
 
-  // Twilio
-  { name: 'twilio_key', pattern: /SK[a-f0-9]{32}/ },
+  // Twilio - distinctive SK prefix with exact length
+  { name: 'twilio_api_key', pattern: /SK[a-f0-9]{32}/ },
+  { name: 'twilio_auth_token', pattern: /(?:twilio|auth_token)[\s]*[=:][\s]*["']?[a-f0-9]{32}/i },
 
-  // SendGrid
+  // SendGrid - distinctive SG. prefix with structured format
   { name: 'sendgrid_key', pattern: /SG\.[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}/ },
 
-  // npm tokens
+  // npm tokens - distinctive npm_ prefix
   { name: 'npm_token', pattern: /npm_[a-zA-Z0-9]{36}/ },
 
-  // Anthropic API keys
+  // Anthropic API keys - distinctive sk-ant prefix
   { name: 'anthropic_key', pattern: /sk-ant-[a-zA-Z0-9_-]{40,}/ },
 
-  // OpenAI API keys
-  { name: 'openai_key', pattern: /sk-[a-zA-Z0-9]{48}/ },
+  // OpenAI API keys - distinctive sk- prefix with project format
+  { name: 'openai_key', pattern: /sk-[a-zA-Z0-9]{20,}/ },
+  { name: 'openai_project_key', pattern: /sk-proj-[a-zA-Z0-9_-]{40,}/ },
+
+  // Google Cloud - distinctive AIza prefix
+  { name: 'google_api_key', pattern: /AIza[a-zA-Z0-9_-]{35}/ },
+
+  // Datadog - distinctive DD prefix patterns
+  { name: 'datadog_api_key', pattern: /(?:DD_API_KEY|datadog_api_key)[\s]*[=:][\s]*["']?[a-f0-9]{32}/i },
+
+  // Generic secret assignment patterns (last resort, requires context)
+  { name: 'secret_assignment', pattern: /(?:secret|password|passwd|pwd)[\s]*[=:][\s]*["'][^"']{8,}["']/i },
 ];
 
 /**

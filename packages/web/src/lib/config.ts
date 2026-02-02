@@ -5,6 +5,15 @@
  * This provides type safety and validation at startup.
  */
 
+import {
+  getEnv,
+  validateRedisUrl,
+  type ConfigField,
+  createLogger,
+} from '@conductor/shared';
+
+const log = createLogger({ name: 'conductor:web:config' });
+
 /**
  * Application configuration derived from environment variables
  */
@@ -26,52 +35,84 @@ export interface AppConfig {
 }
 
 /**
- * Get a required environment variable
- * @throws Error if the variable is not set
- */
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (value === undefined || value === '') {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return value;
-}
-
-/**
- * Get an optional environment variable with a default value
- */
-function optionalEnv(name: string, defaultValue: string): string {
-  const value = process.env[name];
-  if (value === undefined || value === '') {
-    return defaultValue;
-  }
-  return value;
-}
-
-/**
  * Validate and load application configuration
  *
  * In development mode, missing GitHub credentials are allowed.
  * In production mode, all credentials are required.
  */
 export function loadConfig(): AppConfig {
-  const nodeEnv = optionalEnv('NODE_ENV', 'development') as AppConfig['nodeEnv'];
-  // Allow missing credentials in development or during Next.js build
+  const envValue = process.env['NODE_ENV'] ?? 'development';
+  const nodeEnv: AppConfig['nodeEnv'] =
+    envValue === 'production' ? 'production' : envValue === 'test' ? 'test' : 'development';
   const isDev = nodeEnv !== 'production';
+
+  // Define configuration fields with validation
+  const fields: ConfigField[] = [
+    {
+      name: 'DATABASE_PATH',
+      type: 'path',
+      required: false,
+      default: './conductor.db',
+      description: 'SQLite database file path',
+    },
+    {
+      name: 'REDIS_URL',
+      type: 'url',
+      required: false,
+      default: 'redis://localhost:6379',
+      validate: validateRedisUrl,
+      description: 'Redis connection URL',
+    },
+    {
+      name: 'GITHUB_APP_ID',
+      type: 'string',
+      required: !isDev,
+      default: isDev ? '' : undefined,
+      description: 'GitHub App ID',
+    },
+    {
+      name: 'GITHUB_PRIVATE_KEY',
+      type: 'string',
+      required: !isDev,
+      default: isDev ? '' : undefined,
+      description: 'GitHub App private key',
+    },
+    {
+      name: 'GITHUB_WEBHOOK_SECRET',
+      type: 'string',
+      required: !isDev,
+      default: isDev ? '' : undefined,
+      description: 'GitHub webhook secret',
+    },
+  ];
+
+  // Validate each field
+  const config: Record<string, string> = {};
+  for (const field of fields) {
+    config[field.name] = getEnv(field);
+  }
+
+  // Log warning in dev mode if GitHub credentials are missing
+  if (isDev) {
+    const missingGitHub = ['GITHUB_APP_ID', 'GITHUB_PRIVATE_KEY', 'GITHUB_WEBHOOK_SECRET'].filter(
+      (key) => config[key] === ''
+    );
+    if (missingGitHub.length > 0) {
+      log.warn(
+        { missing: missingGitHub },
+        'GitHub credentials not configured - GitHub features will be disabled'
+      );
+    }
+  }
 
   return {
     nodeEnv,
-    version: optionalEnv('npm_package_version', '0.1.0'),
-    databasePath: optionalEnv('DATABASE_PATH', './conductor.db'),
-    redisUrl: optionalEnv('REDIS_URL', 'redis://localhost:6379'),
-    // GitHub credentials are required in production only
-    githubAppId: isDev ? optionalEnv('GITHUB_APP_ID', '') : requireEnv('GITHUB_APP_ID'),
-    githubPrivateKey: isDev
-      ? optionalEnv('GITHUB_PRIVATE_KEY', '')
-      : requireEnv('GITHUB_PRIVATE_KEY'),
-    githubWebhookSecret: isDev
-      ? optionalEnv('GITHUB_WEBHOOK_SECRET', '')
-      : requireEnv('GITHUB_WEBHOOK_SECRET'),
+    version: process.env['npm_package_version'] ?? '0.1.0',
+    databasePath: config['DATABASE_PATH'] ?? './conductor.db',
+    redisUrl: config['REDIS_URL'] ?? 'redis://localhost:6379',
+    githubAppId: config['GITHUB_APP_ID'] ?? '',
+    githubPrivateKey: config['GITHUB_PRIVATE_KEY'] ?? '',
+    githubWebhookSecret: config['GITHUB_WEBHOOK_SECRET'] ?? '',
   };
 }
 

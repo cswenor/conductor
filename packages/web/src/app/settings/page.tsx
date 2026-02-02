@@ -1,4 +1,5 @@
 import { PageHeader } from '@/components/layout';
+import { SystemHealth } from '@/components/settings';
 
 export default function SettingsPage() {
   return (
@@ -21,26 +22,7 @@ export default function SettingsPage() {
             </div>
           </section>
 
-          <section>
-            <h2 className="text-lg font-semibold mb-2">System Health</h2>
-            <p className="text-sm text-muted-foreground">
-              Monitor the health of Conductor services.
-            </p>
-            <div className="mt-4 space-y-2">
-              <div className="flex items-center justify-between p-3 rounded-lg border">
-                <span className="text-sm font-medium">API Server</span>
-                <span className="text-sm text-green-600">Healthy</span>
-              </div>
-              <div className="flex items-center justify-between p-3 rounded-lg border">
-                <span className="text-sm font-medium">Redis</span>
-                <span className="text-sm text-green-600">Connected</span>
-              </div>
-              <div className="flex items-center justify-between p-3 rounded-lg border">
-                <span className="text-sm font-medium">Worker</span>
-                <span className="text-sm text-muted-foreground">Check /api/health</span>
-              </div>
-            </div>
-          </section>
+          <SystemHealth />
         </div>
       </div>
     </div>
