@@ -60,6 +60,122 @@ Run state is **never "conflicted"** because GitHub doesn't own it. Conflict reso
 
 ---
 
+## 0.2) Foundational Patterns (Do Not Skip)
+
+These patterns are **load-bearing infrastructure**. Retrofitting them later requires touching every code path. Build them in from day 1.
+
+### Idempotency + Outbox for External Side Effects
+
+**Rule:** Never call GitHub (or any external API) directly from handlers or agents. All external writes go through an outbox table.
+
+**Why:**
+- Crash/retry without outbox → duplicate comments, corrupt state, audit mistrust
+- Outbox enables "exactly once" delivery semantics
+- All external writes become auditable and replayable
+
+**Pattern:**
+```
+Handler → Write to outbox (status: queued) → Commit
+Worker → Claim outbox item → Call GitHub → Update status (sent/failed) → Commit
+```
+
+The `github_writes` table serves as the outbox for GitHub operations. All external writes follow this pattern.
+
+### Leasing + "Exactly Once" Job Semantics
+
+**Rule:** Jobs have leases with expiration. Workers claim jobs atomically. Resume on startup = "pick up expired leases."
+
+**Why:**
+- Jobs without leases → duplicate processing on worker restart
+- Jobs without idempotency keys → no dedup on retry
+- In-memory queues → lost work on crash
+
+**Pattern:**
+```sql
+-- Atomic claim with lease
+UPDATE jobs SET
+  status = 'processing',
+  claimed_by = :worker_id,
+  claimed_at = NOW(),
+  lease_expires_at = NOW() + INTERVAL '5 minutes'
+WHERE status = 'queued'
+  AND (lease_expires_at IS NULL OR lease_expires_at < NOW())
+LIMIT 1
+RETURNING *;
+```
+
+### Facts vs Decisions Event Discipline
+
+**Rule:** The event log distinguishes between **facts** (things that happened externally) and **decisions** (things the orchestrator decided).
+
+| Category | Examples | Who Emits |
+|----------|----------|-----------|
+| **Facts** | webhook received, tool completed, test exited | Webhook handler, tool layer |
+| **Decisions** | phase.transitioned, gate.evaluated, run.blocked | Orchestrator only |
+
+**Why:**
+- If facts and decisions are mixed, you can't replay deterministically
+- If random code paths mutate run state, refactoring to event-driven is a rewrite
+- Facts inform decisions; decisions mutate state
+
+**Invariant:** Only the orchestrator emits decision events. Projections (runs, gates) update only from decision events, not directly from code.
+
+### GitHub Identity: node_id Everywhere
+
+**Rule:** `node_id` (GitHub's GraphQL stable ID) is the **only** join key for GitHub entities. Never use `issue_number`, `pr_number`, or `repo_name` as join keys.
+
+**Why:**
+- Issue/PR numbers are repo-scoped, not globally unique
+- Repo names can change (rename, transfer)
+- Mixed identifiers → migration nightmares, non-local bugs
+
+**Pattern:**
+```sql
+-- Good: Join on node_id
+SELECT * FROM tasks t
+JOIN github_writes gw ON gw.target_node_id = t.github_node_id;
+
+-- Bad: Join on issue number (repo-scoped, can collide)
+SELECT * FROM tasks t
+JOIN github_writes gw ON gw.target_issue_number = t.github_issue_number;
+```
+
+Display IDs (issue #123) are derived in the view layer, never used for joins.
+
+### Secrets + Redaction from Day 1
+
+**Rule:** Apply `redact()` at every boundary. Never store raw tool outputs by default.
+
+**Why:**
+- "We'll redact later" → permanent toxicity in DB, GitHub comments, shipped logs
+- You can't un-leak secrets from SQLite backups or GitHub issue history
+
+**Boundaries requiring redaction:**
+- Tool invocation logging (args and results)
+- GitHub comment mirroring
+- Webhook persistence (store only what you need)
+- Error messages surfaced to UI
+
+**Pattern:**
+```typescript
+// Central redact utility - apply everywhere
+const redacted = redact(rawPayload, {
+  allowlist: ['file', 'line', 'status'],
+  patterns: SECRET_PATTERNS,
+});
+store({ redacted_json: redacted.json, secrets_detected: redacted.found });
+```
+
+### Actor Attribution from Day 1
+
+**Rule:** Every OperatorAction has an `actor_id` even if it's always `"local_operator"` in v0.1.
+
+**Why:**
+- Baking "operator = system" into the schema makes multi-operator auth a rewrite
+- Adding a column is easy; backfilling actor attribution is not
+
+---
+
 ## 1) Identifiers and Scopes
 
 ### Task vs Run
@@ -150,12 +266,17 @@ Project ──< Repo ──< Task ──< Run ──< AgentInvocation ──< To
     │                     │            ├─< Evidence ──< PolicyViolation
     │                     │            ├─< PolicyAuditEntry
     │                     │            ├─< RoutingDecision
-    │                     │            ├─< GitHubWrite
+    │                     │            ├─< GitHubWrite (outbox)
     │                     │            └─< Event
     │                     │
     │                     └─(GitHub Issue/PR is the external identity)
     │
     └──< PolicySet ──< PolicySetEntry
+
+Infrastructure (cross-cutting):
+
+    WebhookDelivery (inbound persistence)
+    Job (queue with leasing)
 ```
 
 Worktrees and port leases are attached to runs:
@@ -776,7 +897,12 @@ interface OperatorAction {
   run_id: string;
 
   action: OperatorActionType;
-  operator: string;                      // human identity (GitHub username or internal user)
+
+  // Actor attribution (required from day 1 for future multi-operator support)
+  actor_id: string;                      // User ID (e.g., "local_operator" in v0.1, user UUID later)
+  actor_type: 'operator' | 'system';     // Distinguish human vs automated actions
+  actor_display_name: string;            // Human-readable (GitHub username or "System")
+
   comment?: string;
 
   from_phase?: RunPhase;
@@ -1018,9 +1144,11 @@ This provides deterministic idempotency and allows key recreation without storin
 
 ### 6.10 Event
 
-Append-only event stream for replay/debugging.
+Append-only event stream for replay/debugging. **Critical:** Events are classified as facts or decisions.
 
 ```ts
+type EventCategory = 'fact' | 'decision';
+
 interface Event {
   event_id: string;
   run_id?: string;
@@ -1028,7 +1156,10 @@ interface Event {
   repo_id?: string;
   project_id: string;
 
-  type: string;                          // e.g. run.started, phase.entered, gate.failed
+  // Facts vs Decisions classification (see Foundational Patterns)
+  category: EventCategory;               // 'fact' = external input, 'decision' = orchestrator output
+  type: string;                          // e.g. webhook.received, tool.completed, phase.transitioned
+
   payload_json: string;
 
   // Ordering (required when run_id is set)
@@ -1037,6 +1168,9 @@ interface Event {
   idempotency_key: string;
   created_at: string;
 
+  // Source attribution
+  source: string;                        // 'webhook', 'tool_layer', 'orchestrator', 'operator'
+
   github_write_id?: string;              // FK to GitHubWrite (if mirrored)
 }
 ```
@@ -1044,11 +1178,135 @@ interface Event {
 **Stored in:** DB (always)
 **Mirrored to GitHub:** selected event types only (verbosity policy)
 
+**Facts vs Decisions:**
+
+| Category | Event Types | Emitted By | Purpose |
+|----------|-------------|------------|---------|
+| **fact** | `webhook.received`, `tool.completed`, `test.exited` | Webhook handler, tool layer | Record what happened |
+| **decision** | `phase.transitioned`, `gate.evaluated`, `run.blocked` | Orchestrator only | Record what was decided |
+
+**Invariant:** State projections (runs.phase, gate_evaluations.status) are updated **only** by processing decision events. Facts inform decisions but never directly mutate state.
+
 **Append-only guarantees:**
 - `idempotency_key UNIQUE` prevents duplicate processing
 - `sequence` enables deterministic replay within a run (required when `run_id` is set; null for project-level events)
 - `created_at` provides wall-clock time (not reliable for ordering across distributed nodes)
 - Uniqueness constraint on `(run_id, sequence)` when `run_id` is not null; enforce in app logic if DB doesn't support partial unique indexes
+- **Replay rule:** Given the same sequence of facts, the orchestrator must produce the same sequence of decisions
+
+---
+
+## 6-bis) Infrastructure Entities
+
+These are cross-cutting infrastructure for reliability and exactly-once processing.
+
+### 6.13 Job
+
+Durable job queue with leasing for exactly-once processing.
+
+```ts
+type JobStatus = 'queued' | 'processing' | 'completed' | 'failed' | 'dead';
+type JobQueue = 'webhooks' | 'runs' | 'agents' | 'cleanup' | 'github_writes';
+
+interface Job {
+  job_id: string;
+  queue: JobQueue;
+
+  // Payload
+  job_type: string;                      // e.g., 'webhook.issue.opened', 'run.start', 'agent.invoke'
+  payload_json: string;
+  idempotency_key: string;               // UNIQUE - prevents duplicate jobs
+
+  // Status and leasing
+  status: JobStatus;
+  priority: number;                      // Higher = processed first (default: 0)
+
+  // Lease management (exactly-once semantics)
+  claimed_by?: string;                   // Worker ID that claimed this job
+  claimed_at?: string;
+  lease_expires_at?: string;             // Job can be reclaimed after this time
+
+  // Retry tracking
+  attempts: number;                      // How many times attempted
+  max_attempts: number;                  // Configurable per job type (default: 3)
+  last_error?: string;
+  next_retry_at?: string;                // For delayed retry
+
+  // Timing
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+
+  // Correlation
+  run_id?: string;                       // Optional FK to runs
+  project_id?: string;
+}
+```
+
+**Stored in:** DB
+**Purpose:** Durable job processing with crash recovery
+
+**Leasing Invariants:**
+- A job is claimable if: `status = 'queued'` OR (`status = 'processing'` AND `lease_expires_at < NOW()`)
+- Claim is atomic: `UPDATE ... WHERE claimable RETURNING *`
+- Worker must complete or renew lease before expiration
+- Expired leases are automatically reclaimable (crash recovery)
+
+**Dead Letter:**
+- After `max_attempts` failures, status → `'dead'`
+- Dead jobs require manual intervention or automated alerting
+
+---
+
+### 6.14 WebhookDelivery
+
+Persists inbound webhooks before processing (cheap insurance).
+
+```ts
+type WebhookStatus = 'received' | 'processing' | 'processed' | 'failed' | 'ignored';
+
+interface WebhookDelivery {
+  delivery_id: string;                   // GitHub's delivery ID (from X-GitHub-Delivery header)
+
+  // GitHub metadata
+  event_type: string;                    // e.g., 'issues', 'pull_request', 'issue_comment'
+  action?: string;                       // e.g., 'opened', 'closed', 'edited'
+  repository_node_id?: string;           // For routing
+  sender_id?: number;                    // GitHub user ID
+
+  // Payload (redacted - no secrets, no full body content)
+  payload_summary_json: string;          // Structured summary, not raw payload
+  payload_hash: string;                  // SHA256 of original for verification
+  signature_valid: boolean;              // Webhook signature verification result
+
+  // Processing status
+  status: WebhookStatus;
+  job_id?: string;                       // FK to jobs (when enqueued)
+  error?: string;
+  ignore_reason?: string;                // Why ignored (e.g., 'untracked_repo', 'bot_event')
+
+  // Timing
+  received_at: string;
+  processed_at?: string;
+}
+```
+
+**Stored in:** DB
+**Purpose:**
+- Persist before processing (no lost webhooks on crash)
+- Dedup on `delivery_id` (GitHub guarantees uniqueness)
+- Audit trail of all inbound events
+- Enables replay/debugging of webhook handling
+
+**Processing Flow:**
+1. Receive webhook → verify signature → persist to `webhook_deliveries` (status: received)
+2. Enqueue job to `webhooks` queue → update status to `processing`
+3. Worker processes → update status to `processed`/`failed`/`ignored`
+
+**Payload Handling:**
+- Raw webhook payload is **not** stored (may contain secrets, PII)
+- `payload_summary_json` contains only: event type, action, node IDs, timestamps
+- `payload_hash` enables verification if raw payload is needed (fetch from GitHub audit log)
 
 ---
 
@@ -1585,6 +1843,64 @@ CREATE UNIQUE INDEX uniq_events_run_sequence
   ON events(run_id, sequence)
   WHERE run_id IS NOT NULL;
 
+-- Jobs (durable queue with leasing)
+CREATE TABLE jobs (
+  job_id TEXT PRIMARY KEY,
+  queue TEXT NOT NULL,                     -- 'webhooks'|'runs'|'agents'|'cleanup'|'github_writes'
+
+  job_type TEXT NOT NULL,                  -- e.g., 'webhook.issue.opened', 'run.start'
+  payload_json TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,    -- prevents duplicate jobs
+
+  status TEXT NOT NULL DEFAULT 'queued',   -- 'queued'|'processing'|'completed'|'failed'|'dead'
+  priority INTEGER NOT NULL DEFAULT 0,     -- higher = processed first
+
+  -- Lease management
+  claimed_by TEXT,                         -- worker ID
+  claimed_at TIMESTAMP,
+  lease_expires_at TIMESTAMP,              -- job reclaimable after this
+
+  -- Retry tracking
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 3,
+  last_error TEXT,
+  next_retry_at TIMESTAMP,
+
+  -- Timing
+  created_at TIMESTAMP NOT NULL,
+  started_at TIMESTAMP,
+  completed_at TIMESTAMP,
+
+  -- Correlation
+  run_id TEXT REFERENCES runs(run_id),
+  project_id TEXT REFERENCES projects(project_id)
+);
+
+-- Webhook deliveries (inbound persistence)
+CREATE TABLE webhook_deliveries (
+  delivery_id TEXT PRIMARY KEY,            -- GitHub's X-GitHub-Delivery header
+
+  event_type TEXT NOT NULL,                -- 'issues', 'pull_request', etc.
+  action TEXT,                             -- 'opened', 'closed', etc.
+  repository_node_id TEXT,                 -- for routing
+  sender_id INTEGER,                       -- GitHub user ID
+
+  -- Payload (redacted)
+  payload_summary_json TEXT NOT NULL,      -- structured summary only
+  payload_hash TEXT NOT NULL,              -- SHA256 of original
+  signature_valid BOOLEAN NOT NULL,
+
+  -- Processing status
+  status TEXT NOT NULL DEFAULT 'received', -- 'received'|'processing'|'processed'|'failed'|'ignored'
+  job_id TEXT REFERENCES jobs(job_id),
+  error TEXT,
+  ignore_reason TEXT,
+
+  -- Timing
+  received_at TIMESTAMP NOT NULL,
+  processed_at TIMESTAMP
+);
+
 -- Indexes
 CREATE INDEX idx_tasks_repo ON tasks(repo_id);
 CREATE INDEX idx_tasks_project ON tasks(project_id);
@@ -1625,6 +1941,21 @@ CREATE INDEX idx_artifacts_run_type_valid ON artifacts(run_id, type)
   WHERE validation_status = 'valid';
 CREATE INDEX idx_artifacts_validation_pending ON artifacts(run_id, validation_status)
   WHERE validation_status = 'pending';
+
+-- Job queue indexes (critical for exactly-once processing)
+CREATE INDEX idx_jobs_queue_status ON jobs(queue, status, priority DESC, created_at ASC);
+CREATE INDEX idx_jobs_claimable ON jobs(queue, status, lease_expires_at)
+  WHERE status IN ('queued', 'processing');
+CREATE INDEX idx_jobs_retry ON jobs(next_retry_at)
+  WHERE status = 'failed' AND next_retry_at IS NOT NULL;
+CREATE INDEX idx_jobs_run ON jobs(run_id) WHERE run_id IS NOT NULL;
+CREATE INDEX idx_jobs_idempotency ON jobs(idempotency_key);
+
+-- Webhook delivery indexes
+CREATE INDEX idx_webhook_deliveries_status ON webhook_deliveries(status);
+CREATE INDEX idx_webhook_deliveries_received ON webhook_deliveries(received_at DESC);
+CREATE INDEX idx_webhook_deliveries_repo ON webhook_deliveries(repository_node_id)
+  WHERE repository_node_id IS NOT NULL;
 ```
 
 ---

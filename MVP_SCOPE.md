@@ -87,25 +87,35 @@ Each work package maps to a set of issues. Dependencies are explicit.
 
 ### WP1: Project Foundation
 
-**Goal:** Runnable system with database, job queue, and basic UI shell.
+**Goal:** Runnable system with database, job queue, foundational patterns, and basic UI shell.
 
 | Task | Description | Output |
 |------|-------------|--------|
 | WP1.1 | Project scaffolding | TypeScript, ESLint, build system, monorepo structure |
-| WP1.2 | Database schema | SQLite with migrations, core tables |
+| WP1.2 | Database schema | SQLite with migrations, schema versioning from day 1 |
 | WP1.3 | Next.js application | App Router, API routes, health endpoint |
 | WP1.4 | Redis + BullMQ setup | Job queue infrastructure, Docker Compose for local Redis |
 | WP1.5 | Worker process | Standalone Node.js process consuming from queues |
-| WP1.6 | UI shell | shadcn/ui, routing, layout, global nav |
-| WP1.7 | Dev environment | `pnpm dev` starts Next.js + Redis + Worker |
+| WP1.6 | Job table with leasing | Exactly-once semantics, lease expiration, idempotency keys |
+| WP1.7 | Central redact() utility | Apply at all boundaries; secret pattern detection |
+| WP1.8 | UI shell | shadcn/ui, routing, layout, global nav |
+| WP1.9 | Dev environment | `pnpm dev` starts Next.js + Redis + Worker |
 
-**Exit criteria:** `pnpm dev` starts all three processes; database initializes; job enqueue/dequeue works.
+**Foundational patterns (non-negotiable for v0.1):**
+- All external writes go through outbox (github_writes table)
+- Jobs have leases with expiration; claim is atomic
+- Events classified as facts vs decisions
+- All GitHub entities keyed by node_id
+- actor_id on all OperatorActions (even if "local_operator")
+- redact() applied at tool logging, GitHub mirroring, webhook persistence
+
+**Exit criteria:** `pnpm dev` starts all three processes; database initializes; job enqueue/dequeue works; redaction utility exists.
 
 ---
 
 ### WP2: GitHub Integration
 
-**Goal:** GitHub App receives webhooks and can read/write via API.
+**Goal:** GitHub App receives webhooks and can read/write via API with proper durability.
 
 **Depends on:** WP1
 
@@ -113,13 +123,20 @@ Each work package maps to a set of issues. Dependencies are explicit.
 |------|-------------|--------|
 | WP2.1 | GitHub App manifest | App configuration, permissions |
 | WP2.2 | App installation flow | UI to install app on org |
-| WP2.3 | Webhook receiver | Fastify route, signature verification |
-| WP2.4 | Webhook event normalization | Raw webhook → internal event |
-| WP2.5 | GitHub API client | Octokit wrapper, rate limiting |
-| WP2.6 | Comment posting | Post comments to issues/PRs |
-| WP2.7 | PR creation | Create PR with body, linked issue |
+| WP2.3 | Webhook receiver | Next.js API route, signature verification |
+| WP2.4 | Webhook persistence | Store to webhook_deliveries before processing (no lost webhooks) |
+| WP2.5 | Webhook event normalization | Raw webhook → job enqueue → internal event |
+| WP2.6 | GitHub API client | Octokit wrapper, rate limiting |
+| WP2.7 | GitHub write outbox | All writes via github_writes table, idempotency keys |
+| WP2.8 | Comment posting | Post comments via outbox pattern |
+| WP2.9 | PR creation | Create PR via outbox pattern |
 
-**Exit criteria:** Webhooks received; comments post to GitHub; PR can be created.
+**Key invariants:**
+- Webhooks persisted before any processing (crash-safe)
+- All GitHub writes go through outbox (idempotent, auditable)
+- All entities keyed by node_id (not issue_number)
+
+**Exit criteria:** Webhooks received and persisted; comments post via outbox; PR can be created via outbox.
 
 ---
 
