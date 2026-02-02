@@ -7,5 +7,8 @@
 // Re-export all types
 export * from './types/index.js';
 
+// Re-export database module
+export * from './db/index.js';
+
 // Re-export utilities (to be implemented)
 // export * from './utils/index.js';
