@@ -7,7 +7,7 @@
 
 import Database from 'better-sqlite3';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { migrations } from './migrations/index.js';
+import { migrations } from './migrations/index';
 
 export type { DatabaseType as Database };
 

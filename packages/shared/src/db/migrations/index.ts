@@ -13,7 +13,7 @@ export interface Migration {
   up: (db: Database) => void;
 }
 
-import { migration001 } from './001_initial_schema.js';
+import { migration001 } from './001_initial_schema';
 
 /**
  * All migrations in order

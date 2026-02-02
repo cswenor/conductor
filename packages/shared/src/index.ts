@@ -5,10 +5,13 @@
  */
 
 // Re-export all types
-export * from './types/index.js';
+export * from './types/index';
 
 // Re-export database module
-export * from './db/index.js';
+export * from './db/index';
+
+// Re-export queue module
+export * from './queue/index';
 
 // Re-export utilities (to be implemented)
 // export * from './utils/index.js';

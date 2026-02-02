@@ -10,9 +10,7 @@
     "incremental": true,
     "plugins": [{ "name": "next" }],
     "paths": {
-      "@/*": ["./src/*"],
-      "@conductor/shared": ["../shared/src"],
-      "@conductor/shared/*": ["../shared/src/*"]
+      "@/*": ["./src/*"]
     },
     "noEmit": true
   },
