@@ -10,22 +10,24 @@ Conductor orchestrates AI agents to turn GitHub issues into merged PRs. It is no
 
 ---
 
-## Status: Design Specification
+## Status: Early Implementation
 
-**This repository contains design documents only. No runnable code exists yet.**
+**Design complete. Implementation in progress (WP1: Project Foundation).**
 
 What's here:
-- Complete architectural specifications
+- Complete architectural specifications in `docs/`
 - Data model and protocol definitions
-- UI/UX specifications
-- Policy engine design
+- Monorepo scaffolding (pnpm + Turbo)
+- Next.js web app with health endpoint
+- Worker process placeholder
 
-What's not here:
-- Working CLI
-- Installable package
-- Prototype code
+What's not here yet:
+- Database schema
+- GitHub webhook handling
+- Agent orchestration
+- UI beyond placeholder
 
-Implementation begins after design review. Follow along by reading the specs below.
+Follow progress via GitHub issues labeled `wp1` and `wp2`.
 
 ---
 
@@ -189,25 +191,25 @@ Agents are stateless. Each invocation assembles context fresh. No hidden memory,
 
 ### Start Here (Recommended Order)
 
-1. **[VISION.md](VISION.md)** — Philosophy and product principles
-2. **[CONTROL_PLANE_UX.md](CONTROL_PLANE_UX.md)** — UI screens, operator workflows, UX invariants
-3. **[ROUTING_AND_GATES.md](ROUTING_AND_GATES.md)** — How routing decisions and quality gates work
-4. **[ARCHITECTURE.md](ARCHITECTURE.md)** — System components, trust boundaries, isolation model
-5. **[PROTOCOL.md](PROTOCOL.md)** — State machine, events, artifact schemas
-6. **[POLICIES.md](POLICIES.md)** — Policy engine, enforcement points, redaction rules
+1. **[VISION.md](docs/VISION.md)** — Philosophy and product principles
+2. **[CONTROL_PLANE_UX.md](docs/CONTROL_PLANE_UX.md)** — UI screens, operator workflows, UX invariants
+3. **[ROUTING_AND_GATES.md](docs/ROUTING_AND_GATES.md)** — How routing decisions and quality gates work
+4. **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** — System components, trust boundaries, isolation model
+5. **[PROTOCOL.md](docs/PROTOCOL.md)** — State machine, events, artifact schemas
+6. **[POLICIES.md](docs/POLICIES.md)** — Policy engine, enforcement points, redaction rules
 
 ### Reference Documentation
 
 | Document | Description |
 |----------|-------------|
-| [DATA_MODEL.md](DATA_MODEL.md) | Database schema and entity relationships |
-| [INTEGRATION_MODEL.md](INTEGRATION_MODEL.md) | GitHub App integration and permissions |
-| [ISSUE_INTAKE.md](ISSUE_INTAKE.md) | PM agent and natural language issue creation |
-| [PROJECTS.md](PROJECTS.md) | Multi-tenant projects, repos, and work items |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Local and remote deployment modes |
-| [ONBOARDING.md](ONBOARDING.md) | Repository onboarding process |
-| [MVP_SCOPE.md](MVP_SCOPE.md) | v0.1 scope, work packages, and success criteria |
-| [ROADMAP.md](ROADMAP.md) | Future versions (v0.2+) and deferred features |
+| [DATA_MODEL.md](docs/DATA_MODEL.md) | Database schema and entity relationships |
+| [INTEGRATION_MODEL.md](docs/INTEGRATION_MODEL.md) | GitHub App integration and permissions |
+| [ISSUE_INTAKE.md](docs/ISSUE_INTAKE.md) | PM agent and natural language issue creation |
+| [PROJECTS.md](docs/PROJECTS.md) | Multi-tenant projects, repos, and work items |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md) | Local and remote deployment modes |
+| [ONBOARDING.md](docs/ONBOARDING.md) | Repository onboarding process |
+| [MVP_SCOPE.md](docs/MVP_SCOPE.md) | v0.1 scope, work packages, and success criteria |
+| [ROADMAP.md](docs/ROADMAP.md) | Future versions (v0.2+) and deferred features |
 
 ---
 
