@@ -44,10 +44,19 @@ export function deriveRunStatus(
 }
 
 // =============================================================================
-// Event Types (Facts vs Decisions)
+// Event Types (Facts, Decisions, and Signals)
 // =============================================================================
 
-export type EventCategory = 'fact' | 'decision';
+/**
+ * Event class/category:
+ * - fact: Immutable observations (e.g., webhook received, test passed)
+ * - decision: Agent or human choices (e.g., plan approved, PR created)
+ * - signal: Internal coordination events (e.g., timeout, retry)
+ */
+export type EventClass = 'fact' | 'decision' | 'signal';
+
+/** @deprecated Use EventClass instead */
+export type EventCategory = EventClass;
 
 export type EventSource = 'webhook' | 'tool_layer' | 'orchestrator' | 'operator';
 

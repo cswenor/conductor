@@ -14,8 +14,9 @@ export interface Migration {
 }
 
 import { migration001 } from './001_initial_schema';
+import { migration002 } from './002_add_violation_fk';
 
 /**
  * All migrations in order
  */
-export const migrations: Migration[] = [migration001];
+export const migrations: Migration[] = [migration001, migration002];

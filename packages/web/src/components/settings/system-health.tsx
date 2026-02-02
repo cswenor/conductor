@@ -71,7 +71,7 @@ export function SystemHealth() {
     try {
       const redisResponse = await fetch('/api/health/redis');
       if (redisResponse.ok) {
-        const data: { data?: { latencyMs?: number } } = await redisResponse.json() as { data?: { latencyMs?: number } };
+        const data = await redisResponse.json() as { data?: { latencyMs?: number } };
         setHealth((prev) => ({
           ...prev,
           redis: {

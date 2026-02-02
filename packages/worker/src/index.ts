@@ -8,9 +8,7 @@
 import { Worker, Job } from 'bullmq';
 import {
   type JobQueue,
-  initQueueManager,
   getQueueManager,
-  closeQueueManager,
   type WebhookJobData,
   type RunJobData,
   type AgentJobData,
@@ -20,6 +18,8 @@ import {
   getEnv,
   validateRedisUrl,
   validateNumber,
+  bootstrap,
+  shutdown as bootstrapShutdown,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -35,12 +35,21 @@ const QUEUES: JobQueue[] = [
 
 /** Worker configuration from environment */
 interface WorkerConfig {
+  databasePath: string;
   redisUrl: string;
   concurrency: number;
 }
 
 /** Load configuration from environment with validation */
 function loadConfig(): WorkerConfig {
+  const databasePath = getEnv({
+    name: 'DATABASE_PATH',
+    type: 'path',
+    required: false,
+    default: './conductor.db',
+    description: 'SQLite database file path',
+  });
+
   const redisUrl = getEnv({
     name: 'REDIS_URL',
     type: 'url',
@@ -60,6 +69,7 @@ function loadConfig(): WorkerConfig {
   });
 
   return {
+    databasePath,
     redisUrl,
     concurrency: Number.parseInt(concurrencyStr, 10),
   };
@@ -146,9 +156,9 @@ async function shutdown(signal: string): Promise<void> {
   log.info('Closing workers');
   await Promise.all(workers.map(w => w.close()));
 
-  // Close queue manager (closes Redis connections)
-  log.info('Closing queue manager');
-  await closeQueueManager();
+  // Close bootstrap (queue manager + database)
+  log.info('Closing services');
+  await bootstrapShutdown();
 
   log.info('Shutdown complete');
   process.exit(0);
@@ -162,6 +172,7 @@ async function main(): Promise<void> {
 
   log.info(
     {
+      databasePath: config.databasePath,
       redisUrl: config.redisUrl.replace(/\/\/.*@/, '//***@'), // Redact password
       concurrency: config.concurrency,
       queues: QUEUES,
@@ -169,16 +180,14 @@ async function main(): Promise<void> {
     'Conductor Worker starting'
   );
 
-  // Initialize queue manager
-  initQueueManager({ redisUrl: config.redisUrl });
-  const queueManager = getQueueManager();
+  // Bootstrap database and queue manager
+  await bootstrap({
+    databasePath: config.databasePath,
+    redisUrl: config.redisUrl,
+  });
 
-  // Verify Redis connection
-  const health = await queueManager.healthCheck();
-  if (!health.healthy) {
-    throw new Error('Failed to connect to Redis');
-  }
-  log.info({ latencyMs: health.latencyMs }, 'Connected to Redis');
+  const queueManager = getQueueManager();
+  log.info('Database and Redis initialized');
 
   // Create workers for each queue
   log.info('Starting queue workers');

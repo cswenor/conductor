@@ -8,6 +8,7 @@
 import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import type { ConnectionOptions, WorkerOptions, QueueOptions } from 'bullmq';
 import { Redis } from 'ioredis';
+import type { RedisOptions } from 'ioredis';
 import type { JobQueue } from '../types/index';
 
 /**
@@ -124,13 +125,27 @@ const QUEUE_OPTIONS: Record<JobQueue, Partial<QueueOptions>> = {
 };
 
 /**
+ * Check if URL requires TLS (rediss:// protocol)
+ */
+function requiresTls(url: string): boolean {
+  return url.startsWith('rediss://');
+}
+
+/**
  * Create a Redis connection from URL
  */
 export function createRedisConnection(url: string): Redis {
-  return new Redis(url, {
+  const options: RedisOptions = {
     maxRetriesPerRequest: null, // Required for BullMQ
     enableReadyCheck: false,
-  });
+  };
+
+  // Enable TLS for rediss:// URLs
+  if (requiresTls(url)) {
+    options.tls = {};
+  }
+
+  return new Redis(url, options);
 }
 
 /**
@@ -138,12 +153,20 @@ export function createRedisConnection(url: string): Redis {
  */
 export function getConnectionOptions(url: string): ConnectionOptions {
   const parsedUrl = new URL(url);
-  return {
+  const options: ConnectionOptions = {
     host: parsedUrl.hostname,
-    port: parseInt(parsedUrl.port || '6379', 10),
-    password: parsedUrl.password || undefined,
-    username: parsedUrl.username || undefined,
+    port: Number.parseInt(parsedUrl.port || '6379', 10),
+    // URL class returns percent-encoded values, decode them
+    password: parsedUrl.password ? decodeURIComponent(parsedUrl.password) : undefined,
+    username: parsedUrl.username ? decodeURIComponent(parsedUrl.username) : undefined,
   };
+
+  // Enable TLS for rediss:// URLs
+  if (requiresTls(url)) {
+    options.tls = {};
+  }
+
+  return options;
 }
 
 /**

@@ -24,3 +24,6 @@ export * from './logger/index';
 
 // Re-export config validation
 export * from './config/index';
+
+// Re-export bootstrap module
+export * from './bootstrap/index';

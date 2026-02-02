@@ -350,6 +350,9 @@ export const migration001: Migration = {
         policy_decision TEXT NOT NULL,
         policy_id TEXT REFERENCES policy_definitions(policy_id),
         policy_set_id TEXT REFERENCES policy_sets(policy_set_id),
+        -- Note: violation_id references policy_violations(violation_id)
+        -- FK constraint added via table rebuild in migration 002 since
+        -- policy_violations table is defined later in this migration
         violation_id TEXT,
 
         status TEXT NOT NULL,
@@ -682,6 +685,7 @@ export const migration001: Migration = {
     // Agent/tool invocation indexes
     db.exec(`CREATE INDEX idx_agent_invocations_run ON agent_invocations(run_id)`);
     db.exec(`CREATE INDEX idx_tool_invocations_run ON tool_invocations(run_id)`);
+    db.exec(`CREATE INDEX idx_tool_invocations_violation ON tool_invocations(violation_id)`);
 
     // Gate evaluation indexes
     db.exec(`CREATE INDEX idx_gate_evaluations_run ON gate_evaluations(run_id)`);
