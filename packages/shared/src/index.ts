@@ -16,5 +16,8 @@ export * from './queue/index';
 // Re-export job service
 export * from './jobs/index';
 
+// Re-export redaction utility
+export * from './redact/index';
+
 // Re-export utilities (to be implemented)
 // export * from './utils/index';
