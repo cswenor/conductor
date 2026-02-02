@@ -30,3 +30,6 @@ export * from './bootstrap/index';
 
 // Re-export GitHub module
 export * from './github/index';
+
+// Re-export webhooks module
+export * from './webhooks/index';
