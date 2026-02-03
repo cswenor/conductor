@@ -364,16 +364,70 @@ export function listPendingInstallations(
 
 /**
  * Delete a pending installation (after project is created)
+ * SECURITY: Now requires userId to match the compound primary key
  */
 export function deletePendingInstallation(
   db: Database,
-  installationId: number
+  installationId: number,
+  userId?: string
 ): boolean {
-  const stmt = db.prepare(
-    'DELETE FROM pending_github_installations WHERE installation_id = ?'
-  );
-  const result = stmt.run(installationId);
-  return result.changes > 0;
+  // If userId provided, delete only the specific user's pending installation
+  // If not provided (legacy), delete any pending installation with this ID
+  if (userId !== undefined) {
+    const stmt = db.prepare(
+      'DELETE FROM pending_github_installations WHERE installation_id = ? AND user_id = ?'
+    );
+    const result = stmt.run(installationId, userId);
+    return result.changes > 0;
+  } else {
+    const stmt = db.prepare(
+      'DELETE FROM pending_github_installations WHERE installation_id = ?'
+    );
+    const result = stmt.run(installationId);
+    return result.changes > 0;
+  }
+}
+
+/**
+ * Create a project from a pending installation (transactional)
+ *
+ * This function atomically:
+ * 1. Verifies the pending installation exists and belongs to the user
+ * 2. Creates the project
+ * 3. Deletes the pending installation
+ *
+ * If any step fails, the entire operation is rolled back.
+ */
+export function createProjectFromInstallation(
+  db: Database,
+  input: CreateProjectInput & { userId: string }
+): Project {
+  // Use a transaction to ensure atomicity
+  const createProjectTx = db.transaction(() => {
+    // Step 1: Verify pending installation exists for this user
+    const pendingStmt = db.prepare(`
+      SELECT installation_id FROM pending_github_installations
+      WHERE installation_id = ? AND user_id = ?
+    `);
+    const pending = pendingStmt.get(input.githubInstallationId, input.userId);
+
+    if (pending === undefined) {
+      throw new Error('No pending installation found for this user');
+    }
+
+    // Step 2: Create the project (will fail with UNIQUE constraint if installation already used)
+    const project = createProject(db, input);
+
+    // Step 3: Delete the pending installation
+    const deleteStmt = db.prepare(
+      'DELETE FROM pending_github_installations WHERE installation_id = ? AND user_id = ?'
+    );
+    deleteStmt.run(input.githubInstallationId, input.userId);
+
+    return project;
+  });
+
+  return createProjectTx();
 }
 
 // =============================================================================

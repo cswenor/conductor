@@ -22,8 +22,9 @@ import { migration006 } from './006_users_and_sessions';
 import { migration007 } from './007_projects_user_id';
 import { migration008 } from './008_pending_installations_user_id';
 import { migration009 } from './009_token_encryption_nonces';
+import { migration010 } from './010_strict_ownership';
 
 /**
  * All migrations in order
  */
-export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009];
+export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010];

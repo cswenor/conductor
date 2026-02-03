@@ -8,9 +8,7 @@ import { NextResponse } from 'next/server';
 import {
   createLogger,
   listProjects,
-  createProject,
-  getPendingInstallation,
-  deletePendingInstallation,
+  createProjectFromInstallation,
   type CreateProjectInput,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
@@ -70,23 +68,6 @@ export const POST = withAuth(async (request: AuthenticatedRequest): Promise<Next
       );
     }
 
-    // SECURITY: REQUIRE a pending installation owned by this user
-    // This prevents users from binding projects to installations they don't own
-    const pendingInstall = getPendingInstallation(db, body.githubInstallationId, {
-      userId: request.user.userId,
-    });
-
-    if (pendingInstall === null) {
-      log.warn(
-        { userId: request.user.userId, installationId: body.githubInstallationId },
-        'Project creation rejected: no pending installation for user'
-      );
-      return NextResponse.json(
-        { error: 'No pending GitHub installation found. Please install the GitHub App first.' },
-        { status: 403 }
-      );
-    }
-
     // Require org fields (in the future, we could fetch these from GitHub API using the installation)
     if (
       body.githubOrgId === undefined ||
@@ -99,25 +80,54 @@ export const POST = withAuth(async (request: AuthenticatedRequest): Promise<Next
       );
     }
 
-    const project = createProject(db, {
-      name: body.name,
-      userId: request.user.userId,
-      githubOrgId: body.githubOrgId,
-      githubOrgNodeId: body.githubOrgNodeId,
-      githubOrgName: body.githubOrgName,
-      githubInstallationId: body.githubInstallationId,
-      githubProjectsV2Id: body.githubProjectsV2Id,
-      defaultBaseBranch: body.defaultBaseBranch,
-      portRangeStart: body.portRangeStart,
-      portRangeEnd: body.portRangeEnd,
-    });
+    // SECURITY: Use transactional project creation
+    // This atomically: verifies pending installation, creates project, deletes pending installation
+    // Prevents race conditions and ensures ownership
+    try {
+      const project = createProjectFromInstallation(db, {
+        name: body.name,
+        userId: request.user.userId,
+        githubOrgId: body.githubOrgId,
+        githubOrgNodeId: body.githubOrgNodeId,
+        githubOrgName: body.githubOrgName,
+        githubInstallationId: body.githubInstallationId,
+        githubProjectsV2Id: body.githubProjectsV2Id,
+        defaultBaseBranch: body.defaultBaseBranch,
+        portRangeStart: body.portRangeStart,
+        portRangeEnd: body.portRangeEnd,
+      });
 
-    // Clean up the pending installation (we verified it exists above)
-    deletePendingInstallation(db, body.githubInstallationId);
+      log.info({ projectId: project.projectId, name: project.name }, 'Project created via API');
 
-    log.info({ projectId: project.projectId, name: project.name }, 'Project created via API');
+      return NextResponse.json({ project }, { status: 201 });
+    } catch (txErr) {
+      // Handle specific transaction errors
+      const message = txErr instanceof Error ? txErr.message : 'Unknown error';
 
-    return NextResponse.json({ project }, { status: 201 });
+      if (message.includes('No pending installation')) {
+        log.warn(
+          { userId: request.user.userId, installationId: body.githubInstallationId },
+          'Project creation rejected: no pending installation for user'
+        );
+        return NextResponse.json(
+          { error: 'No pending GitHub installation found. Please install the GitHub App first.' },
+          { status: 403 }
+        );
+      }
+
+      if (message.includes('UNIQUE constraint failed')) {
+        log.warn(
+          { userId: request.user.userId, installationId: body.githubInstallationId },
+          'Project creation rejected: installation already in use'
+        );
+        return NextResponse.json(
+          { error: 'This GitHub installation is already associated with a project.' },
+          { status: 409 }
+        );
+      }
+
+      throw txErr; // Re-throw for generic error handling
+    }
   } catch (err) {
     log.error(
       { error: err instanceof Error ? err.message : 'Unknown error' },

@@ -40,7 +40,14 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
 
   const searchParams = request.nextUrl.searchParams;
   const targetId = searchParams.get('target_id');
-  const redirectTo = searchParams.get('redirect') ?? '/projects/new';
+  const requestedRedirect = searchParams.get('redirect');
+
+  // Use requested redirect if valid, otherwise use safe default
+  // SECURITY: Always create state to prevent callback failure
+  const safeRedirect = '/projects/new';
+  const redirectTo = (requestedRedirect !== null && isValidRedirect(requestedRedirect))
+    ? requestedRedirect
+    : safeRedirect;
 
   // Build the GitHub App installation URL
   // Format: https://github.com/apps/{app-name}/installations/new
@@ -53,12 +60,10 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
     params.set('target_id', targetId);
   }
 
-  // Create signed state token with userId if redirect is valid
-  // This binds the installation to the authenticated user
-  if (isValidRedirect(redirectTo)) {
-    const signedState = createSignedState(redirectTo, request.user.userId);
-    params.set('state', signedState);
-  }
+  // SECURITY: Always create signed state token with userId
+  // This binds the installation to the authenticated user and prevents CSRF
+  const signedState = createSignedState(redirectTo, request.user.userId);
+  params.set('state', signedState);
 
   if (params.toString() !== '') {
     installUrl += `?${params.toString()}`;
