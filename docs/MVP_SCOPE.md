@@ -340,6 +340,42 @@ Each work package maps to a set of issues. Dependencies are explicit.
 
 ---
 
+### WP13: GitHub OAuth & Webhook Relay
+
+**Goal:** Replace credential-paste flow with OAuth; support hosted and self-hosted deployments with webhook relay.
+
+**Depends on:** WP1, WP2
+
+**IMPORTANT:** WP13 is split into two phases. **WP13-A must complete before continuing WP3+ work.**
+
+#### WP13-A: Auth Spine (Priority - Do Now)
+
+| Task | Description | Output |
+|------|-------------|--------|
+| WP13-A.1 | Session infrastructure | sessions table, secure cookies, middleware |
+| WP13-A.2 | Protected routes | API auth middleware, 401 responses |
+| WP13-A.3 | Bind entities to users | user_id on projects/installations, scoped queries |
+| WP13-A.4 | Secure OAuth state | Fix open redirect, signed state tokens |
+| WP13-A.5 | Minimal login UI | Login page, user indicator, sign out |
+
+**Exit criteria (WP13-A):** Users must log in; projects scoped to user; API routes protected.
+
+#### WP13-B: Webhook Relay (Later - Self-Hosted Support)
+
+| Task | Description | Output |
+|------|-------------|--------|
+| WP13-B.1 | GitHub App installation flow | Post-OAuth installation redirect, callback handling |
+| WP13-B.2 | Webhook relay (hosted) | Receive webhooks, forward to self-hosted instances |
+| WP13-B.3 | Self-hosted client | Instance registration, relay webhook receiving |
+
+**Architecture:**
+- **Hosted Conductor**: Users authenticate via GitHub OAuth, receives webhooks directly
+- **Self-Hosted Conductor**: Registers with hosted, receives webhooks via relay
+
+**Exit criteria (WP13-B):** Self-hosted instances receive relayed webhooks reliably.
+
+---
+
 ## Dependency Graph
 
 ```
@@ -347,26 +383,30 @@ WP1 (Foundation)
  │
  ├── WP2 (GitHub Integration)
  │    │
- │    └── WP9 (GitHub Mirroring) ────┐
- │                                    │
- ├── WP3 (Projects & Repos UI) ──────┤
- │    │                               │
- │    └── WP4 (Worktree Manager) ────┤
- │         │                          │
- │         └── WP7 (MCP Tools) ──────┤
- │                                    │
- └── WP5 (Run Lifecycle) ────────────┤
-      │                               │
-      ├── WP6 (Agent Runtime) ───────┤
-      │    │                          │
-      │    └── WP10 (PR Flow) ───────┤
-      │                               │
-      ├── WP8 (Gates & Approvals) ───┤
-      │                               │
-      └── WP11 (Error Handling) ─────┤
-                                      │
-                                      ▼
-                              WP12 (Validation)
+ │    └── WP13-A (Auth Spine) ◀── PRIORITY: Do before continuing WP3
+ │         │
+ │         ├── WP3 (Projects & Repos UI) ─────┐
+ │         │    │                              │
+ │         │    └── WP4 (Worktree Manager) ───┤
+ │         │         │                         │
+ │         │         └── WP7 (MCP Tools) ─────┤
+ │         │                                   │
+ │         └── WP13-B (Webhook Relay) ────────┤  (for self-hosted)
+ │                                             │
+ ├── WP9 (GitHub Mirroring) ──────────────────┤
+ │                                             │
+ └── WP5 (Run Lifecycle) ─────────────────────┤
+      │                                        │
+      ├── WP6 (Agent Runtime) ────────────────┤
+      │    │                                   │
+      │    └── WP10 (PR Flow) ────────────────┤
+      │                                        │
+      ├── WP8 (Gates & Approvals) ────────────┤
+      │                                        │
+      └── WP11 (Error Handling) ──────────────┤
+                                               │
+                                               ▼
+                                   WP12 (Validation)
 ```
 
 ---
@@ -404,7 +444,7 @@ These are **not bugs**—they are intentional scope locks. See [ROADMAP.md](ROAD
 
 | Feature | Why Deferred |
 |---------|--------------|
-| Multi-operator auth | Single operator in v0.1 |
+| Multi-operator teams | WP13 adds single-user auth; team features deferred |
 | Policy-gated auto-merge | Human merge only |
 | Cross-repo runs | Single repo per run |
 | Agent memory/learning | Fresh context is feature |
@@ -462,10 +502,10 @@ Total human involvement: Start, Approve, Merge.
 | Milestone | Work Packages | Target |
 |-----------|---------------|--------|
 | **M1: Foundation** | WP1, WP2 | Week 2 |
-| **M2: Projects & Repos** | WP3, WP4 | Week 4 |
-| **M3: Run Engine** | WP5, WP6, WP7 | Week 7 |
-| **M4: Gates & PR** | WP8, WP9, WP10 | Week 9 |
-| **M5: Polish & Validate** | WP11, WP12 | Week 11 |
+| **M2: Auth & Projects** | WP3, WP4, WP13 | Week 5 |
+| **M3: Run Engine** | WP5, WP6, WP7 | Week 8 |
+| **M4: Gates & PR** | WP8, WP9, WP10 | Week 10 |
+| **M5: Polish & Validate** | WP11, WP12 | Week 12 |
 
 ---
 

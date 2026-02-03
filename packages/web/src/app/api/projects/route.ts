@@ -4,7 +4,7 @@
  * List and create projects.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import {
   createLogger,
   listProjects,
@@ -14,6 +14,7 @@ import {
   type CreateProjectInput,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:api:projects' });
 
@@ -21,8 +22,9 @@ const log = createLogger({ name: 'conductor:api:projects' });
  * GET /api/projects
  *
  * List all projects with summary statistics.
+ * Protected: requires authentication.
  */
-export async function GET(): Promise<NextResponse> {
+export const GET = withAuth(async (): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
@@ -39,14 +41,15 @@ export async function GET(): Promise<NextResponse> {
       { status: 500 }
     );
   }
-}
+});
 
 /**
  * POST /api/projects
  *
  * Create a new project.
+ * Protected: requires authentication.
  */
-export async function POST(request: NextRequest): Promise<NextResponse> {
+export const POST = withAuth(async (request: AuthenticatedRequest): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
@@ -118,4 +121,4 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       { status: 500 }
     );
   }
-}
+});

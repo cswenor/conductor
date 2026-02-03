@@ -4,7 +4,7 @@
  * Get, update, delete a single project.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import {
   createLogger,
   getProject,
@@ -13,6 +13,7 @@ import {
   type UpdateProjectInput,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:api:project' });
 
@@ -24,11 +25,12 @@ interface RouteParams {
  * GET /api/projects/[id]
  *
  * Get a single project by ID.
+ * Protected: requires authentication.
  */
-export async function GET(
-  _request: NextRequest,
+export const GET = withAuth(async (
+  _request: AuthenticatedRequest,
   { params }: RouteParams
-): Promise<NextResponse> {
+): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
@@ -54,17 +56,18 @@ export async function GET(
       { status: 500 }
     );
   }
-}
+});
 
 /**
  * PATCH /api/projects/[id]
  *
  * Update a project.
+ * Protected: requires authentication.
  */
-export async function PATCH(
-  request: NextRequest,
+export const PATCH = withAuth(async (
+  request: AuthenticatedRequest,
   { params }: RouteParams
-): Promise<NextResponse> {
+): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
@@ -92,17 +95,18 @@ export async function PATCH(
       { status: 500 }
     );
   }
-}
+});
 
 /**
  * DELETE /api/projects/[id]
  *
  * Delete a project.
+ * Protected: requires authentication.
  */
-export async function DELETE(
-  _request: NextRequest,
+export const DELETE = withAuth(async (
+  _request: AuthenticatedRequest,
   { params }: RouteParams
-): Promise<NextResponse> {
+): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
@@ -128,4 +132,4 @@ export async function DELETE(
       { status: 500 }
     );
   }
-}
+});

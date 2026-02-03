@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { PageHeader } from '@/components/layout';
@@ -22,6 +22,8 @@ interface InstallationInfo {
 
 export default function NewProjectPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const installationIdFromUrl = searchParams.get('installation_id');
   const [name, setName] = useState('');
   const [installations, setInstallations] = useState<InstallationInfo[]>([]);
   const [selectedInstallation, setSelectedInstallation] = useState<InstallationInfo | null>(null);
@@ -44,8 +46,20 @@ export default function NewProjectPage() {
         setInstallations(data.installations);
         setGithubConfigured(data.githubConfigured);
 
-        // Auto-select if only one installation
-        if (data.installations.length === 1 && data.installations[0] !== undefined) {
+        // Auto-select installation from URL param if provided
+        let autoSelected = false;
+        if (installationIdFromUrl !== null) {
+          const installationId = parseInt(installationIdFromUrl, 10);
+          const matchingInstallation = data.installations.find(
+            (i) => i.installationId === installationId
+          );
+          if (matchingInstallation !== undefined) {
+            setSelectedInstallation(matchingInstallation);
+            autoSelected = true;
+          }
+        }
+        // Fallback: auto-select if only one installation (including when URL param was invalid)
+        if (!autoSelected && data.installations.length === 1 && data.installations[0] !== undefined) {
           setSelectedInstallation(data.installations[0]);
         }
       } catch (err) {
@@ -56,7 +70,7 @@ export default function NewProjectPage() {
     }
 
     void fetchInstallations();
-  }, []);
+  }, [installationIdFromUrl]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -61,6 +61,18 @@ export function generateRepoId(): string {
 // CRUD Operations
 // =============================================================================
 
+export class RepoAlreadyExistsError extends Error {
+  public readonly existingProjectId: string;
+  public readonly existingRepoId: string;
+
+  constructor(existingProjectId: string, existingRepoId: string, githubFullName: string) {
+    super(`Repository ${githubFullName} is already linked to another project`);
+    this.name = 'RepoAlreadyExistsError';
+    this.existingProjectId = existingProjectId;
+    this.existingRepoId = existingRepoId;
+  }
+}
+
 /**
  * Create a new repo
  */
@@ -68,23 +80,40 @@ export function createRepo(db: Database, input: CreateRepoInput): Repo {
   const repoId = generateRepoId();
   const now = new Date().toISOString();
 
-  // Check if repo already exists for this project
+  // Check if repo already exists globally (DB has UNIQUE constraint on github_node_id)
   const existingStmt = db.prepare(
-    'SELECT repo_id FROM repos WHERE project_id = ? AND github_node_id = ?'
+    'SELECT repo_id, project_id FROM repos WHERE github_node_id = ?'
   );
-  const existing = existingStmt.get(input.projectId, input.githubNodeId) as
-    | { repo_id: string }
+  const existing = existingStmt.get(input.githubNodeId) as
+    | { repo_id: string; project_id: string }
     | undefined;
 
   if (existing !== undefined) {
-    log.info(
-      { projectId: input.projectId, githubNodeId: input.githubNodeId },
-      'Repo already exists'
-    );
-    const repo = getRepo(db, existing.repo_id);
-    if (repo !== null) {
-      return repo;
+    // If it's in the same project, return the existing repo
+    if (existing.project_id === input.projectId) {
+      log.info(
+        { projectId: input.projectId, githubNodeId: input.githubNodeId },
+        'Repo already exists in this project'
+      );
+      const repo = getRepo(db, existing.repo_id);
+      if (repo !== null) {
+        return repo;
+      }
     }
+    // If it's in a different project, throw an error
+    log.warn(
+      {
+        projectId: input.projectId,
+        existingProjectId: existing.project_id,
+        githubNodeId: input.githubNodeId
+      },
+      'Repo already exists in another project'
+    );
+    throw new RepoAlreadyExistsError(
+      existing.project_id,
+      existing.repo_id,
+      input.githubFullName
+    );
   }
 
   const stmt = db.prepare(`

@@ -4,15 +4,17 @@
  * List and add repos to a project.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import {
   createLogger,
   getProject,
   listProjectRepos,
   createRepo,
+  RepoAlreadyExistsError,
   type CreateRepoInput,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:api:repos' });
 
@@ -24,11 +26,12 @@ interface RouteParams {
  * GET /api/projects/[id]/repos
  *
  * List repos for a project.
+ * Protected: requires authentication.
  */
-export async function GET(
-  _request: NextRequest,
+export const GET = withAuth(async (
+  _request: AuthenticatedRequest,
   { params }: RouteParams
-): Promise<NextResponse> {
+): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
@@ -56,17 +59,18 @@ export async function GET(
       { status: 500 }
     );
   }
-}
+});
 
 /**
  * POST /api/projects/[id]/repos
  *
  * Add a repo to a project.
+ * Protected: requires authentication.
  */
-export async function POST(
-  request: NextRequest,
+export const POST = withAuth(async (
+  request: AuthenticatedRequest,
   { params }: RouteParams
-): Promise<NextResponse> {
+): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
@@ -113,6 +117,20 @@ export async function POST(
 
     return NextResponse.json({ repo }, { status: 201 });
   } catch (err) {
+    if (err instanceof RepoAlreadyExistsError) {
+      log.warn(
+        { existingProjectId: err.existingProjectId, existingRepoId: err.existingRepoId },
+        'Repo already exists in another project'
+      );
+      return NextResponse.json(
+        {
+          error: err.message,
+          existingProjectId: err.existingProjectId,
+          existingRepoId: err.existingRepoId,
+        },
+        { status: 409 }
+      );
+    }
     log.error(
       { error: err instanceof Error ? err.message : 'Unknown error' },
       'Failed to add repo'
@@ -122,4 +140,4 @@ export async function POST(
       { status: 500 }
     );
   }
-}
+});

@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createLogger } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
+import { verifySignedState } from '@/lib/auth/oauth-state';
 
 const log = createLogger({ name: 'conductor:github-callback' });
 
@@ -99,11 +100,23 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
 
     // Redirect to project creation with the installation ID
-    const redirectUrl = state !== null
-      ? new URL(state, request.url)
-      : new URL(`/projects/new?installation_id=${installationId}`, request.url);
+    // Verify signed state to prevent CSRF and open redirect attacks
+    let redirectPath = `/projects/new?installation_id=${installationId}`;
+    if (state !== null) {
+      const verifiedRedirect = verifySignedState(state);
+      if (verifiedRedirect !== null) {
+        // Append installation_id to the verified redirect URL
+        const redirectUrl = new URL(verifiedRedirect, request.url);
+        if (!redirectUrl.searchParams.has('installation_id')) {
+          redirectUrl.searchParams.set('installation_id', installationId);
+        }
+        redirectPath = redirectUrl.pathname + redirectUrl.search;
+      } else {
+        log.warn('Invalid or expired state token, using default redirect');
+      }
+    }
 
-    return NextResponse.redirect(redirectUrl);
+    return NextResponse.redirect(new URL(redirectPath, request.url));
   } catch (err) {
     log.error(
       { error: err instanceof Error ? err.message : 'Unknown error' },

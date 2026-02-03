@@ -2,6 +2,7 @@
 
 import { useState, useEffect, use } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import type { Route } from 'next';
 import { PageHeader } from '@/components/layout';
 import { Button, EmptyState } from '@/components/ui';
@@ -51,6 +52,8 @@ interface PageProps {
 
 export default function ProjectDetailPage({ params }: PageProps) {
   const { id } = use(params);
+  const searchParams = useSearchParams();
+  const defaultTab = searchParams.get('tab') ?? 'overview';
   const [project, setProject] = useState<Project | null>(null);
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -144,7 +147,7 @@ export default function ProjectDetailPage({ params }: PageProps) {
         }
       />
       <div className="flex-1 p-6">
-        <Tabs defaultValue="overview" className="space-y-4">
+        <Tabs defaultValue={defaultTab} className="space-y-4">
           <TabsList>
             <TabsTrigger value="overview">
               <FolderKanban className="h-4 w-4 mr-2" />

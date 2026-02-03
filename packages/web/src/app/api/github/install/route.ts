@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getConfig } from '@/lib/config';
 import { createLogger } from '@conductor/shared';
+import { createSignedState, isValidRedirect } from '@/lib/auth/oauth-state';
 
 const log = createLogger({ name: 'conductor:github-install' });
 
@@ -31,7 +32,7 @@ export function GET(request: NextRequest): NextResponse {
 
   const searchParams = request.nextUrl.searchParams;
   const targetId = searchParams.get('target_id');
-  const state = searchParams.get('state');
+  const redirectTo = searchParams.get('redirect') ?? '/projects/new';
 
   // Build the GitHub App installation URL
   // Format: https://github.com/apps/{app-name}/installations/new
@@ -43,15 +44,18 @@ export function GET(request: NextRequest): NextResponse {
   if (targetId !== null) {
     params.set('target_id', targetId);
   }
-  if (state !== null) {
-    params.set('state', state);
+
+  // Create signed state token if redirect is valid
+  if (isValidRedirect(redirectTo)) {
+    const signedState = createSignedState(redirectTo);
+    params.set('state', signedState);
   }
 
   if (params.toString() !== '') {
     installUrl += `?${params.toString()}`;
   }
 
-  log.info({ appSlug, targetId, hasState: state !== null }, 'Redirecting to GitHub App installation');
+  log.info({ appSlug, targetId, redirectTo }, 'Redirecting to GitHub App installation');
 
   return NextResponse.redirect(installUrl);
 }
