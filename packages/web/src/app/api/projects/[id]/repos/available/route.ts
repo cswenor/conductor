@@ -4,7 +4,7 @@
  * List repos available from GitHub installation that aren't already added.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import {
   createLogger,
   getProject,
@@ -15,6 +15,7 @@ import {
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
 import { getConfig } from '@/lib/config';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:api:repos:available' });
 
@@ -68,11 +69,12 @@ function ensureGitHubApp(): boolean {
  * GET /api/projects/[id]/repos/available
  *
  * List repos available from GitHub that aren't already added to this project.
+ * Protected: requires authentication.
  */
-export async function GET(
-  _request: NextRequest,
+export const GET = withAuth(async (
+  _request: AuthenticatedRequest,
   { params }: RouteParams
-): Promise<NextResponse> {
+): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
@@ -158,4 +160,4 @@ export async function GET(
       { status: 500 }
     );
   }
-}
+});

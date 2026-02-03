@@ -4,7 +4,7 @@
  * Detects the profile for a repository based on its file structure.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import {
   createLogger,
   getProject,
@@ -15,6 +15,7 @@ import {
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
 import { getConfig } from '@/lib/config';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:api:repos:detect-profile' });
 
@@ -61,11 +62,12 @@ function ensureGitHubApp(): boolean {
  * POST /api/projects/[id]/repos/detect-profile
  *
  * Detect the profile for a GitHub repository.
+ * Protected: requires authentication.
  */
-export async function POST(
-  request: NextRequest,
+export const POST = withAuth(async (
+  request: AuthenticatedRequest,
   { params }: RouteParams
-): Promise<NextResponse> {
+): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
@@ -188,4 +190,4 @@ export async function POST(
       { status: 500 }
     );
   }
-}
+});
