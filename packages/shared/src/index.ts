@@ -42,3 +42,6 @@ export * from './outbox/index';
 
 // Re-export projects module
 export * from './projects/index';
+
+// Re-export repos module
+export * from './repos/index';
