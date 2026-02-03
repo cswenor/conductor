@@ -48,3 +48,6 @@ export * from './repos/index';
 
 // Re-export profiles module
 export * from './profiles/index';
+
+// Re-export auth module
+export * from './auth/index';
