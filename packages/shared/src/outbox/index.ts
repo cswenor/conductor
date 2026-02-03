@@ -103,6 +103,7 @@ export interface GitHubWriteRecord {
   targetType: GitHubWriteTargetType;
   idempotencyKey: string;
   payloadHash: string;
+  payload?: GitHubWritePayload;
   status: GitHubWriteStatus;
   error?: string;
   githubId?: number;
@@ -232,10 +233,11 @@ export function enqueueWrite(
       idempotency_key,
       payload_hash,
       payload_hash_scheme,
+      payload_json,
       status,
       created_at,
       retry_count
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   insertStmt.run(
@@ -247,6 +249,7 @@ export function enqueueWrite(
     idempotencyKey,
     payloadHash,
     'sha256:cjson:v1',
+    JSON.stringify(input.payload),
     'queued',
     createdAt,
     0
@@ -560,6 +563,7 @@ export function getRunWriteStats(
 // =============================================================================
 
 function rowToWriteRecord(row: Record<string, unknown>): GitHubWriteRecord {
+  const payloadJson = row['payload_json'] as string | null;
   return {
     githubWriteId: row['github_write_id'] as string,
     runId: row['run_id'] as string,
@@ -568,6 +572,7 @@ function rowToWriteRecord(row: Record<string, unknown>): GitHubWriteRecord {
     targetType: row['target_type'] as GitHubWriteTargetType,
     idempotencyKey: row['idempotency_key'] as string,
     payloadHash: row['payload_hash'] as string,
+    payload: payloadJson !== null ? JSON.parse(payloadJson) as GitHubWritePayload : undefined,
     status: row['status'] as GitHubWriteStatus,
     error: row['error'] as string | undefined,
     githubId: row['github_id'] as number | undefined,
@@ -577,3 +582,6 @@ function rowToWriteRecord(row: Record<string, unknown>): GitHubWriteRecord {
     retryCount: row['retry_count'] as number,
   };
 }
+
+// Re-export processor
+export * from './processor';

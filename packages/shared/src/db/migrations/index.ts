@@ -15,8 +15,9 @@ export interface Migration {
 
 import { migration001 } from './001_initial_schema';
 import { migration002 } from './002_add_violation_fk';
+import { migration003 } from './003_github_writes_payload';
 
 /**
  * All migrations in order
  */
-export const migrations: Migration[] = [migration001, migration002];
+export const migrations: Migration[] = [migration001, migration002, migration003];
