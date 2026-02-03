@@ -61,16 +61,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return NextResponse.redirect(new URL('/login?error=missing_code', request.url));
   }
 
-  // Verify state and get redirect URL
-  let redirectTo = '/';
-  if (state !== null) {
-    const verifiedState = verifySignedState(state);
-    if (verifiedState !== null) {
-      redirectTo = verifiedState.redirect;
-    } else {
-      log.warn('Invalid or expired state token');
-    }
+  // SECURITY: Require valid signed state to prevent CSRF attacks
+  if (state === null) {
+    log.warn('Missing state parameter - rejecting OAuth callback');
+    return NextResponse.redirect(new URL('/login?error=missing_state', request.url));
   }
+
+  const verifiedState = verifySignedState(state);
+  if (verifiedState === null) {
+    log.warn('Invalid or expired state token - rejecting OAuth callback');
+    return NextResponse.redirect(new URL('/login?error=invalid_state', request.url));
+  }
+
+  const redirectTo = verifiedState.redirect;
 
   try {
     await ensureBootstrap();

@@ -19,7 +19,7 @@ const log = createLogger({ name: 'conductor:github-callback' });
  * Query params from GitHub:
  * - installation_id: The installation ID
  * - setup_action: 'install' | 'update' | 'request'
- * - state: Optional state passed through the flow
+ * - state: REQUIRED signed state with userId (prevents CSRF and ensures user binding)
  */
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const searchParams = request.nextUrl.searchParams;
@@ -39,60 +39,71 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     );
   }
 
+  // SECURITY: Validate state FIRST before any database operations
+  // This prevents unauthenticated probing of installation status
+  if (state === null) {
+    log.warn('Missing state parameter - rejecting callback');
+    return NextResponse.redirect(
+      new URL('/settings?error=missing_state', request.url)
+    );
+  }
+
+  const verifiedState = verifySignedState(state);
+  if (verifiedState === null) {
+    log.warn('Invalid or expired state token - rejecting callback');
+    return NextResponse.redirect(
+      new URL('/settings?error=invalid_state', request.url)
+    );
+  }
+
+  if (verifiedState.userId === undefined) {
+    log.warn('State token missing userId - rejecting callback');
+    return NextResponse.redirect(
+      new URL('/settings?error=missing_user', request.url)
+    );
+  }
+
+  const userId = verifiedState.userId;
+  const verifiedRedirect = verifiedState.redirect;
+
   try {
     await ensureBootstrap();
     const db = await getDb();
 
-    // Store the installation in a pending state
-    // The full org/repo details will be populated when we receive the installation webhook
+    // Parse and validate installation ID
     const installationIdNum = parseInt(installationId, 10);
     if (isNaN(installationIdNum)) {
       throw new Error('Invalid installation_id');
     }
 
     // Check if we already have a project with this installation
+    // (State already validated above, so this is safe)
     const existingStmt = db.prepare(
-      'SELECT project_id FROM projects WHERE github_installation_id = ?'
+      'SELECT project_id, user_id FROM projects WHERE github_installation_id = ?'
     );
-    const existing = existingStmt.get(installationIdNum) as { project_id: string } | undefined;
+    const existing = existingStmt.get(installationIdNum) as { project_id: string; user_id: string } | undefined;
 
     if (existing !== undefined) {
-      log.info(
-        { installationId: installationIdNum, projectId: existing.project_id },
-        'Installation already associated with a project'
-      );
-      // Redirect to existing project
-      return NextResponse.redirect(
-        new URL(`/projects/${existing.project_id}?github_connected=true`, request.url)
-      );
+      // Only redirect to project if the authenticated user owns it
+      if (existing.user_id === userId) {
+        log.info(
+          { installationId: installationIdNum, projectId: existing.project_id, userId },
+          'Installation already associated with user project'
+        );
+        return NextResponse.redirect(
+          new URL(`/projects/${existing.project_id}?github_connected=true`, request.url)
+        );
+      } else {
+        // Installation belongs to another user's project
+        log.warn(
+          { installationId: installationIdNum, userId, ownerUserId: existing.user_id },
+          'Installation already associated with another user project'
+        );
+        return NextResponse.redirect(
+          new URL('/settings?error=installation_owned', request.url)
+        );
+      }
     }
-
-    // SECURITY: Require valid signed state with userId
-    // This ensures installations are bound to authenticated users
-    if (state === null) {
-      log.warn('Missing state parameter - rejecting callback');
-      return NextResponse.redirect(
-        new URL('/settings?error=missing_state', request.url)
-      );
-    }
-
-    const verifiedState = verifySignedState(state);
-    if (verifiedState === null) {
-      log.warn('Invalid or expired state token - rejecting callback');
-      return NextResponse.redirect(
-        new URL('/settings?error=invalid_state', request.url)
-      );
-    }
-
-    if (verifiedState.userId === undefined) {
-      log.warn('State token missing userId - rejecting callback');
-      return NextResponse.redirect(
-        new URL('/settings?error=missing_user', request.url)
-      );
-    }
-
-    const userId = verifiedState.userId;
-    const verifiedRedirect = verifiedState.redirect;
 
     // Store as pending installation for project creation flow
     // The installation details will be fetched when creating a project
