@@ -89,9 +89,10 @@ function loadConfig(): WorkerConfig {
  * Process webhook jobs
  *
  * Pipeline: webhook delivery -> normalize -> persist event -> mark processed
- * Note: All database operations are synchronous (better-sqlite3)
+ * Note: All database operations are synchronous (better-sqlite3), but BullMQ
+ * requires processors to return Promise<void>
  */
-function processWebhook(job: Job<WebhookJobData>): void {
+function processWebhook(job: Job<WebhookJobData>): Promise<void> {
   const { deliveryId, eventType, action, repositoryNodeId, payloadSummary } = job.data;
 
   log.info(
@@ -105,7 +106,7 @@ function processWebhook(job: Job<WebhookJobData>): void {
   const delivery = getWebhookDelivery(db, deliveryId);
   if (delivery === null) {
     log.error({ deliveryId }, 'Webhook delivery not found');
-    throw new Error(`Webhook delivery ${deliveryId} not found`);
+    return Promise.reject(new Error(`Webhook delivery ${deliveryId} not found`));
   }
 
   // Normalize the webhook into an internal event
@@ -118,7 +119,7 @@ function processWebhook(job: Job<WebhookJobData>): void {
       processedAt: new Date().toISOString(),
     });
     log.info({ deliveryId, eventType, action }, 'Webhook ignored (unhandled event type/action)');
-    return;
+    return Promise.resolve();
   }
 
   // Find the project for this repository (if any)
@@ -139,7 +140,7 @@ function processWebhook(job: Job<WebhookJobData>): void {
       processedAt: new Date().toISOString(),
     });
     log.info({ deliveryId, repositoryNodeId }, 'Webhook ignored (no project for repo)');
-    return;
+    return Promise.resolve();
   }
 
   // Create the internal event
@@ -159,7 +160,7 @@ function processWebhook(job: Job<WebhookJobData>): void {
       processedAt: new Date().toISOString(),
     });
     log.info({ deliveryId }, 'Webhook already processed (duplicate event)');
-    return;
+    return Promise.resolve();
   }
 
   // Mark webhook as processed
@@ -171,6 +172,8 @@ function processWebhook(job: Job<WebhookJobData>): void {
     { deliveryId, eventId: event.eventId, eventType: normalized.eventType },
     'Webhook processed successfully'
   );
+
+  return Promise.resolve();
 }
 
 /**

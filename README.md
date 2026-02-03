@@ -10,7 +10,7 @@ Conductor orchestrates AI agents to turn GitHub issues into merged PRs. It is no
 
 ---
 
-## Status: WP1 + WP2 Complete
+## Status: WP1 + WP2 (Core) Complete
 
 **Design complete. Implementation in progress (WP3: Projects & Repos UI).**
 
@@ -27,9 +27,12 @@ What's implemented:
 - Redaction utilities for sensitive data
 - 74 passing tests, lint clean, typecheck clean
 
+Deferred:
+- WP2.2: GitHub App installation flow (UI for installing app on orgs)
+
 What's next (WP3):
 - Projects list and creation UI
-- GitHub connection flow
+- GitHub connection flow (including WP2.2 completion)
 - Repository registration
 - Repo profile detection
 
