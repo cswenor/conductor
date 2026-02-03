@@ -203,14 +203,16 @@ Each work package maps to a set of issues. Dependencies are explicit.
 
 | Task | Description | Output |
 |------|-------------|--------|
-| WP5.1 | Run creation | Create run record from issue (includes run_number, lineage fields) |
+| WP5.1 | Run creation | Create run record from issue (inherits project ownership) |
 | WP5.2 | Phase state machine | pending → planning → awaiting_plan_approval → executing → blocked → completed/cancelled |
 | WP5.3 | Event system | Persist events with sequence numbers |
 | WP5.4 | Phase transition logic | Orchestrator emits `phase.transitioned` |
-| WP5.5 | Run detail UI | Show run phases, timeline, current state |
-| WP5.6 | Active runs list | UI list with phase chips, filters |
+| WP5.5 | Run detail UI | Show run phases, timeline, current state (auth required) |
+| WP5.6 | Active runs list | List user's runs only (filtered by project ownership) |
 
-**Exit criteria:** Run progresses through phases; UI shows current state.
+**Security:** Runs inherit ownership from their project. All run APIs use `canAccessProject()` to verify access.
+
+**Exit criteria:** Run progresses through phases; UI shows current state; users only see their own runs.
 
 ---
 
@@ -265,13 +267,15 @@ Each work package maps to a set of issues. Dependencies are explicit.
 | WP8.1 | Gate engine | Evaluate gates, block/pass |
 | WP8.2 | Plan approval gate | Human approval required |
 | WP8.3 | Tests pass gate | Run test command, check exit code |
-| WP8.4 | Approvals inbox UI | List pending approvals by gate type |
-| WP8.5 | Approve action | Operator approves with optional comment |
-| WP8.6 | Reject action | Operator rejects with required comment |
+| WP8.4 | Approvals inbox UI | List pending approvals for user's projects only |
+| WP8.5 | Approve action | Operator approves (ownership verified) |
+| WP8.6 | Reject action | Operator rejects (ownership verified) |
 | WP8.7 | Gate evaluation storage | Store gate results with evidence |
-| WP8.8 | Policy exception actions | grant_policy_exception, deny_policy_exception for blocked runs |
+| WP8.8 | Policy exception actions | grant_policy_exception, deny_policy_exception (ownership verified) |
 
-**Exit criteria:** Run blocks at plan approval; operator approves in UI; run continues.
+**Security:** All approval actions verify the user owns the run's project via `canAccessProject()`. Approvals inbox only shows gates for the authenticated user's runs.
+
+**Exit criteria:** Run blocks at plan approval; owner approves in UI; run continues; other users cannot approve.
 
 ---
 
@@ -327,13 +331,15 @@ Each work package maps to a set of issues. Dependencies are explicit.
 | WP11.1 | Agent failure handling | Capture error, transition to blocked (single blocking reason) |
 | WP11.2 | Test failure retry | Retry up to N times |
 | WP11.3 | Blocked state UI | Show why blocked (blocked_reason), what's needed (blocked_context) |
-| WP11.4 | Retry action | Operator retries from blocked |
-| WP11.5 | Cancel action | Operator cancels run |
+| WP11.4 | Retry action | Owner retries from blocked (ownership verified) |
+| WP11.5 | Cancel action | Owner cancels run (ownership verified) |
 | WP11.6 | Force cancel | Kill sandbox if cancel stuck |
 
 **Invariant:** A blocked run records exactly one blocking reason; resolution clears the blocked state before further progress. Multiple simultaneous failure conditions are queued, not stacked.
 
-**Exit criteria:** Failures block with explanation; retry/cancel work from UI.
+**Security:** Retry and cancel actions verify ownership via `canAccessProject()`.
+
+**Exit criteria:** Failures block with explanation; retry/cancel work from UI for project owner only.
 
 ---
 
@@ -345,14 +351,15 @@ Each work package maps to a set of issues. Dependencies are explicit.
 
 | Task | Description | Output |
 |------|-------------|--------|
-| WP12.1 | Happy path test | Manual test of full flow |
+| WP12.1 | Happy path test | Manual test of full flow (login → run → PR → merge) |
 | WP12.2 | Plan rejection test | Reject → revise → approve |
 | WP12.3 | Test failure test | Fail → retry → pass |
 | WP12.4 | Parallel runs test | Two runs simultaneously |
-| WP12.5 | Demo script | Documented demo scenario |
-| WP12.6 | Known issues doc | List of known limitations |
+| WP12.5 | Auth isolation test | User A cannot see/access User B's projects |
+| WP12.6 | Demo script | Documented demo scenario |
+| WP12.7 | Known issues doc | List of known limitations |
 
-**Exit criteria:** Demo works reliably; limitations documented.
+**Exit criteria:** Demo works reliably; ownership isolation verified; limitations documented.
 
 ---
 
