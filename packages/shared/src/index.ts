@@ -36,3 +36,6 @@ export * from './webhooks/index';
 
 // Re-export events module
 export * from './events/index';
+
+// Re-export outbox module
+export * from './outbox/index';

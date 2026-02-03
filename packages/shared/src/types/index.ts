@@ -77,11 +77,28 @@ export type JobQueue =
 // GitHub Types
 // =============================================================================
 
-export type GitHubWriteKind = 'comment' | 'check_run' | 'project_field_update' | 'pr_create';
+export type GitHubWriteKind =
+  | 'comment'
+  | 'pull_request'
+  | 'check_run'
+  | 'branch'
+  | 'label'
+  | 'review'
+  | 'project_field_update';
 
-export type GitHubWriteStatus = 'queued' | 'sent' | 'failed' | 'ambiguous';
+export type GitHubWriteStatus =
+  | 'queued'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
 
-export type GitHubTargetType = 'issue' | 'pr' | 'project_item' | 'repo';
+export type GitHubWriteTargetType =
+  | 'issue'
+  | 'pull_request'
+  | 'repository'
+  | 'commit'
+  | 'project_item';
 
 // =============================================================================
 // Webhook Types
