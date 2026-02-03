@@ -19,6 +19,13 @@ const log = createLogger({ name: 'conductor:events' });
  * Normalized inbound event types from GitHub webhooks
  */
 export type InboundEventType =
+  // Installation events
+  | 'installation.created'
+  | 'installation.deleted'
+  | 'installation.suspend'
+  | 'installation.unsuspend'
+  | 'installation_repositories.added'
+  | 'installation_repositories.removed'
   // Issue events
   | 'issue.opened'
   | 'issue.edited'
@@ -280,9 +287,68 @@ export function normalizeWebhook(
       };
     }
 
+    case 'installation': {
+      const installation = payloadSummary['installation'] as Record<string, unknown> | undefined;
+      const installationId = installation?.['id'] as number | undefined;
+
+      const eventType = mapInstallationAction(action);
+      if (eventType === null) return null;
+
+      return {
+        eventType,
+        class: 'fact',
+        payload: {
+          installation,
+          action,
+          sender: payloadSummary['sender'],
+        },
+        idempotencyKey: `${baseKey}:installation:${String(installationId ?? 'unknown')}:${action}`,
+      };
+    }
+
+    case 'installation_repositories': {
+      const installation = payloadSummary['installation'] as Record<string, unknown> | undefined;
+      const installationId = installation?.['id'] as number | undefined;
+      const repositoriesAdded = payloadSummary['repositories_added'] as Array<Record<string, unknown>> | undefined;
+      const repositoriesRemoved = payloadSummary['repositories_removed'] as Array<Record<string, unknown>> | undefined;
+
+      const eventType = mapInstallationRepositoriesAction(action);
+      if (eventType === null) return null;
+
+      return {
+        eventType,
+        class: 'fact',
+        payload: {
+          installation,
+          repositories_added: repositoriesAdded,
+          repositories_removed: repositoriesRemoved,
+          action,
+        },
+        idempotencyKey: `${baseKey}:installation_repos:${String(installationId ?? 'unknown')}:${action}`,
+      };
+    }
+
     default:
       log.debug({ githubEventType, action }, 'Unhandled webhook event type');
       return null;
+  }
+}
+
+function mapInstallationAction(action: string | undefined): InboundEventType | null {
+  switch (action) {
+    case 'created': return 'installation.created';
+    case 'deleted': return 'installation.deleted';
+    case 'suspend': return 'installation.suspend';
+    case 'unsuspend': return 'installation.unsuspend';
+    default: return null;
+  }
+}
+
+function mapInstallationRepositoriesAction(action: string | undefined): InboundEventType | null {
+  switch (action) {
+    case 'added': return 'installation_repositories.added';
+    case 'removed': return 'installation_repositories.removed';
+    default: return null;
   }
 }
 

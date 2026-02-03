@@ -182,14 +182,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // Check if this event type should be processed or ignored
-  const ignoredEvents = ['ping', 'installation', 'installation_repositories'];
-  if (ignoredEvents.includes(eventType)) {
+  // Check if this event type should be ignored (ping only)
+  // Installation events are processed to track app installations
+  if (eventType === 'ping') {
     updateWebhookStatus(db, deliveryId, 'ignored', {
-      ignoreReason: `Event type '${eventType}' is not processed`,
+      ignoreReason: 'Ping event acknowledged but not processed',
       processedAt: new Date().toISOString(),
     });
-    log.info({ deliveryId, eventType }, 'Webhook ignored');
+    log.info({ deliveryId, eventType }, 'Webhook ignored (ping)');
     return NextResponse.json({ received: true, ignored: true });
   }
 

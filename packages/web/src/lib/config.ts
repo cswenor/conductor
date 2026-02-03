@@ -28,6 +28,8 @@ export interface AppConfig {
   redisUrl: string;
   /** GitHub App ID */
   githubAppId: string;
+  /** GitHub App slug (from URL: github.com/apps/{slug}) */
+  githubAppSlug: string;
   /** GitHub App private key */
   githubPrivateKey: string;
   /** GitHub webhook secret */
@@ -111,6 +113,7 @@ export function loadConfig(): AppConfig {
     databasePath: config['DATABASE_PATH'] ?? './conductor.db',
     redisUrl: config['REDIS_URL'] ?? 'redis://localhost:6379',
     githubAppId: config['GITHUB_APP_ID'] ?? '',
+    githubAppSlug: config['GITHUB_APP_SLUG'] ?? 'conductor',
     githubPrivateKey: config['GITHUB_PRIVATE_KEY'] ?? '',
     githubWebhookSecret: config['GITHUB_WEBHOOK_SECRET'] ?? '',
   };

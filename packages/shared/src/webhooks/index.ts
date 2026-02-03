@@ -173,6 +173,64 @@ export function extractPayloadSummary(
       }
       break;
     }
+
+    case 'installation': {
+      // Extract full installation details for installation events
+      const installation = payload['installation'] as Record<string, unknown> | undefined;
+      if (installation !== undefined) {
+        const account = installation['account'] as Record<string, unknown> | undefined;
+        summary['installation'] = {
+          id: installation['id'],
+          node_id: installation['node_id'],
+          account: account !== undefined ? {
+            id: account['id'],
+            login: account['login'],
+            type: account['type'],
+            node_id: account['node_id'],
+          } : undefined,
+          target_type: installation['target_type'],
+          permissions: installation['permissions'],
+        };
+      }
+      break;
+    }
+
+    case 'installation_repositories': {
+      // Extract installation and repository changes
+      const installation = payload['installation'] as Record<string, unknown> | undefined;
+      if (installation !== undefined) {
+        const account = installation['account'] as Record<string, unknown> | undefined;
+        summary['installation'] = {
+          id: installation['id'],
+          node_id: installation['node_id'],
+          account: account !== undefined ? {
+            id: account['id'],
+            login: account['login'],
+            type: account['type'],
+          } : undefined,
+        };
+      }
+      const repositoriesAdded = payload['repositories_added'] as Array<Record<string, unknown>> | undefined;
+      const repositoriesRemoved = payload['repositories_removed'] as Array<Record<string, unknown>> | undefined;
+      if (repositoriesAdded !== undefined) {
+        summary['repositories_added'] = repositoriesAdded.map(r => ({
+          id: r['id'],
+          node_id: r['node_id'],
+          name: r['name'],
+          full_name: r['full_name'],
+          private: r['private'],
+        }));
+      }
+      if (repositoriesRemoved !== undefined) {
+        summary['repositories_removed'] = repositoriesRemoved.map(r => ({
+          id: r['id'],
+          node_id: r['node_id'],
+          name: r['name'],
+          full_name: r['full_name'],
+        }));
+      }
+      break;
+    }
   }
 
   return summary;
