@@ -301,9 +301,10 @@ export default function ProjectDetailPage({ params }: PageProps) {
                 ) : (
                   <div className="space-y-2">
                     {repos.map((repo) => (
-                      <div
+                      <Link
                         key={repo.repoId}
-                        className="flex items-center justify-between p-4 rounded-lg border"
+                        href={`/projects/${id}/repos/${repo.repoId}` as Route}
+                        className="flex items-center justify-between p-4 rounded-lg border hover:bg-muted/50 transition-colors"
                       >
                         <div className="flex items-center gap-3">
                           <GitBranch className="h-5 w-5 text-muted-foreground" />
@@ -319,7 +320,7 @@ export default function ProjectDetailPage({ params }: PageProps) {
                         >
                           {repo.status}
                         </Badge>
-                      </div>
+                      </Link>
                     ))}
                   </div>
                 )}
