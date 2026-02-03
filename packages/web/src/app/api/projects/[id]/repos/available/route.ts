@@ -12,6 +12,7 @@ import {
   getInstallationOctokit,
   isGitHubAppInitialized,
   initGitHubApp,
+  canAccessProject,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
 import { getConfig } from '@/lib/config';
@@ -80,17 +81,9 @@ export const GET = withAuth(async (
     const db = await getDb();
     const { id } = await params;
 
-    // Verify project exists
+    // Verify project exists and user has access
     const project = getProject(db, id);
-    if (project === null) {
-      return NextResponse.json(
-        { error: 'Project not found' },
-        { status: 404 }
-      );
-    }
-
-    // Enforce ownership
-    if (project.userId !== request.user.userId) {
+    if (project === null || !canAccessProject(request.user, project)) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }

@@ -11,6 +11,7 @@ import {
   getRepo,
   updateRepo,
   deleteRepo,
+  canAccessProject,
   type UpdateRepoInput,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
@@ -101,17 +102,9 @@ export const GET = withAuth(async (
     const db = await getDb();
     const { id, repoId } = await params;
 
-    // Verify project exists
+    // Verify project exists and user has access
     const project = getProject(db, id);
-    if (project === null) {
-      return NextResponse.json(
-        { error: 'Project not found' },
-        { status: 404 }
-      );
-    }
-
-    // Enforce ownership
-    if (project.userId !== request.user.userId) {
+    if (project === null || !canAccessProject(request.user, project)) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
@@ -162,17 +155,9 @@ export const PATCH = withAuth(async (
     const db = await getDb();
     const { id, repoId } = await params;
 
-    // Verify project exists
+    // Verify project exists and user has access
     const project = getProject(db, id);
-    if (project === null) {
-      return NextResponse.json(
-        { error: 'Project not found' },
-        { status: 404 }
-      );
-    }
-
-    // Enforce ownership
-    if (project.userId !== request.user.userId) {
+    if (project === null || !canAccessProject(request.user, project)) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
@@ -245,17 +230,9 @@ export const DELETE = withAuth(async (
     const db = await getDb();
     const { id, repoId } = await params;
 
-    // Verify project exists
+    // Verify project exists and user has access
     const project = getProject(db, id);
-    if (project === null) {
-      return NextResponse.json(
-        { error: 'Project not found' },
-        { status: 404 }
-      );
-    }
-
-    // Enforce ownership
-    if (project.userId !== request.user.userId) {
+    if (project === null || !canAccessProject(request.user, project)) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }

@@ -527,3 +527,9 @@ function rowToUser(row: Record<string, unknown>): User {
   };
 }
 
+// =============================================================================
+// Re-exports
+// =============================================================================
+
+export { canAccessProject, assertProjectAccess, AuthorizationError, type AuthUser } from './policy';
+

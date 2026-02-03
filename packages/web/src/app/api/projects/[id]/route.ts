@@ -10,6 +10,7 @@ import {
   getProject,
   updateProject,
   deleteProject,
+  canAccessProject,
   type UpdateProjectInput,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
@@ -39,15 +40,7 @@ export const GET = withAuth(async (
 
     const project = getProject(db, id);
 
-    if (project === null) {
-      return NextResponse.json(
-        { error: 'Project not found' },
-        { status: 404 }
-      );
-    }
-
-    // Enforce ownership
-    if (project.userId !== request.user.userId) {
+    if (project === null || !canAccessProject(request.user, project)) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
@@ -83,17 +76,9 @@ export const PATCH = withAuth(async (
     const db = await getDb();
     const { id } = await params;
 
-    // Check ownership before updating
+    // Check existence and ownership before updating
     const existing = getProject(db, id);
-    if (existing === null) {
-      return NextResponse.json(
-        { error: 'Project not found' },
-        { status: 404 }
-      );
-    }
-
-    // Enforce ownership
-    if (existing.userId !== request.user.userId) {
+    if (existing === null || !canAccessProject(request.user, existing)) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
@@ -140,17 +125,9 @@ export const DELETE = withAuth(async (
     const db = await getDb();
     const { id } = await params;
 
-    // Check ownership before deleting
+    // Check existence and ownership before deleting
     const existing = getProject(db, id);
-    if (existing === null) {
-      return NextResponse.json(
-        { error: 'Project not found' },
-        { status: 404 }
-      );
-    }
-
-    // Enforce ownership
-    if (existing.userId !== request.user.userId) {
+    if (existing === null || !canAccessProject(request.user, existing)) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
