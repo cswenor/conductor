@@ -34,13 +34,15 @@ export function middleware(request: NextRequest) {
   // Check for session cookie
   const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
-  // In development, allow unauthenticated access
-  if (process.env.NODE_ENV === 'development') {
-    return NextResponse.next();
-  }
-
-  // No session - redirect to login
+  // No session - redirect to login (or dev auth in development)
   if (sessionToken === undefined) {
+    if (process.env.NODE_ENV === 'development') {
+      // In development, auto-redirect to dev auth endpoint
+      const devAuthUrl = new URL('/api/auth/dev', request.url);
+      devAuthUrl.searchParams.set('redirect', pathname);
+      return NextResponse.redirect(devAuthUrl);
+    }
+
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('redirect', pathname);
     return NextResponse.redirect(loginUrl);

@@ -8,6 +8,7 @@
 import type { Database } from 'better-sqlite3';
 import { createHash, randomBytes } from 'crypto';
 import { createLogger } from '../logger/index';
+import { encrypt, decrypt, isEncryptionInitialized } from '../crypto/index';
 
 const log = createLogger({ name: 'conductor:auth' });
 
@@ -95,11 +96,33 @@ function hashToken(token: string): string {
 // =============================================================================
 
 /**
- * Create a new user from GitHub OAuth data
+ * Create a new user from GitHub OAuth data.
+ * If encryption is initialized, tokens will be encrypted at rest.
  */
 export function createUser(db: Database, input: CreateUserInput): User {
   const userId = generateUserId();
   const now = new Date().toISOString();
+
+  // Encrypt tokens if encryption is available
+  let accessToken: string | null = input.githubAccessToken ?? null;
+  let accessTokenNonce: string | null = null;
+  let refreshToken: string | null = input.githubRefreshToken ?? null;
+  let refreshTokenNonce: string | null = null;
+  let tokensEncrypted = 0;
+
+  if (isEncryptionInitialized() && (accessToken !== null || refreshToken !== null)) {
+    if (accessToken !== null) {
+      const encrypted = encrypt(accessToken);
+      accessToken = encrypted.ciphertext;
+      accessTokenNonce = encrypted.nonce;
+    }
+    if (refreshToken !== null) {
+      const encrypted = encrypt(refreshToken);
+      refreshToken = encrypted.ciphertext;
+      refreshTokenNonce = encrypted.nonce;
+    }
+    tokensEncrypted = 1;
+  }
 
   const stmt = db.prepare(`
     INSERT INTO users (
@@ -113,11 +136,14 @@ export function createUser(db: Database, input: CreateUserInput): User {
       github_access_token,
       github_refresh_token,
       github_token_expires_at,
+      github_access_token_nonce,
+      github_refresh_token_nonce,
+      tokens_encrypted,
       status,
       created_at,
       updated_at,
       last_login_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
@@ -128,16 +154,19 @@ export function createUser(db: Database, input: CreateUserInput): User {
     input.githubName ?? null,
     input.githubEmail ?? null,
     input.githubAvatarUrl ?? null,
-    input.githubAccessToken ?? null,
-    input.githubRefreshToken ?? null,
+    accessToken,
+    refreshToken,
     input.githubTokenExpiresAt ?? null,
+    accessTokenNonce,
+    refreshTokenNonce,
+    tokensEncrypted,
     'active',
     now,
     now,
     now
   );
 
-  log.info({ userId, githubLogin: input.githubLogin }, 'User created');
+  log.info({ userId, githubLogin: input.githubLogin, tokensEncrypted: tokensEncrypted === 1 }, 'User created');
 
   return {
     userId,
@@ -183,11 +212,13 @@ export function getUserByGithubId(db: Database, githubId: number): User | null {
 }
 
 /**
- * Update a user
+ * Update a user.
+ * If encryption is initialized, tokens will be encrypted at rest.
  */
 export function updateUser(db: Database, userId: string, input: UpdateUserInput): User | null {
   const updates: string[] = ['updated_at = ?'];
   const values: (string | number | null)[] = [new Date().toISOString()];
+  let needsTokenEncryptionUpdate = false;
 
   if (input.githubLogin !== undefined) {
     updates.push('github_login = ?');
@@ -206,12 +237,30 @@ export function updateUser(db: Database, userId: string, input: UpdateUserInput)
     values.push(input.githubAvatarUrl);
   }
   if (input.githubAccessToken !== undefined) {
-    updates.push('github_access_token = ?');
-    values.push(input.githubAccessToken);
+    if (isEncryptionInitialized()) {
+      const encrypted = encrypt(input.githubAccessToken);
+      updates.push('github_access_token = ?');
+      values.push(encrypted.ciphertext);
+      updates.push('github_access_token_nonce = ?');
+      values.push(encrypted.nonce);
+      needsTokenEncryptionUpdate = true;
+    } else {
+      updates.push('github_access_token = ?');
+      values.push(input.githubAccessToken);
+    }
   }
   if (input.githubRefreshToken !== undefined) {
-    updates.push('github_refresh_token = ?');
-    values.push(input.githubRefreshToken);
+    if (isEncryptionInitialized()) {
+      const encrypted = encrypt(input.githubRefreshToken);
+      updates.push('github_refresh_token = ?');
+      values.push(encrypted.ciphertext);
+      updates.push('github_refresh_token_nonce = ?');
+      values.push(encrypted.nonce);
+      needsTokenEncryptionUpdate = true;
+    } else {
+      updates.push('github_refresh_token = ?');
+      values.push(input.githubRefreshToken);
+    }
   }
   if (input.githubTokenExpiresAt !== undefined) {
     updates.push('github_token_expires_at = ?');
@@ -220,6 +269,12 @@ export function updateUser(db: Database, userId: string, input: UpdateUserInput)
   if (input.status !== undefined) {
     updates.push('status = ?');
     values.push(input.status);
+  }
+
+  // Update tokens_encrypted flag if we encrypted any tokens
+  if (needsTokenEncryptionUpdate) {
+    updates.push('tokens_encrypted = ?');
+    values.push(1);
   }
 
   values.push(userId);
@@ -244,6 +299,88 @@ export function updateUserLastLogin(db: Database, userId: string): void {
   const stmt = db.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE user_id = ?');
   const now = new Date().toISOString();
   stmt.run(now, now, userId);
+}
+
+interface UserTokenRow {
+  github_access_token: string | null;
+  github_refresh_token: string | null;
+  github_access_token_nonce: string | null;
+  github_refresh_token_nonce: string | null;
+  tokens_encrypted: number;
+  github_token_expires_at: string | null;
+}
+
+/**
+ * Get the decrypted GitHub access token for a user.
+ * Returns null if user not found or no token stored.
+ */
+export function getUserAccessToken(db: Database, userId: string): string | null {
+  const stmt = db.prepare(`
+    SELECT
+      github_access_token,
+      github_access_token_nonce,
+      tokens_encrypted
+    FROM users
+    WHERE user_id = ?
+  `);
+  const row = stmt.get(userId) as UserTokenRow | undefined;
+
+  if (row?.github_access_token === undefined || row.github_access_token === null) {
+    return null;
+  }
+
+  // Decrypt if encrypted
+  if (row.tokens_encrypted === 1 && row.github_access_token_nonce !== null) {
+    if (!isEncryptionInitialized()) {
+      log.error({ userId }, 'Cannot decrypt token: encryption not initialized');
+      throw new Error('Token is encrypted but encryption is not initialized');
+    }
+    return decrypt(row.github_access_token, row.github_access_token_nonce);
+  }
+
+  // Return plaintext token
+  return row.github_access_token;
+}
+
+/**
+ * Get the decrypted GitHub refresh token for a user.
+ * Returns null if user not found or no token stored.
+ */
+export function getUserRefreshToken(db: Database, userId: string): string | null {
+  const stmt = db.prepare(`
+    SELECT
+      github_refresh_token,
+      github_refresh_token_nonce,
+      tokens_encrypted
+    FROM users
+    WHERE user_id = ?
+  `);
+  const row = stmt.get(userId) as UserTokenRow | undefined;
+
+  if (row?.github_refresh_token === undefined || row.github_refresh_token === null) {
+    return null;
+  }
+
+  // Decrypt if encrypted
+  if (row.tokens_encrypted === 1 && row.github_refresh_token_nonce !== null) {
+    if (!isEncryptionInitialized()) {
+      log.error({ userId }, 'Cannot decrypt token: encryption not initialized');
+      throw new Error('Token is encrypted but encryption is not initialized');
+    }
+    return decrypt(row.github_refresh_token, row.github_refresh_token_nonce);
+  }
+
+  // Return plaintext token
+  return row.github_refresh_token;
+}
+
+/**
+ * Get token expiration time for a user.
+ */
+export function getUserTokenExpiresAt(db: Database, userId: string): string | null {
+  const stmt = db.prepare('SELECT github_token_expires_at FROM users WHERE user_id = ?');
+  const row = stmt.get(userId) as { github_token_expires_at: string | null } | undefined;
+  return row?.github_token_expires_at ?? null;
 }
 
 // =============================================================================
@@ -387,5 +524,55 @@ function rowToUser(row: Record<string, unknown>): User {
     createdAt: row['created_at'] as string,
     updatedAt: row['updated_at'] as string,
     lastLoginAt: row['last_login_at'] as string | null,
+  };
+}
+
+// =============================================================================
+// Development User Operations
+// =============================================================================
+
+/** GitHub ID reserved for development user (0 is not a valid GitHub user ID) */
+const DEV_USER_GITHUB_ID = 0;
+
+/**
+ * Get or create a development user for local testing.
+ * Uses githubId=0 which is not a valid GitHub user ID.
+ * Only for use in development mode.
+ */
+export function getOrCreateDevUser(db: Database): User {
+  // Check if dev user already exists
+  const existing = getUserByGithubId(db, DEV_USER_GITHUB_ID);
+  if (existing !== null) {
+    return existing;
+  }
+
+  // Create new dev user
+  return createUser(db, {
+    githubId: DEV_USER_GITHUB_ID,
+    githubNodeId: 'dev-node-id',
+    githubLogin: 'dev-user',
+    githubName: 'Development User',
+    githubEmail: 'dev@localhost',
+  });
+}
+
+/**
+ * Create a session for the development user.
+ * Returns the session token to be stored as a cookie.
+ * Only for use in development mode.
+ */
+export function createDevSession(db: Database): { user: User; token: string; expiresAt: string } {
+  const user = getOrCreateDevUser(db);
+  const session = createSession(db, user.userId, {
+    userAgent: 'Development Mode',
+    ipAddress: '127.0.0.1',
+  });
+
+  log.info({ userId: user.userId }, 'Development session created');
+
+  return {
+    user,
+    token: session.token,
+    expiresAt: session.expiresAt,
   };
 }

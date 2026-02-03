@@ -67,6 +67,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
+    // Parse userId from signed state if present
+    let userId: string | undefined;
+    let verifiedRedirect: string | undefined;
+    if (state !== null) {
+      const verifiedState = verifySignedState(state);
+      if (verifiedState !== null) {
+        userId = verifiedState.userId;
+        verifiedRedirect = verifiedState.redirect;
+      } else {
+        log.warn('Invalid or expired state token');
+      }
+    }
+
     // Store as pending installation for project creation flow
     // The installation details will be fetched when creating a project
     const pendingInstallationsStmt = db.prepare(`
@@ -74,8 +87,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         installation_id,
         setup_action,
         state,
+        user_id,
         created_at
-      ) VALUES (?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?)
     `);
 
     try {
@@ -83,6 +97,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         installationIdNum,
         setupAction ?? 'install',
         state ?? null,
+        userId ?? null,
         new Date().toISOString()
       );
     } catch (err) {
@@ -95,25 +110,20 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     }
 
     log.info(
-      { installationId: installationIdNum, setupAction },
+      { installationId: installationIdNum, setupAction, userId },
       'GitHub App installation callback processed'
     );
 
     // Redirect to project creation with the installation ID
-    // Verify signed state to prevent CSRF and open redirect attacks
+    // Use verified redirect path if available
     let redirectPath = `/projects/new?installation_id=${installationId}`;
-    if (state !== null) {
-      const verifiedRedirect = verifySignedState(state);
-      if (verifiedRedirect !== null) {
-        // Append installation_id to the verified redirect URL
-        const redirectUrl = new URL(verifiedRedirect, request.url);
-        if (!redirectUrl.searchParams.has('installation_id')) {
-          redirectUrl.searchParams.set('installation_id', installationId);
-        }
-        redirectPath = redirectUrl.pathname + redirectUrl.search;
-      } else {
-        log.warn('Invalid or expired state token, using default redirect');
+    if (verifiedRedirect !== undefined) {
+      // Append installation_id to the verified redirect URL
+      const redirectUrl = new URL(verifiedRedirect, request.url);
+      if (!redirectUrl.searchParams.has('installation_id')) {
+        redirectUrl.searchParams.set('installation_id', installationId);
       }
+      redirectPath = redirectUrl.pathname + redirectUrl.search;
     }
 
     return NextResponse.redirect(new URL(redirectPath, request.url));

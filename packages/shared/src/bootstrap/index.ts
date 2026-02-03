@@ -9,6 +9,7 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import { initDatabase, closeDatabase, getSchemaVersion } from '../db/index';
 import { initQueueManager, closeQueueManager, type QueueManager } from '../queue/index';
 import { createLogger } from '../logger/index';
+import { initEncryption } from '../crypto/index';
 
 const log = createLogger({ name: 'conductor:bootstrap' });
 
@@ -69,6 +70,28 @@ export async function bootstrap(config: BootstrapConfig): Promise<BootstrapResul
   }
 
   log.info({ databasePath: config.databasePath }, 'Starting bootstrap');
+
+  // Initialize encryption if DATABASE_ENCRYPTION_KEY is set
+  const encryptionKey = process.env['DATABASE_ENCRYPTION_KEY'];
+  if (encryptionKey !== undefined && encryptionKey !== '') {
+    try {
+      initEncryption(encryptionKey);
+      log.info('Database encryption enabled');
+    } catch (err) {
+      log.error(
+        { error: err instanceof Error ? err.message : 'Unknown error' },
+        'Failed to initialize encryption'
+      );
+      throw err;
+    }
+  } else if (process.env['NODE_ENV'] === 'production') {
+    log.warn(
+      'DATABASE_ENCRYPTION_KEY not set. OAuth tokens will be stored in plaintext. ' +
+      'Set DATABASE_ENCRYPTION_KEY for production deployments.'
+    );
+  } else {
+    log.debug('Database encryption not configured (development mode)');
+  }
 
   // Initialize database with migrations
   log.info('Initializing database');

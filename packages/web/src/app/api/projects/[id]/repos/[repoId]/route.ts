@@ -93,7 +93,7 @@ interface RouteParams {
  * Protected: requires authentication.
  */
 export const GET = withAuth(async (
-  _request: AuthenticatedRequest,
+  request: AuthenticatedRequest,
   { params }: RouteParams
 ): Promise<NextResponse> => {
   try {
@@ -104,6 +104,14 @@ export const GET = withAuth(async (
     // Verify project exists
     const project = getProject(db, id);
     if (project === null) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
+    // Enforce ownership
+    if (project.userId !== request.user.userId) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
@@ -157,6 +165,14 @@ export const PATCH = withAuth(async (
     // Verify project exists
     const project = getProject(db, id);
     if (project === null) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
+    // Enforce ownership
+    if (project.userId !== request.user.userId) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
@@ -221,7 +237,7 @@ export const PATCH = withAuth(async (
  * Protected: requires authentication.
  */
 export const DELETE = withAuth(async (
-  _request: AuthenticatedRequest,
+  request: AuthenticatedRequest,
   { params }: RouteParams
 ): Promise<NextResponse> => {
   try {
@@ -232,6 +248,14 @@ export const DELETE = withAuth(async (
     // Verify project exists
     const project = getProject(db, id);
     if (project === null) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
+    // Enforce ownership
+    if (project.userId !== request.user.userId) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }

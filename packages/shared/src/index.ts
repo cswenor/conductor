@@ -51,3 +51,6 @@ export * from './profiles/index';
 
 // Re-export auth module
 export * from './auth/index';
+
+// Re-export crypto module
+export * from './crypto/index';

@@ -14,17 +14,24 @@ interface StatePayload {
   redirect: string;
   nonce: string;
   timestamp: number;
+  userId?: string;
+}
+
+export interface VerifiedState {
+  redirect: string;
+  userId?: string;
 }
 
 /**
  * Creates a signed state token for OAuth flows.
- * The token contains the redirect URL, a nonce, and timestamp.
+ * The token contains the redirect URL, optional userId, a nonce, and timestamp.
  */
-export function createSignedState(redirect: string): string {
+export function createSignedState(redirect: string, userId?: string): string {
   const payload: StatePayload = {
     redirect,
     nonce: randomBytes(16).toString('hex'),
     timestamp: Date.now(),
+    userId,
   };
 
   const data = JSON.stringify(payload);
@@ -39,12 +46,12 @@ export function createSignedState(redirect: string): string {
 
 /**
  * Verifies and decodes a signed state token.
- * Returns the redirect URL if valid, null otherwise.
+ * Returns the verified state with redirect URL and userId if valid, null otherwise.
  *
  * @param state - The signed state token
  * @param maxAgeMs - Maximum age of the state in milliseconds (default: 10 minutes)
  */
-export function verifySignedState(state: string, maxAgeMs: number = 10 * 60 * 1000): string | null {
+export function verifySignedState(state: string, maxAgeMs: number = 10 * 60 * 1000): VerifiedState | null {
   try {
     const parts = state.split('.');
     if (parts.length !== 2) {
@@ -74,7 +81,10 @@ export function verifySignedState(state: string, maxAgeMs: number = 10 * 60 * 10
       return null;
     }
 
-    return payload.redirect;
+    return {
+      redirect: payload.redirect,
+      userId: payload.userId,
+    };
   } catch {
     return null;
   }

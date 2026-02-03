@@ -14,6 +14,7 @@ import {
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
 import { getConfig } from '@/lib/config';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:api:installations' });
 
@@ -60,16 +61,18 @@ function ensureGitHubApp(): boolean {
  * GET /api/github/installations
  *
  * List available GitHub installations (pending and from API).
+ * Protected: requires authentication.
+ * Only returns installations belonging to the authenticated user.
  */
-export async function GET(): Promise<NextResponse> {
+export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
 
     const installations: InstallationInfo[] = [];
 
-    // Get pending installations from database
-    const pending = listPendingInstallations(db);
+    // Get pending installations from database filtered by user
+    const pending = listPendingInstallations(db, { userId: request.user.userId });
 
     // If GitHub App is configured, try to get details for each pending installation
     const githubConfigured = ensureGitHubApp();
@@ -134,4 +137,4 @@ export async function GET(): Promise<NextResponse> {
       { status: 500 }
     );
   }
-}
+});

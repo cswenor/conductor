@@ -82,6 +82,14 @@ export const POST = withAuth(async (
       );
     }
 
+    // Enforce ownership
+    if (project.userId !== request.user.userId) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
     // Check GitHub is configured
     if (!ensureGitHubApp()) {
       return NextResponse.json(

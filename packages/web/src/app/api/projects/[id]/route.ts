@@ -46,8 +46,8 @@ export const GET = withAuth(async (
       );
     }
 
-    // Enforce ownership (skip in dev mode when no user is set)
-    if (request.user !== undefined && project.userId !== request.user.userId) {
+    // Enforce ownership
+    if (project.userId !== request.user.userId) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
@@ -92,8 +92,8 @@ export const PATCH = withAuth(async (
       );
     }
 
-    // Enforce ownership (skip in dev mode when no user is set)
-    if (request.user !== undefined && existing.userId !== request.user.userId) {
+    // Enforce ownership
+    if (existing.userId !== request.user.userId) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
@@ -149,8 +149,8 @@ export const DELETE = withAuth(async (
       );
     }
 
-    // Enforce ownership (skip in dev mode when no user is set)
-    if (request.user !== undefined && existing.userId !== request.user.userId) {
+    // Enforce ownership
+    if (existing.userId !== request.user.userId) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }

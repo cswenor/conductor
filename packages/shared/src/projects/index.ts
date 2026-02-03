@@ -291,6 +291,7 @@ export interface PendingInstallation {
   installationId: number;
   setupAction: string;
   state?: string;
+  userId?: string;
   createdAt: string;
 }
 
@@ -318,19 +319,31 @@ export function getPendingInstallation(
   };
 }
 
+export interface ListPendingInstallationsOptions {
+  userId?: string;
+}
+
 /**
- * List pending installations
+ * List pending installations.
+ * Optionally filter by user_id for ownership enforcement.
  */
-export function listPendingInstallations(db: Database): PendingInstallation[] {
+export function listPendingInstallations(
+  db: Database,
+  options?: ListPendingInstallationsOptions
+): PendingInstallation[] {
+  const whereClause = options?.userId !== undefined ? 'WHERE user_id = ?' : '';
+  const params = options?.userId !== undefined ? [options.userId] : [];
+
   const stmt = db.prepare(
-    'SELECT * FROM pending_github_installations ORDER BY created_at DESC'
+    `SELECT * FROM pending_github_installations ${whereClause} ORDER BY created_at DESC`
   );
-  const rows = stmt.all() as Array<Record<string, unknown>>;
+  const rows = stmt.all(...params) as Array<Record<string, unknown>>;
 
   return rows.map((row) => ({
     installationId: row['installation_id'] as number,
     setupAction: row['setup_action'] as string,
     state: row['state'] as string | undefined,
+    userId: row['user_id'] as string | undefined,
     createdAt: row['created_at'] as string,
   }));
 }

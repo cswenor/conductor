@@ -25,16 +25,7 @@ export interface AuthUser {
 }
 
 export interface AuthenticatedRequest extends NextRequest {
-  user?: AuthUser;
-}
-
-/**
- * Check if the current environment allows unauthenticated access.
- * In development mode, we allow unauthenticated access for easier testing.
- * In production, authentication is required.
- */
-function allowUnauthenticated(): boolean {
-  return process.env['NODE_ENV'] === 'development';
+  user: AuthUser;
 }
 
 /**
@@ -90,15 +81,8 @@ export function withAuth<T extends { params: Promise<Record<string, string>> }>(
       }
     }
 
-    // If no authenticated user
+    // If no authenticated user, require authentication
     if (authRequest.user === undefined) {
-      if (allowUnauthenticated()) {
-        // Development mode: allow request without auth
-        log.debug('Allowing unauthenticated request in development mode');
-        return handler(authRequest, context);
-      }
-
-      // Production mode: require authentication
       log.warn({ path: request.nextUrl.pathname }, 'Unauthenticated request rejected');
       return NextResponse.json(
         { error: 'Authentication required' },

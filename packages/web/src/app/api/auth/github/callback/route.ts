@@ -64,9 +64,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   // Verify state and get redirect URL
   let redirectTo = '/';
   if (state !== null) {
-    const verifiedRedirect = verifySignedState(state);
-    if (verifiedRedirect !== null) {
-      redirectTo = verifiedRedirect;
+    const verifiedState = verifySignedState(state);
+    if (verifiedState !== null) {
+      redirectTo = verifiedState.redirect;
     } else {
       log.warn('Invalid or expired state token');
     }
