@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import type { Route } from 'next';
@@ -20,7 +20,7 @@ interface InstallationInfo {
   isPending: boolean;
 }
 
-export default function NewProjectPage() {
+function NewProjectContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const installationIdFromUrl = searchParams.get('installation_id');
@@ -255,5 +255,39 @@ export default function NewProjectPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function NewProjectFallback() {
+  return (
+    <div className="flex flex-col h-full">
+      <PageHeader
+        title="New Project"
+        description="Create a new orchestration project"
+        action={
+          <Link href={'/projects' as Route}>
+            <Button variant="outline">
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back
+            </Button>
+          </Link>
+        }
+      />
+      <div className="flex-1 p-6">
+        <div className="max-w-2xl mx-auto">
+          <div className="flex items-center justify-center py-16">
+            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function NewProjectPage() {
+  return (
+    <Suspense fallback={<NewProjectFallback />}>
+      <NewProjectContent />
+    </Suspense>
   );
 }

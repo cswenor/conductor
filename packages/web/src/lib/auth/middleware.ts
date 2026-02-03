@@ -15,6 +15,8 @@ export const SESSION_COOKIE_NAME = 'conductor_session';
 
 export interface AuthUser {
   id: string;
+  /** Alias for id, for consistency with User type */
+  userId: string;
   githubId: number;
   githubLogin: string;
   githubNodeId: string;
@@ -41,6 +43,7 @@ function allowUnauthenticated(): boolean {
 function userToAuthUser(user: User): AuthUser {
   return {
     id: user.userId,
+    userId: user.userId,
     githubId: user.githubId,
     githubLogin: user.githubLogin,
     githubNodeId: user.githubNodeId,

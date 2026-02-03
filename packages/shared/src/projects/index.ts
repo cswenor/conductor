@@ -16,6 +16,7 @@ const log = createLogger({ name: 'conductor:projects' });
 export interface Project {
   projectId: string;
   name: string;
+  userId?: string;
   githubOrgId: number;
   githubOrgNodeId: string;
   githubOrgName: string;
@@ -33,6 +34,7 @@ export interface Project {
 export interface ProjectSummary {
   projectId: string;
   name: string;
+  userId?: string;
   githubOrgName: string;
   repoCount: number;
   activeRunCount: number;
@@ -42,6 +44,7 @@ export interface ProjectSummary {
 
 export interface CreateProjectInput {
   name: string;
+  userId?: string;
   githubOrgId: number;
   githubOrgNodeId: string;
   githubOrgName: string;
@@ -88,6 +91,7 @@ export function createProject(
     INSERT INTO projects (
       project_id,
       name,
+      user_id,
       github_org_id,
       github_org_node_id,
       github_org_name,
@@ -100,12 +104,13 @@ export function createProject(
       port_range_end,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   stmt.run(
     projectId,
     input.name,
+    input.userId ?? null,
     input.githubOrgId,
     input.githubOrgNodeId,
     input.githubOrgName,
@@ -120,11 +125,12 @@ export function createProject(
     now
   );
 
-  log.info({ projectId, name: input.name }, 'Project created');
+  log.info({ projectId, name: input.name, userId: input.userId }, 'Project created');
 
   return {
     projectId,
     name: input.name,
+    userId: input.userId,
     githubOrgId: input.githubOrgId,
     githubOrgNodeId: input.githubOrgNodeId,
     githubOrgName: input.githubOrgName,
@@ -171,14 +177,23 @@ export function getProjectByInstallation(
   return rowToProject(row);
 }
 
+export interface ListProjectsOptions {
+  userId?: string;
+}
+
 /**
  * List all projects with summary statistics
+ * Optionally filter by user_id for ownership enforcement
  */
-export function listProjects(db: Database): ProjectSummary[] {
+export function listProjects(db: Database, options?: ListProjectsOptions): ProjectSummary[] {
+  const whereClause = options?.userId !== undefined ? 'WHERE p.user_id = ?' : '';
+  const params = options?.userId !== undefined ? [options.userId] : [];
+
   const stmt = db.prepare(`
     SELECT
       p.project_id,
       p.name,
+      p.user_id,
       p.github_org_name,
       p.created_at,
       p.updated_at,
@@ -187,15 +202,17 @@ export function listProjects(db: Database): ProjectSummary[] {
     FROM projects p
     LEFT JOIN repos r ON r.project_id = p.project_id
     LEFT JOIN runs ON runs.project_id = p.project_id
+    ${whereClause}
     GROUP BY p.project_id
     ORDER BY p.updated_at DESC
   `);
 
-  const rows = stmt.all() as Array<Record<string, unknown>>;
+  const rows = stmt.all(...params) as Array<Record<string, unknown>>;
 
   return rows.map((row) => ({
     projectId: row['project_id'] as string,
     name: row['name'] as string,
+    userId: row['user_id'] as string | undefined,
     githubOrgName: row['github_org_name'] as string,
     repoCount: (row['repo_count'] as number) ?? 0,
     activeRunCount: (row['active_run_count'] as number) ?? 0,
@@ -340,6 +357,7 @@ function rowToProject(row: Record<string, unknown>): Project {
   return {
     projectId: row['project_id'] as string,
     name: row['name'] as string,
+    userId: row['user_id'] as string | undefined,
     githubOrgId: row['github_org_id'] as number,
     githubOrgNodeId: row['github_org_node_id'] as string,
     githubOrgName: row['github_org_name'] as string,

@@ -5,6 +5,9 @@
  */
 
 import { NextResponse } from 'next/server';
+
+// Prevent static prerendering since this depends on runtime config
+export const dynamic = 'force-dynamic';
 import { getConfig } from '@/lib/config';
 
 interface GitHubStatusResponse {

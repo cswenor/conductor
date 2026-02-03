@@ -23,12 +23,16 @@ const log = createLogger({ name: 'conductor:api:projects' });
  *
  * List all projects with summary statistics.
  * Protected: requires authentication.
+ * Returns only projects owned by the authenticated user.
  */
-export const GET = withAuth(async (): Promise<NextResponse> => {
+export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
-    const projects = listProjects(db);
+
+    // Filter by user_id if authenticated (in production)
+    const options = request.user !== undefined ? { userId: request.user.userId } : undefined;
+    const projects = listProjects(db, options);
 
     return NextResponse.json({ projects });
   } catch (err) {
@@ -93,6 +97,7 @@ export const POST = withAuth(async (request: AuthenticatedRequest): Promise<Next
 
     const project = createProject(db, {
       name: body.name,
+      userId: request.user?.userId,
       githubOrgId: body.githubOrgId,
       githubOrgNodeId: body.githubOrgNodeId,
       githubOrgName: body.githubOrgName,

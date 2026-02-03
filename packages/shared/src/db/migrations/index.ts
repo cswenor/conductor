@@ -19,8 +19,9 @@ import { migration003 } from './003_github_writes_payload';
 import { migration004 } from './004_events_source';
 import { migration005 } from './005_pending_github_installations';
 import { migration006 } from './006_users_and_sessions';
+import { migration007 } from './007_projects_user_id';
 
 /**
  * All migrations in order
  */
-export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006];
+export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007];

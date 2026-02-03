@@ -26,9 +26,10 @@ interface RouteParams {
  *
  * Get a single project by ID.
  * Protected: requires authentication.
+ * Enforces ownership: user can only access their own projects.
  */
 export const GET = withAuth(async (
-  _request: AuthenticatedRequest,
+  request: AuthenticatedRequest,
   { params }: RouteParams
 ): Promise<NextResponse> => {
   try {
@@ -39,6 +40,14 @@ export const GET = withAuth(async (
     const project = getProject(db, id);
 
     if (project === null) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
+    // Enforce ownership (skip in dev mode when no user is set)
+    if (request.user !== undefined && project.userId !== request.user.userId) {
       return NextResponse.json(
         { error: 'Project not found' },
         { status: 404 }
@@ -63,6 +72,7 @@ export const GET = withAuth(async (
  *
  * Update a project.
  * Protected: requires authentication.
+ * Enforces ownership: user can only update their own projects.
  */
 export const PATCH = withAuth(async (
   request: AuthenticatedRequest,
@@ -72,6 +82,23 @@ export const PATCH = withAuth(async (
     await ensureBootstrap();
     const db = await getDb();
     const { id } = await params;
+
+    // Check ownership before updating
+    const existing = getProject(db, id);
+    if (existing === null) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
+    // Enforce ownership (skip in dev mode when no user is set)
+    if (request.user !== undefined && existing.userId !== request.user.userId) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
 
     const body = await request.json() as UpdateProjectInput;
 
@@ -102,15 +129,33 @@ export const PATCH = withAuth(async (
  *
  * Delete a project.
  * Protected: requires authentication.
+ * Enforces ownership: user can only delete their own projects.
  */
 export const DELETE = withAuth(async (
-  _request: AuthenticatedRequest,
+  request: AuthenticatedRequest,
   { params }: RouteParams
 ): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
     const db = await getDb();
     const { id } = await params;
+
+    // Check ownership before deleting
+    const existing = getProject(db, id);
+    if (existing === null) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
+    // Enforce ownership (skip in dev mode when no user is set)
+    if (request.user !== undefined && existing.userId !== request.user.userId) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
 
     const deleted = deleteProject(db, id);
 

@@ -5,6 +5,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+
+// Prevent static prerendering since this depends on runtime config
+export const dynamic = 'force-dynamic';
 import { getConfig } from '@/lib/config';
 import { createLogger } from '@conductor/shared';
 import { createSignedState, isValidRedirect } from '@/lib/auth/oauth-state';
