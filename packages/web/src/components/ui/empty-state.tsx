@@ -1,17 +1,13 @@
 'use client';
 
 import { Inbox } from 'lucide-react';
-import { Button } from './button';
 import { cn } from '@/lib/utils';
 
 interface EmptyStateProps {
   icon?: React.ReactNode;
   title: string;
   description?: string;
-  action?: {
-    label: string;
-    onClick: () => void;
-  };
+  action?: React.ReactNode;
   className?: string;
 }
 
@@ -31,9 +27,7 @@ export function EmptyState({
           <p className="text-sm text-muted-foreground">{description}</p>
         )}
       </div>
-      {action !== undefined && (
-        <Button onClick={action.onClick}>{action.label}</Button>
-      )}
+      {action}
     </div>
   );
 }

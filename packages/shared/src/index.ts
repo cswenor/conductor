@@ -39,3 +39,6 @@ export * from './events/index';
 
 // Re-export outbox module
 export * from './outbox/index';
+
+// Re-export projects module
+export * from './projects/index';

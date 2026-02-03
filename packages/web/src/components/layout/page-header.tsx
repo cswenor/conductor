@@ -1,10 +1,11 @@
 interface PageHeaderProps {
   title: string;
   description?: string;
+  action?: React.ReactNode;
   children?: React.ReactNode;
 }
 
-export function PageHeader({ title, description, children }: PageHeaderProps) {
+export function PageHeader({ title, description, action, children }: PageHeaderProps) {
   return (
     <div className="flex items-center justify-between border-b px-6 py-4">
       <div>
@@ -13,7 +14,10 @@ export function PageHeader({ title, description, children }: PageHeaderProps) {
           <p className="text-sm text-muted-foreground">{description}</p>
         )}
       </div>
-      {children !== undefined && <div className="flex items-center gap-2">{children}</div>}
+      <div className="flex items-center gap-2">
+        {action}
+        {children}
+      </div>
     </div>
   );
 }
