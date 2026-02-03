@@ -19,7 +19,20 @@ export const migration010: Migration = {
     // =========================================================================
     // 1. Add unique constraint on projects.github_installation_id
     // =========================================================================
-    // SQLite doesn't support ADD CONSTRAINT, so we create a unique index
+    // SQLite doesn't support ADD CONSTRAINT, so we create a unique index.
+    // First, deduplicate any existing rows to prevent migration failure.
+
+    // Delete duplicate projects, keeping only the oldest (first created) for each installation_id
+    db.exec(`
+      DELETE FROM projects
+      WHERE rowid NOT IN (
+        SELECT MIN(rowid)
+        FROM projects
+        GROUP BY github_installation_id
+      )
+    `);
+
+    // Now safe to create unique index
     db.exec(`
       CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_installation_unique
         ON projects(github_installation_id)
