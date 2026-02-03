@@ -57,3 +57,6 @@ export * from './crypto/index';
 
 // Re-export API keys module
 export * from './api-keys/index';
+
+// Re-export worktree module
+export * from './worktree/index';

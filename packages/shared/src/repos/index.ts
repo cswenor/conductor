@@ -25,6 +25,9 @@ export interface Repo {
   profileId: string;
   status: 'active' | 'inactive' | 'syncing' | 'error';
   lastIndexedAt?: string;
+  clonePath?: string;
+  clonedAt?: string;
+  lastFetchedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -297,6 +300,9 @@ function rowToRepo(row: Record<string, unknown>): Repo {
     profileId: row['profile_id'] as string,
     status: row['status'] as Repo['status'],
     lastIndexedAt: row['last_indexed_at'] as string | undefined,
+    clonePath: row['clone_path'] as string | undefined,
+    clonedAt: row['cloned_at'] as string | undefined,
+    lastFetchedAt: row['last_fetched_at'] as string | undefined,
     createdAt: row['created_at'] as string,
     updatedAt: row['updated_at'] as string,
   };

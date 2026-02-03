@@ -24,8 +24,9 @@ import { migration008 } from './008_pending_installations_user_id';
 import { migration009 } from './009_token_encryption_nonces';
 import { migration010 } from './010_strict_ownership';
 import { migration011 } from './011_user_api_keys';
+import { migration012 } from './012_repo_clone_tracking';
 
 /**
  * All migrations in order
  */
-export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011];
+export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012];
