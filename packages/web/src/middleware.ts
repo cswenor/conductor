@@ -35,7 +35,6 @@ export function middleware(request: NextRequest) {
   const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
   // No session - redirect to login
-  // In development, users can manually visit /api/auth/dev to get a session
   if (sessionToken === undefined) {
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('redirect', pathname);
