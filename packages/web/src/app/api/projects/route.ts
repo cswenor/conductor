@@ -70,26 +70,29 @@ export const POST = withAuth(async (request: AuthenticatedRequest): Promise<Next
       );
     }
 
-    // If we have a pending installation, use its data
-    // Only allow using pending installations that belong to this user
+    // SECURITY: REQUIRE a pending installation owned by this user
+    // This prevents users from binding projects to installations they don't own
     const pendingInstall = getPendingInstallation(db, body.githubInstallationId, {
       userId: request.user.userId,
     });
 
+    if (pendingInstall === null) {
+      log.warn(
+        { userId: request.user.userId, installationId: body.githubInstallationId },
+        'Project creation rejected: no pending installation for user'
+      );
+      return NextResponse.json(
+        { error: 'No pending GitHub installation found. Please install the GitHub App first.' },
+        { status: 403 }
+      );
+    }
+
+    // Require org fields (in the future, we could fetch these from GitHub API using the installation)
     if (
       body.githubOrgId === undefined ||
       body.githubOrgNodeId === undefined ||
       body.githubOrgName === undefined
     ) {
-      // These fields are required if not coming from elsewhere
-      if (pendingInstall === null) {
-        return NextResponse.json(
-          { error: 'Missing required GitHub organization details' },
-          { status: 400 }
-        );
-      }
-      // For now, we require the caller to provide these
-      // In a full implementation, we'd fetch them from GitHub API
       return NextResponse.json(
         { error: 'Missing required fields: githubOrgId, githubOrgNodeId, githubOrgName' },
         { status: 400 }
@@ -109,10 +112,8 @@ export const POST = withAuth(async (request: AuthenticatedRequest): Promise<Next
       portRangeEnd: body.portRangeEnd,
     });
 
-    // Clean up pending installation if it exists
-    if (pendingInstall !== null) {
-      deletePendingInstallation(db, body.githubInstallationId);
-    }
+    // Clean up the pending installation (we verified it exists above)
+    deletePendingInstallation(db, body.githubInstallationId);
 
     log.info({ projectId: project.projectId, name: project.name }, 'Project created via API');
 

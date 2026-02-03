@@ -67,18 +67,32 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       );
     }
 
-    // Parse userId from signed state if present
-    let userId: string | undefined;
-    let verifiedRedirect: string | undefined;
-    if (state !== null) {
-      const verifiedState = verifySignedState(state);
-      if (verifiedState !== null) {
-        userId = verifiedState.userId;
-        verifiedRedirect = verifiedState.redirect;
-      } else {
-        log.warn('Invalid or expired state token');
-      }
+    // SECURITY: Require valid signed state with userId
+    // This ensures installations are bound to authenticated users
+    if (state === null) {
+      log.warn('Missing state parameter - rejecting callback');
+      return NextResponse.redirect(
+        new URL('/settings?error=missing_state', request.url)
+      );
     }
+
+    const verifiedState = verifySignedState(state);
+    if (verifiedState === null) {
+      log.warn('Invalid or expired state token - rejecting callback');
+      return NextResponse.redirect(
+        new URL('/settings?error=invalid_state', request.url)
+      );
+    }
+
+    if (verifiedState.userId === undefined) {
+      log.warn('State token missing userId - rejecting callback');
+      return NextResponse.redirect(
+        new URL('/settings?error=missing_user', request.url)
+      );
+    }
+
+    const userId = verifiedState.userId;
+    const verifiedRedirect = verifiedState.redirect;
 
     // Store as pending installation for project creation flow
     // The installation details will be fetched when creating a project
@@ -96,8 +110,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       pendingInstallationsStmt.run(
         installationIdNum,
         setupAction ?? 'install',
-        state ?? null,
-        userId ?? null,
+        state,
+        userId,
         new Date().toISOString()
       );
     } catch (err) {

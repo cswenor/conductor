@@ -6,9 +6,18 @@
 
 import { createHmac, randomBytes } from 'crypto';
 
-// Use a secret from env or generate one for the session
-// In production, this MUST be set via environment variable
-const STATE_SECRET = process.env['OAUTH_STATE_SECRET'] ?? process.env['GITHUB_WEBHOOK_SECRET'] ?? 'dev-secret-change-me';
+// Get the state signing secret from environment
+// REQUIRED: Must be set via environment variable (no fallback for security)
+function getStateSecret(): string {
+  const secret = process.env['OAUTH_STATE_SECRET'] ?? process.env['GITHUB_WEBHOOK_SECRET'];
+  if (secret === undefined || secret === '') {
+    throw new Error(
+      'OAUTH_STATE_SECRET or GITHUB_WEBHOOK_SECRET must be set. ' +
+      'Generate with: openssl rand -hex 32'
+    );
+  }
+  return secret;
+}
 
 interface StatePayload {
   redirect: string;
@@ -35,7 +44,7 @@ export function createSignedState(redirect: string, userId?: string): string {
   };
 
   const data = JSON.stringify(payload);
-  const signature = createHmac('sha256', STATE_SECRET)
+  const signature = createHmac('sha256', getStateSecret())
     .update(data)
     .digest('hex');
 
@@ -65,7 +74,7 @@ export function verifySignedState(state: string, maxAgeMs: number = 10 * 60 * 10
 
     // Verify signature
     const data = Buffer.from(encodedPayload, 'base64url').toString('utf-8');
-    const expectedSignature = createHmac('sha256', STATE_SECRET)
+    const expectedSignature = createHmac('sha256', getStateSecret())
       .update(data)
       .digest('hex');
 
