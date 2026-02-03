@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, use } from 'react';
+import { useState, useEffect, use, useCallback } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { Route } from 'next';
@@ -9,6 +9,7 @@ import { Button, EmptyState } from '@/components/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
   ArrowLeft,
   GitBranch,
@@ -17,6 +18,8 @@ import {
   Search,
   Lock,
   Globe,
+  Code,
+  Sparkles,
 } from 'lucide-react';
 
 interface AvailableRepo {
@@ -27,6 +30,20 @@ interface AvailableRepo {
   owner: string;
   defaultBranch: string;
   isPrivate: boolean;
+}
+
+interface DetectedProfile {
+  profileId: string;
+  profile: {
+    id: string;
+    name: string;
+    description: string;
+    language: string;
+    packageManager?: string;
+    framework?: string;
+  };
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
 }
 
 interface PageProps {
@@ -43,6 +60,10 @@ export default function AddReposPage({ params }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Profile detection state
+  const [detectedProfiles, setDetectedProfiles] = useState<Record<string, DetectedProfile>>({});
+  const [detectingProfiles, setDetectingProfiles] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     async function fetchAvailableRepos() {
@@ -80,18 +101,65 @@ export default function AddReposPage({ params }: PageProps) {
     }
   }, [searchQuery, repos]);
 
+  // Detect profile for a repo when selected
+  const detectProfile = useCallback(async (repo: AvailableRepo) => {
+    // Skip if already detected or detecting
+    if (detectedProfiles[repo.nodeId] !== undefined || detectingProfiles.has(repo.nodeId)) {
+      return;
+    }
+
+    setDetectingProfiles((prev) => new Set([...prev, repo.nodeId]));
+
+    try {
+      const response = await fetch(`/api/projects/${id}/repos/detect-profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          owner: repo.owner,
+          repo: repo.name,
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json() as DetectedProfile;
+        setDetectedProfiles((prev) => ({
+          ...prev,
+          [repo.nodeId]: data,
+        }));
+      }
+    } catch {
+      // Silent fail - profile detection is optional
+    } finally {
+      setDetectingProfiles((prev) => {
+        const next = new Set(prev);
+        next.delete(repo.nodeId);
+        return next;
+      });
+    }
+  }, [id, detectedProfiles, detectingProfiles]);
+
   const toggleRepo = (nodeId: string) => {
     const newSelected = new Set(selectedRepos);
     if (newSelected.has(nodeId)) {
       newSelected.delete(nodeId);
     } else {
       newSelected.add(nodeId);
+      // Detect profile when selecting
+      const repo = repos.find((r) => r.nodeId === nodeId);
+      if (repo !== undefined) {
+        void detectProfile(repo);
+      }
     }
     setSelectedRepos(newSelected);
   };
 
   const selectAll = () => {
-    setSelectedRepos(new Set(filteredRepos.map((r) => r.nodeId)));
+    const newSelected = new Set(filteredRepos.map((r) => r.nodeId));
+    setSelectedRepos(newSelected);
+    // Detect profiles for all selected repos
+    for (const repo of filteredRepos) {
+      void detectProfile(repo);
+    }
   };
 
   const deselectAll = () => {
@@ -109,6 +177,10 @@ export default function AddReposPage({ params }: PageProps) {
       const reposToAdd = repos.filter((r) => selectedRepos.has(r.nodeId));
 
       for (const repo of reposToAdd) {
+        // Use detected profile if available
+        const detectedProfile = detectedProfiles[repo.nodeId];
+        const profileId = detectedProfile?.profileId ?? 'default';
+
         const response = await fetch(`/api/projects/${id}/repos`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -119,6 +191,7 @@ export default function AddReposPage({ params }: PageProps) {
             githubName: repo.name,
             githubFullName: repo.fullName,
             githubDefaultBranch: repo.defaultBranch,
+            profileId,
           }),
         });
 
@@ -133,6 +206,17 @@ export default function AddReposPage({ params }: PageProps) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
       setAdding(false);
+    }
+  };
+
+  const getConfidenceBadgeVariant = (confidence: string): 'success' | 'default' | 'secondary' => {
+    switch (confidence) {
+      case 'high':
+        return 'success';
+      case 'medium':
+        return 'default';
+      default:
+        return 'secondary';
     }
   };
 
@@ -157,6 +241,7 @@ export default function AddReposPage({ params }: PageProps) {
               <CardTitle>Available Repositories</CardTitle>
               <CardDescription>
                 These repositories are available from your GitHub installation.
+                Profiles are automatically detected when you select a repository.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -206,52 +291,112 @@ export default function AddReposPage({ params }: PageProps) {
 
                   {/* Repo list */}
                   <div className="border rounded-lg divide-y max-h-96 overflow-auto">
-                    {filteredRepos.map((repo) => (
-                      <button
-                        key={repo.nodeId}
-                        type="button"
-                        onClick={() => toggleRepo(repo.nodeId)}
-                        disabled={adding}
-                        className={`w-full flex items-center gap-3 p-4 text-left transition-colors ${
-                          selectedRepos.has(repo.nodeId)
-                            ? 'bg-primary/5'
-                            : 'hover:bg-muted/50'
-                        } ${adding ? 'opacity-50 cursor-not-allowed' : ''}`}
-                      >
-                        <div
-                          className={`flex items-center justify-center w-5 h-5 rounded border ${
-                            selectedRepos.has(repo.nodeId)
-                              ? 'bg-primary border-primary text-primary-foreground'
-                              : 'border-input'
-                          }`}
+                    {filteredRepos.map((repo) => {
+                      const detected = detectedProfiles[repo.nodeId];
+                      const isDetecting = detectingProfiles.has(repo.nodeId);
+                      const isSelected = selectedRepos.has(repo.nodeId);
+
+                      return (
+                        <button
+                          key={repo.nodeId}
+                          type="button"
+                          onClick={() => toggleRepo(repo.nodeId)}
+                          disabled={adding}
+                          className={`w-full flex items-center gap-3 p-4 text-left transition-colors ${
+                            isSelected
+                              ? 'bg-primary/5'
+                              : 'hover:bg-muted/50'
+                          } ${adding ? 'opacity-50 cursor-not-allowed' : ''}`}
                         >
-                          {selectedRepos.has(repo.nodeId) && (
-                            <Check className="h-3 w-3" />
-                          )}
-                        </div>
-                        <GitBranch className="h-5 w-5 text-muted-foreground shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="font-medium truncate">{repo.fullName}</div>
-                          <div className="text-sm text-muted-foreground">
-                            Default branch: {repo.defaultBranch}
+                          <div
+                            className={`flex items-center justify-center w-5 h-5 rounded border ${
+                              isSelected
+                                ? 'bg-primary border-primary text-primary-foreground'
+                                : 'border-input'
+                            }`}
+                          >
+                            {isSelected && (
+                              <Check className="h-3 w-3" />
+                            )}
                           </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {repo.isPrivate ? (
-                            <Badge variant="secondary">
-                              <Lock className="h-3 w-3 mr-1" />
-                              Private
-                            </Badge>
-                          ) : (
-                            <Badge variant="outline">
-                              <Globe className="h-3 w-3 mr-1" />
-                              Public
-                            </Badge>
-                          )}
-                        </div>
-                      </button>
-                    ))}
+                          <GitBranch className="h-5 w-5 text-muted-foreground shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium truncate">{repo.fullName}</div>
+                            <div className="text-sm text-muted-foreground flex items-center gap-2">
+                              <span>Default branch: {repo.defaultBranch}</span>
+                              {isSelected && isDetecting && (
+                                <span className="flex items-center gap-1 text-xs">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                  Detecting profile...
+                                </span>
+                              )}
+                              {isSelected && detected !== undefined && !isDetecting && (
+                                <span className="flex items-center gap-1">
+                                  <Sparkles className="h-3 w-3" />
+                                  <Badge
+                                    variant={getConfidenceBadgeVariant(detected.confidence)}
+                                    className="text-xs"
+                                  >
+                                    {detected.profile.name}
+                                  </Badge>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {repo.isPrivate ? (
+                              <Badge variant="secondary">
+                                <Lock className="h-3 w-3 mr-1" />
+                                Private
+                              </Badge>
+                            ) : (
+                              <Badge variant="outline">
+                                <Globe className="h-3 w-3 mr-1" />
+                                Public
+                              </Badge>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
+
+                  {/* Selected repos with profiles */}
+                  {selectedRepos.size > 0 && Object.keys(detectedProfiles).length > 0 && (
+                    <div className="rounded-lg border bg-muted/30 p-4">
+                      <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+                        <Code className="h-4 w-4" />
+                        Detected Profiles
+                      </h4>
+                      <div className="space-y-1">
+                        {Array.from(selectedRepos).map((nodeId) => {
+                          const repo = repos.find((r) => r.nodeId === nodeId);
+                          const detected = detectedProfiles[nodeId];
+                          if (repo === undefined) return null;
+
+                          return (
+                            <div key={nodeId} className="flex items-center justify-between text-sm">
+                              <span className="text-muted-foreground truncate">{repo.fullName}</span>
+                              {detected !== undefined ? (
+                                <span className="flex items-center gap-2">
+                                  <Badge variant={getConfidenceBadgeVariant(detected.confidence)}>
+                                    {detected.profile.name}
+                                  </Badge>
+                                  <span className="text-xs text-muted-foreground">
+                                    ({detected.confidence} confidence)
+                                  </span>
+                                </span>
+                              ) : detectingProfiles.has(nodeId) ? (
+                                <Skeleton className="h-5 w-24" />
+                              ) : (
+                                <Badge variant="secondary">default</Badge>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Error message */}
                   {error !== null && (

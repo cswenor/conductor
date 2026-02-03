@@ -45,3 +45,6 @@ export * from './projects/index';
 
 // Re-export repos module
 export * from './repos/index';
+
+// Re-export profiles module
+export * from './profiles/index';
