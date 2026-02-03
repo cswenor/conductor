@@ -6,11 +6,13 @@
 
 ## The MVP Promise
 
-**Select an issue in the UI. Click Start Run. A PR appears.**
+**Log in with GitHub. Select an issue in the UI. Click Start Run. A PR appears.**
 
 Between those two moments: agents plan, review, implement, test, and propose. You approve the plan in the UI, merge the PR in GitHub.
 
 v0.1 proves this works end-to-end. Everything else is optimization.
+
+**Authentication:** All access requires GitHub OAuth login. Projects are owned by the user who creates them. Multi-operator teams are deferred to v0.3.
 
 **Conversational boundary:** Issue Intake (PM agent) is deferred to v0.2, so v0.1 has no conversational surfaces—purely command-and-observe.
 
@@ -22,15 +24,17 @@ v0.1 is complete when all of these work:
 
 | # | Criterion | Validation |
 |---|-----------|------------|
-| 1 | **Happy path completes** | Issue → Start Run → Plan → Approve → Implement → PR → Merge |
-| 2 | **UI controls everything** | All operator actions happen in UI (no CLI required for operation) |
-| 3 | **Plan approval gate works** | Run blocks until operator approves in UI |
-| 4 | **Plan revision works** | Operator rejects with feedback, Planner revises |
-| 5 | **Test retry works** | Failing tests trigger fix attempts (up to limit) |
-| 6 | **Blocking works** | Failures surface in UI with explanation |
-| 7 | **Cancellation works** | Cancel button stops run cleanly |
-| 8 | **Two parallel runs work** | No collision between concurrent runs (max 2 per host) |
-| 9 | **GitHub mirrors state** | Comments show phase transitions and decisions |
+| 1 | **Authentication required** | Unauthenticated users redirected to GitHub OAuth login |
+| 2 | **Project ownership enforced** | Users can only access their own projects and repos |
+| 3 | **Happy path completes** | Issue → Start Run → Plan → Approve → Implement → PR → Merge |
+| 4 | **UI controls everything** | All operator actions happen in UI (no CLI required for operation) |
+| 5 | **Plan approval gate works** | Run blocks until operator approves in UI |
+| 6 | **Plan revision works** | Operator rejects with feedback, Planner revises |
+| 7 | **Test retry works** | Failing tests trigger fix attempts (up to limit) |
+| 8 | **Blocking works** | Failures surface in UI with explanation |
+| 9 | **Cancellation works** | Cancel button stops run cleanly |
+| 10 | **Two parallel runs work** | No collision between concurrent runs (max 2 per host) |
+| 11 | **GitHub mirrors state** | Comments show phase transitions and decisions |
 
 ---
 
@@ -46,11 +50,14 @@ v0.1 is complete when all of these work:
 │  │  + Webhooks)│  │             │  │   + Agent Runtime   │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘  │
 │         │                                    │               │
+│  ┌──────┴──────┐                             │               │
+│  │  Auth Layer │ GitHub OAuth + Sessions     │               │
+│  └──────┬──────┘                             │               │
 │         └──────────────┬─────────────────────┘               │
 │                        ▼                                     │
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │                    SQLite Database                     │  │
-│  │  projects │ repos │ runs │ events │ artifacts │ gates │  │
+│  │  users │ sessions │ projects │ repos │ runs │ events  │  │
 │  └───────────────────────────────────────────────────────┘  │
 │                          │                                   │
 │  ┌───────────────────────┴───────────────────────────────┐  │
@@ -62,7 +69,7 @@ v0.1 is complete when all of these work:
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    GitHub Integration                        │
-│        webhooks │ comments │ PRs │ checks │ Projects        │
+│   OAuth │ webhooks │ comments │ PRs │ checks │ Projects     │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -76,7 +83,8 @@ v0.1 is complete when all of these work:
 | Job Queue | Redis + BullMQ | Durable job processing, retries |
 | UI + API | Next.js 14+ | App Router, Server Actions, API routes |
 | UI Components | shadcn/ui | Tailwind, Radix primitives |
-| GitHub | Octokit | GitHub App auth |
+| Authentication | GitHub OAuth | Session cookies, encrypted tokens |
+| GitHub | Octokit | GitHub App auth for API, OAuth for users |
 | Agents | Claude API | Anthropic SDK |
 
 ---
@@ -106,8 +114,10 @@ Each work package maps to a set of issues. Dependencies are explicit.
 - Jobs have leases with expiration; claim is atomic
 - Events classified as facts vs decisions
 - All GitHub entities keyed by node_id
-- actor_id on all OperatorActions (even if "local_operator")
+- All user-facing entities have user_id ownership (NOT NULL enforced at DB level)
+- actor_id on all OperatorActions (authenticated user)
 - redact() applied at tool logging, GitHub mirroring, webhook persistence
+- OAuth tokens encrypted at rest
 
 **Exit criteria:** `pnpm dev` starts all three processes; database initializes; job enqueue/dequeue works; redaction utility exists.
 
@@ -144,19 +154,25 @@ Each work package maps to a set of issues. Dependencies are explicit.
 
 **Goal:** Operator can create projects and register repos via UI.
 
-**Depends on:** WP1, WP2
+**Depends on:** WP1, WP2, WP13-A (Auth Spine)
 
 | Task | Description | Output |
 |------|-------------|--------|
-| WP3.1 | Projects list screen | List projects, create project button |
-| WP3.2 | Create project flow | Name, description → DB |
+| WP3.1 | Projects list screen | List user's projects, create project button |
+| WP3.2 | Create project flow | Name, GitHub installation → DB (bound to user) |
 | WP3.3 | Project detail / tabs | Overview, Backlog, Repos, Runs, Policies tabs |
-| WP3.4 | GitHub connection UI | Connect GitHub, show connected orgs |
-| WP3.5 | Add repo flow | Select repos from GitHub, register |
+| WP3.4 | GitHub connection UI | Install GitHub App (scoped to user), show installations |
+| WP3.5 | Add repo flow | Select repos from user's GitHub installation |
 | WP3.6 | Repo profile detection | Detect stack and test command (lint deferred) |
 | WP3.7 | Repo settings UI | Edit detected settings, policies |
 
-**Exit criteria:** Operator creates project, connects GitHub, adds repo — all in UI.
+**Security invariants:**
+- All API routes protected with `withAuth` middleware
+- Ownership enforced via centralized `canAccessProject()` policy
+- Users only see/access their own projects and repos
+- GitHub installations bound to authenticated user via signed state tokens
+
+**Exit criteria:** Logged-in operator creates project, connects GitHub, adds repo — all in UI; other users cannot access.
 
 ---
 
@@ -346,30 +362,34 @@ Each work package maps to a set of issues. Dependencies are explicit.
 
 **Depends on:** WP1, WP2
 
-**IMPORTANT:** WP13 is split into two phases. **WP13-A must complete before continuing WP3+ work.**
+**IMPORTANT:** WP13 is split into two phases. **WP13-A is complete.**
 
-#### WP13-A: Auth Spine (Priority - Do Now)
+#### WP13-A: Auth Spine ✅ COMPLETE
 
-| Task | Description | Output |
+| Task | Description | Status |
 |------|-------------|--------|
-| WP13-A.1 | Session infrastructure | sessions table, secure cookies, middleware |
-| WP13-A.2 | Protected routes | API auth middleware, 401 responses |
-| WP13-A.3 | Bind entities to users | user_id on projects/installations, scoped queries |
-| WP13-A.4 | Secure OAuth state | Fix open redirect, signed state tokens |
-| WP13-A.5 | Minimal login UI | Login page, user indicator, sign out |
-| WP13-A.6 | Team-ready authorization boundary | Centralize access checks so owner-only can extend to project_members roles later |
+| WP13-A.1 | Session infrastructure | ✅ users/sessions tables, secure cookies, middleware |
+| WP13-A.2 | Protected routes | ✅ `withAuth` middleware, 401 responses |
+| WP13-A.3 | Bind entities to users | ✅ user_id NOT NULL on projects, scoped queries |
+| WP13-A.4 | Secure OAuth state | ✅ HMAC-SHA256 signed state tokens, no open redirect |
+| WP13-A.5 | Minimal login UI | ✅ Login page, user menu, sign out |
+| WP13-A.6 | Team-ready authorization boundary | ✅ Centralized `canAccessProject()` policy layer |
 
-**Exit criteria (WP13-A):** Users must log in; projects scoped to user; API routes protected.
+**Security hardening completed:**
+- OAuth tokens encrypted at rest (AES-256-GCM)
+- Compound primary key on pending_github_installations (user-scoped)
+- Unique constraint on projects.github_installation_id (one project per installation)
+- Transactional project creation (atomic verification + creation)
+- 126 tests including security integration tests
 
-**Future-proofing requirement:** v0.1 remains owner-only, but all authorization checks must route through one policy layer so teams/roles can be added without rewriting route handlers.
+**Exit criteria (WP13-A):** ✅ Users must log in; projects scoped to user; API routes protected.
 
 #### WP13-B: Webhook Relay (Later - Self-Hosted Support)
 
 | Task | Description | Output |
 |------|-------------|--------|
-| WP13-B.1 | GitHub App installation flow | Post-OAuth installation redirect, callback handling |
-| WP13-B.2 | Webhook relay (hosted) | Receive webhooks, forward to self-hosted instances |
-| WP13-B.3 | Self-hosted client | Instance registration, relay webhook receiving |
+| WP13-B.1 | Webhook relay (hosted) | Receive webhooks, forward to self-hosted instances |
+| WP13-B.2 | Self-hosted client | Instance registration, relay webhook receiving |
 
 **Architecture:**
 - **Hosted Conductor**: Users authenticate via GitHub OAuth, receives webhooks directly
@@ -382,19 +402,19 @@ Each work package maps to a set of issues. Dependencies are explicit.
 ## Dependency Graph
 
 ```
-WP1 (Foundation)
+WP1 (Foundation) ✅
  │
- ├── WP2 (GitHub Integration)
+ ├── WP2 (GitHub Integration) ✅
  │    │
- │    └── WP13-A (Auth Spine) ◀── PRIORITY: Do before continuing WP3
+ │    └── WP13-A (Auth Spine) ✅ COMPLETE
  │         │
- │         ├── WP3 (Projects & Repos UI) ─────┐
+ │         ├── WP3 (Projects & Repos UI) ✅ ──┐
  │         │    │                              │
  │         │    └── WP4 (Worktree Manager) ───┤
  │         │         │                         │
- │         │         └── WP7 (MCP Tools) ─────┤
+ │         │         └── WP7 (Agent Tools) ───┤
  │         │                                   │
- │         └── WP13-B (Webhook Relay) ────────┤  (for self-hosted)
+ │         └── WP13-B (Webhook Relay) ────────┤  (for self-hosted, later)
  │                                             │
  ├── WP9 (GitHub Mirroring) ──────────────────┤
  │                                             │
@@ -411,6 +431,8 @@ WP1 (Foundation)
                                                ▼
                                    WP12 (Validation)
 ```
+
+**Status:** WP1, WP2, WP3, WP13-A complete. Next: WP4, WP5, WP6.
 
 ---
 
@@ -447,7 +469,7 @@ These are **not bugs**—they are intentional scope locks. See [ROADMAP.md](ROAD
 
 | Feature | Why Deferred |
 |---------|--------------|
-| Multi-operator teams | Deferred to roadmap; WP13-A must keep a team-ready auth boundary (project_members-ready) |
+| Multi-operator teams | Owner-only in v0.1; `canAccessProject()` policy ready for `project_members` extension |
 | Policy-gated auto-merge | Human merge only |
 | Cross-repo runs | Single repo per run |
 | Agent memory/learning | Fresh context is feature |
@@ -470,6 +492,7 @@ These are acceptable for v0.1:
 
 | Limitation | Mitigation |
 |------------|------------|
+| Owner-only access | No team sharing; policy layer ready for v0.3 teams |
 | No retry on network errors | Operator can manually retry |
 | Single concurrent run recommended | Parallel works but lightly tested |
 | Basic error messages | Logs available for debugging |
@@ -481,34 +504,39 @@ These are acceptable for v0.1:
 ## Demo Scenario
 
 ```
-1. Open Conductor UI → Projects
-2. Create project "Demo App"
-3. Connect GitHub → install app on demo-org
-4. Add repo demo-org/demo-app
-5. Go to Backlog tab → see issues from demo-app
-6. Select issue "Add /health endpoint"
-7. Click "Start Run"
-8. Watch: Planning phase → plan appears
-9. Review plan in Approvals inbox
-10. Click "Approve"
-11. Watch: Executing → tests run → PR created
-12. Go to GitHub → review PR → merge
-13. Run completes; worktree cleaned up
+1. Open Conductor UI → redirected to login
+2. Click "Sign in with GitHub" → OAuth flow
+3. Authorize Conductor → redirected back, now logged in
+4. Projects page shows empty state
+5. Click "New Project" → install GitHub App on demo-org
+6. Create project "Demo App" from installation
+7. Add repo demo-org/demo-app
+8. Go to Backlog tab → see issues from demo-app
+9. Select issue "Add /health endpoint"
+10. Click "Start Run"
+11. Watch: Planning phase → plan appears
+12. Review plan in Approvals inbox
+13. Click "Approve"
+14. Watch: Executing → tests run → PR created
+15. Go to GitHub → review PR → merge
+16. Run completes; worktree cleaned up
+17. Sign out from user menu
 ```
 
-Total human involvement: Start, Approve, Merge.
+Total human involvement: Login, Start, Approve, Merge, Logout.
 
 ---
 
 ## Milestones
 
-| Milestone | Work Packages | Target |
+| Milestone | Work Packages | Status |
 |-----------|---------------|--------|
-| **M1: Foundation** | WP1, WP2 | Week 2 |
-| **M2: Auth & Projects** | WP3, WP4, WP13 | Week 5 |
-| **M3: Run Engine** | WP5, WP6, WP7 | Week 8 |
-| **M4: Gates & PR** | WP8, WP9, WP10 | Week 10 |
-| **M5: Polish & Validate** | WP11, WP12 | Week 12 |
+| **M1: Foundation** | WP1, WP2 | ✅ Complete |
+| **M2: Auth & Projects** | WP3, WP13-A | ✅ Complete |
+| **M3: Environment** | WP4 | In Progress |
+| **M4: Run Engine** | WP5, WP6, WP7 | Planned |
+| **M5: Gates & PR** | WP8, WP9, WP10 | Planned |
+| **M6: Polish & Validate** | WP11, WP12, WP13-B | Planned |
 
 ---
 
