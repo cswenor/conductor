@@ -30,6 +30,9 @@ import {
   processSingleWrite,
   getWrite,
   markWriteFailed,
+  // Worktree management (WP4)
+  runJanitor,
+  cleanupWorktree,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -201,8 +204,38 @@ async function processAgent(job: Job<AgentJobData>): Promise<void> {
  * Process cleanup jobs (worktrees, expired leases, old jobs)
  */
 async function processCleanup(job: Job<CleanupJobData>): Promise<void> {
-  log.info({ type: job.data.type, targetId: job.data.targetId }, 'Processing cleanup');
-  // TODO: Implement cleanup processing
+  const { type, targetId } = job.data;
+  log.info({ type, targetId }, 'Processing cleanup');
+
+  const db = getDatabase();
+
+  switch (type) {
+    case 'worktree': {
+      // targetId is the run_id for worktree cleanup
+      if (targetId === undefined) {
+        log.error({ type }, 'Worktree cleanup requires targetId (run_id)');
+        throw new Error('Worktree cleanup requires targetId');
+      }
+      const cleaned = cleanupWorktree(db, targetId);
+      if (cleaned) {
+        log.info({ runId: targetId }, 'Worktree cleanup completed');
+      } else {
+        log.info({ runId: targetId }, 'No active worktree found for run');
+      }
+      break;
+    }
+    case 'expired_leases':
+      // TODO: Implement lease cleanup in WP5+
+      log.info({ targetId }, 'Expired leases cleanup not yet implemented');
+      break;
+    case 'old_jobs':
+      // TODO: Implement old job cleanup
+      log.info({ targetId }, 'Old jobs cleanup not yet implemented');
+      break;
+    default:
+      log.warn({ type, targetId }, 'Unknown cleanup type');
+  }
+
   await Promise.resolve();
 }
 
@@ -327,6 +360,19 @@ async function main(): Promise<void> {
 
   const queueManager = getQueueManager();
   log.info('Database and Redis initialized');
+
+  // Run janitor to reconcile DB and filesystem state before processing jobs
+  log.info('Running worktree janitor');
+  const janitorResult = runJanitor(getDatabase());
+  log.info(
+    {
+      orphanedWorktreesMarked: janitorResult.orphanedWorktreesMarked,
+      orphanedDirectoriesRemoved: janitorResult.orphanedDirectoriesRemoved,
+      stalePortsReleased: janitorResult.stalePortsReleased,
+      errors: janitorResult.errors.length,
+    },
+    'Janitor completed'
+  );
 
   // Create workers for each queue
   log.info('Starting queue workers');

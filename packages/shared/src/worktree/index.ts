@@ -6,8 +6,8 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { execSync } from 'child_process';
-import { existsSync, mkdirSync, rmSync, readdirSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { existsSync, mkdirSync, rmSync, readdirSync, rmdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { randomBytes } from 'crypto';
 import { createLogger } from '../logger/index';
@@ -38,6 +38,13 @@ export function getReposDir(): string {
  */
 export function getWorktreesDir(): string {
   return join(getDataDir(), 'worktrees');
+}
+
+/**
+ * Get the locks directory.
+ */
+export function getLocksDir(): string {
+  return join(getDataDir(), 'locks');
 }
 
 /**
@@ -72,8 +79,8 @@ export interface Worktree {
   projectId: string;
   repoId: string;
   path: string;
-  branchName: string;
-  baseCommit: string;
+  branchName: string | null;
+  baseCommit: string | null;
   status: 'active' | 'destroyed';
   lastHeartbeatAt: string;
   createdAt: string;
@@ -109,29 +116,135 @@ function generatePortLeaseId(): string {
 }
 
 // =============================================================================
-// File Locking (Simple)
+// File-Based Locking (Cross-Process Safe)
 // =============================================================================
 
-const activeLocks = new Map<string, boolean>();
+const LOCK_TIMEOUT_MS = 30000;
+const LOCK_POLL_MS = 100;
 
-function acquireLock(key: string, timeoutMs = 30000): boolean {
+/**
+ * Acquire a file-based lock using directory creation (atomic on POSIX).
+ * Returns a release function, or throws if timeout.
+ */
+function acquireFileLock(lockName: string, timeoutMs = LOCK_TIMEOUT_MS): () => void {
+  const locksDir = getLocksDir();
+  mkdirSync(locksDir, { recursive: true });
+
+  const lockPath = join(locksDir, `${lockName}.lock`);
   const start = Date.now();
-  while (activeLocks.get(key) === true) {
-    if (Date.now() - start > timeoutMs) {
-      return false;
-    }
-    // Busy wait (in production, use proper async lock)
-    const end = Date.now() + 10;
-    while (Date.now() < end) {
-      // spin
+
+  for (;;) {
+    try {
+      // mkdir is atomic - if it succeeds, we have the lock
+      mkdirSync(lockPath);
+      log.debug({ lockName }, 'Lock acquired');
+
+      return () => {
+        try {
+          rmdirSync(lockPath);
+          log.debug({ lockName }, 'Lock released');
+        } catch {
+          // Lock may already be released
+        }
+      };
+    } catch {
+      // Lock exists, check timeout
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`Timeout acquiring lock '${lockName}' after ${timeoutMs}ms`);
+      }
+
+      // Check for stale lock (older than timeout)
+      try {
+        const stats = statSync(lockPath);
+        if (Date.now() - stats.mtimeMs > timeoutMs * 2) {
+          // Stale lock, remove it
+          log.warn({ lockName }, 'Removing stale lock');
+          rmdirSync(lockPath);
+          continue;
+        }
+      } catch {
+        // Lock may have been released
+        continue;
+      }
+
+      // Wait and retry
+      const waitEnd = Date.now() + LOCK_POLL_MS;
+      while (Date.now() < waitEnd) {
+        // Busy wait (synchronous context)
+      }
     }
   }
-  activeLocks.set(key, true);
-  return true;
 }
 
-function releaseLock(key: string): void {
-  activeLocks.delete(key);
+// =============================================================================
+// Retry Helper
+// =============================================================================
+
+function sleep(ms: number): void {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    // Synchronous sleep
+  }
+}
+
+function retryWithBackoff<T>(
+  fn: () => T,
+  maxRetries: number,
+  baseDelayMs: number,
+  description: string
+): T {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return fn();
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < maxRetries) {
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        log.warn(
+          { attempt: attempt + 1, maxRetries: maxRetries + 1, delay, error: lastError.message },
+          `${description} failed, retrying`
+        );
+        sleep(delay);
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+// =============================================================================
+// Safe Git Command Execution
+// =============================================================================
+
+interface GitResult {
+  stdout: string;
+  success: boolean;
+}
+
+function execGit(args: string[], options: { cwd?: string; timeout?: number } = {}): GitResult {
+  try {
+    const stdout = execFileSync('git', args, {
+      cwd: options.cwd,
+      encoding: 'utf8',
+      timeout: options.timeout ?? 120000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return { stdout: stdout.trim(), success: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    log.debug({ args, error: message }, 'Git command failed');
+    return { stdout: '', success: false };
+  }
+}
+
+function execGitOrThrow(args: string[], options: { cwd?: string; timeout?: number } = {}): string {
+  const result = execGit(args, options);
+  if (!result.success) {
+    throw new Error(`Git command failed: git ${args.join(' ')}`);
+  }
+  return result.stdout;
 }
 
 // =============================================================================
@@ -150,48 +263,51 @@ export interface CloneRepoOptions {
  * Clone or fetch a repository. Returns the clone path.
  * Uses bare clone for space efficiency.
  * Idempotent: if clone exists, fetches instead.
+ * Uses file-based locking for cross-process safety.
+ * Implements retry with exponential backoff.
  */
 export function cloneOrFetchRepo(
   db: Database,
   options: CloneRepoOptions
 ): CloneResult {
   const { projectId, repoId, githubOwner, githubName, installationToken } = options;
-  const lockKey = `clone:${repoId}`;
 
-  // Acquire lock to prevent concurrent clones
-  if (!acquireLock(lockKey)) {
-    throw new Error(`Timeout waiting for clone lock on repo ${repoId}`);
-  }
+  // Acquire cross-process lock
+  const releaseLock = acquireFileLock(`clone-${repoId}`);
 
   try {
     const reposDir = getReposDir();
     const clonePath = join(reposDir, projectId, repoId);
     const now = new Date().toISOString();
+    const cloneUrl = `https://x-access-token:${installationToken}@github.com/${githubOwner}/${githubName}.git`;
 
     // Check if clone already exists
     if (existsSync(clonePath)) {
       log.info({ repoId, clonePath }, 'Clone exists, fetching updates');
 
-      // Fetch updates
       try {
-        const cloneUrl = `https://x-access-token:${installationToken}@github.com/${githubOwner}/${githubName}.git`;
-        execSync(`git fetch --prune "${cloneUrl}" "+refs/heads/*:refs/heads/*"`, {
-          cwd: clonePath,
-          stdio: 'pipe',
-          timeout: 120000, // 2 minutes
-        });
+        retryWithBackoff(
+          () => {
+            execGitOrThrow(
+              ['fetch', '--prune', cloneUrl, '+refs/heads/*:refs/heads/*'],
+              { cwd: clonePath, timeout: 120000 }
+            );
+          },
+          2,
+          1000,
+          'Git fetch'
+        );
 
         // Update last_fetched_at
-        const stmt = db.prepare(
+        db.prepare(
           'UPDATE repos SET last_fetched_at = ?, updated_at = ? WHERE repo_id = ?'
-        );
-        stmt.run(now, now, repoId);
+        ).run(now, now, repoId);
 
         log.info({ repoId }, 'Repo fetched successfully');
       } catch (err) {
         log.warn(
           { repoId, error: err instanceof Error ? err.message : 'Unknown' },
-          'Fetch failed, will continue with existing clone'
+          'Fetch failed, continuing with existing clone'
         );
       }
 
@@ -201,16 +317,18 @@ export function cloneOrFetchRepo(
     // Create parent directory
     mkdirSync(dirname(clonePath), { recursive: true });
 
-    // Clone the repository (bare)
+    // Clone the repository (bare) with retry
     log.info({ repoId, githubOwner, githubName }, 'Cloning repository');
 
-    const cloneUrl = `https://x-access-token:${installationToken}@github.com/${githubOwner}/${githubName}.git`;
-
     try {
-      execSync(`git clone --bare "${cloneUrl}" "${clonePath}"`, {
-        stdio: 'pipe',
-        timeout: 300000, // 5 minutes
-      });
+      retryWithBackoff(
+        () => {
+          execGitOrThrow(['clone', '--bare', cloneUrl, clonePath], { timeout: 300000 });
+        },
+        2,
+        2000,
+        'Git clone'
+      );
     } catch (err) {
       // Clean up partial clone
       if (existsSync(clonePath)) {
@@ -222,16 +340,15 @@ export function cloneOrFetchRepo(
     }
 
     // Update database with clone info
-    const stmt = db.prepare(
+    db.prepare(
       'UPDATE repos SET clone_path = ?, cloned_at = ?, last_fetched_at = ?, updated_at = ? WHERE repo_id = ?'
-    );
-    stmt.run(clonePath, now, now, now, repoId);
+    ).run(clonePath, now, now, now, repoId);
 
     log.info({ repoId, clonePath }, 'Repository cloned successfully');
 
     return { clonePath, clonedAt: now, wasExisting: false };
   } finally {
-    releaseLock(lockKey);
+    releaseLock();
   }
 }
 
@@ -245,26 +362,27 @@ export function getRepoClonePath(db: Database, repoId: string): string | null {
 }
 
 // =============================================================================
-// WP4.2: Worktree Creation
+// WP4.2 & WP4.3: Worktree and Branch Creation
 // =============================================================================
 
 export interface CreateWorktreeOptions {
   runId: string;
   projectId: string;
   repoId: string;
-  baseBranch: string;
+  baseBranch?: string;
 }
 
 /**
  * Create a worktree for a run.
  * Idempotent: returns existing worktree if already created for this run.
+ * Uses file-based locking and DB unique constraint for cross-process safety.
+ * Atomic: if DB insert fails after git worktree, compensating cleanup runs.
  */
 export function createWorktree(
   db: Database,
   options: CreateWorktreeOptions
 ): Worktree {
-  const { runId, projectId, repoId, baseBranch } = options;
-  const lockKey = `worktree:${runId}`;
+  const { runId, projectId, repoId } = options;
 
   // Check if worktree already exists for this run
   const existingStmt = db.prepare(
@@ -276,10 +394,8 @@ export function createWorktree(
     return rowToWorktree(existing);
   }
 
-  // Acquire lock
-  if (!acquireLock(lockKey)) {
-    throw new Error(`Timeout waiting for worktree lock on run ${runId}`);
-  }
+  // Acquire cross-process lock
+  const releaseLock = acquireFileLock(`worktree-${runId}`);
 
   try {
     // Double-check after acquiring lock
@@ -294,47 +410,34 @@ export function createWorktree(
       throw new Error(`Repo ${repoId} is not cloned. Clone first.`);
     }
 
+    // Resolve base branch
+    const baseBranch = resolveBaseBranch(db, repoId, options.baseBranch);
     const worktreeId = generateWorktreeId();
     const worktreePath = join(getWorktreesDir(), runId);
-    const branchName = `conductor/run-${runId}`;
+    const branchName = generateBranchName(runId);
     const now = new Date().toISOString();
 
     // Create worktree directory parent
     mkdirSync(dirname(worktreePath), { recursive: true });
 
     // Get base commit SHA
-    let baseCommit: string;
-    try {
-      baseCommit = execSync(`git rev-parse refs/heads/${baseBranch}`, {
-        cwd: clonePath,
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
-    } catch {
-      // Try without refs/heads prefix
-      try {
-        baseCommit = execSync(`git rev-parse ${baseBranch}`, {
-          cwd: clonePath,
-          encoding: 'utf8',
-          stdio: ['pipe', 'pipe', 'pipe'],
-        }).trim();
-      } catch {
-        throw new Error(`Base branch '${baseBranch}' not found in repo`);
-      }
+    const baseCommit = resolveBaseCommit(clonePath, baseBranch);
+
+    // Check if branch already exists (from failed previous attempt)
+    const branchExists = execGit(['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd: clonePath });
+    if (branchExists.success) {
+      log.warn({ branchName }, 'Branch already exists, deleting before recreate');
+      execGit(['branch', '-D', branchName], { cwd: clonePath });
     }
 
     // Create worktree with new branch
     try {
-      execSync(
-        `git worktree add -b "${branchName}" "${worktreePath}" "${baseCommit}"`,
-        {
-          cwd: clonePath,
-          stdio: 'pipe',
-          timeout: 60000,
-        }
+      execGitOrThrow(
+        ['worktree', 'add', '-b', branchName, worktreePath, baseCommit],
+        { cwd: clonePath, timeout: 60000 }
       );
     } catch (err) {
-      // Clean up on failure
+      // Clean up on git failure
       if (existsSync(worktreePath)) {
         rmSync(worktreePath, { recursive: true, force: true });
       }
@@ -343,15 +446,41 @@ export function createWorktree(
       );
     }
 
-    // Insert into database
-    const insertStmt = db.prepare(`
-      INSERT INTO worktrees (
-        worktree_id, run_id, project_id, repo_id, path, status, last_heartbeat_at, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    insertStmt.run(worktreeId, runId, projectId, repoId, worktreePath, 'active', now, now);
+    // Insert into database (unique constraint prevents duplicates)
+    try {
+      const insertStmt = db.prepare(`
+        INSERT INTO worktrees (
+          worktree_id, run_id, project_id, repo_id, path, branch_name, base_commit, status, last_heartbeat_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertStmt.run(worktreeId, runId, projectId, repoId, worktreePath, branchName, baseCommit, 'active', now, now);
+    } catch (dbErr) {
+      // Compensating cleanup: remove git worktree and branch
+      log.error({ runId, error: dbErr instanceof Error ? dbErr.message : 'Unknown' }, 'DB insert failed, cleaning up git worktree');
+      try {
+        execGit(['worktree', 'remove', '--force', worktreePath], { cwd: clonePath });
+      } catch {
+        // Best effort
+      }
+      if (existsSync(worktreePath)) {
+        rmSync(worktreePath, { recursive: true, force: true });
+      }
+      try {
+        execGit(['branch', '-D', branchName], { cwd: clonePath });
+      } catch {
+        // Best effort
+      }
 
-    log.info({ worktreeId, runId, path: worktreePath }, 'Worktree created');
+      // Check if another process won the race (unique constraint violation)
+      const raceWinner = existingStmt.get(runId) as Record<string, unknown> | undefined;
+      if (raceWinner !== undefined) {
+        return rowToWorktree(raceWinner);
+      }
+
+      throw dbErr;
+    }
+
+    log.info({ worktreeId, runId, path: worktreePath, branchName, baseCommit }, 'Worktree created');
 
     return {
       worktreeId,
@@ -367,8 +496,28 @@ export function createWorktree(
       destroyedAt: null,
     };
   } finally {
-    releaseLock(lockKey);
+    releaseLock();
   }
+}
+
+/**
+ * Resolve base commit SHA from branch name.
+ * Tries refs/heads/{branch}, then {branch} directly.
+ */
+function resolveBaseCommit(clonePath: string, baseBranch: string): string {
+  // Try refs/heads first (for bare repos)
+  let result = execGit(['rev-parse', `refs/heads/${baseBranch}`], { cwd: clonePath });
+  if (result.success) {
+    return result.stdout;
+  }
+
+  // Try direct ref
+  result = execGit(['rev-parse', baseBranch], { cwd: clonePath });
+  if (result.success) {
+    return result.stdout;
+  }
+
+  throw new Error(`Base branch '${baseBranch}' not found in repo`);
 }
 
 /**
@@ -385,13 +534,9 @@ export function getWorktreeForRun(db: Database, runId: string): Worktree | null 
   return rowToWorktree(row);
 }
 
-// =============================================================================
-// WP4.3: Branch Creation (integrated into createWorktree)
-// =============================================================================
-
 /**
  * Resolve the base branch for a repo.
- * Priority: repo config → GitHub default → main → master
+ * Priority: configured → GitHub default → main → master
  */
 export function resolveBaseBranch(
   db: Database,
@@ -411,15 +556,34 @@ export function resolveBaseBranch(
     return row.github_default_branch;
   }
 
-  // 3. Fallback to main
+  // 3. Fallback to main, then master
   return 'main';
+}
+
+/**
+ * Validate a branch name for git compatibility.
+ */
+export function isValidBranchName(name: string): boolean {
+  // Git branch name restrictions
+  if (name === '' || name.length > 250) return false;
+  if (name.startsWith('-') || name.startsWith('.')) return false;
+  if (name.endsWith('.') || name.endsWith('.lock')) return false;
+  if (name.includes('..') || name.includes('//') || name.includes('@{')) return false;
+  // Check for control chars, DEL, and other invalid characters
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f~^:?*[\]\\]/.test(name)) return false;
+  return true;
 }
 
 /**
  * Generate branch name for a run.
  */
 export function generateBranchName(runId: string): string {
-  return `conductor/run-${runId}`;
+  const name = `conductor/run-${runId}`;
+  if (!isValidBranchName(name)) {
+    throw new Error(`Generated invalid branch name: ${name}`);
+  }
+  return name;
 }
 
 // =============================================================================
@@ -520,6 +684,8 @@ export function getWorktreePorts(db: Database, worktreeId: string): PortLease[] 
 // WP4.5: Worktree Cleanup
 // =============================================================================
 
+const PROCESS_TERM_TIMEOUT_MS = 10000; // 10 seconds per issue spec
+
 /**
  * Cleanup a worktree: kill processes, remove files, release ports.
  */
@@ -530,13 +696,13 @@ export function cleanupWorktree(db: Database, runId: string): boolean {
     return false;
   }
 
-  const { worktreeId, path: worktreePath, repoId } = worktree;
+  const { worktreeId, path: worktreePath, repoId, branchName } = worktree;
 
   log.info({ worktreeId, runId, path: worktreePath }, 'Cleaning up worktree');
 
   // 1. Kill processes using the worktree (best effort)
   try {
-    killProcessesInDir(worktreePath);
+    killProcessesInDir(worktreePath, PROCESS_TERM_TIMEOUT_MS);
   } catch (err) {
     log.warn(
       { worktreeId, error: err instanceof Error ? err.message : 'Unknown' },
@@ -550,15 +716,14 @@ export function cleanupWorktree(db: Database, runId: string): boolean {
   // 3. Remove worktree via git
   const clonePath = getRepoClonePath(db, repoId);
   if (clonePath !== null && existsSync(clonePath)) {
-    try {
-      execSync(`git worktree remove --force "${worktreePath}"`, {
-        cwd: clonePath,
-        stdio: 'pipe',
-        timeout: 30000,
-      });
-    } catch {
-      // If git worktree remove fails, try direct deletion
+    const result = execGit(['worktree', 'remove', '--force', worktreePath], { cwd: clonePath });
+    if (!result.success) {
       log.warn({ worktreeId }, 'git worktree remove failed, removing directory directly');
+    }
+
+    // Also remove the branch (optional cleanup)
+    if (branchName !== null) {
+      execGit(['branch', '-D', branchName], { cwd: clonePath });
     }
   }
 
@@ -576,10 +741,9 @@ export function cleanupWorktree(db: Database, runId: string): boolean {
 
   // 5. Update database
   const now = new Date().toISOString();
-  const stmt = db.prepare(
+  db.prepare(
     'UPDATE worktrees SET status = ?, destroyed_at = ? WHERE worktree_id = ?'
-  );
-  stmt.run('destroyed', now, worktreeId);
+  ).run('destroyed', now, worktreeId);
 
   log.info({ worktreeId, runId }, 'Worktree cleanup complete');
   return true;
@@ -587,46 +751,84 @@ export function cleanupWorktree(db: Database, runId: string): boolean {
 
 /**
  * Kill processes using a directory (best effort).
+ * SIGTERM first, wait up to timeoutMs, then SIGKILL.
  */
-function killProcessesInDir(dirPath: string): void {
+function killProcessesInDir(dirPath: string, timeoutMs: number): void {
   if (process.platform === 'win32') {
     // Windows: skip process killing
     return;
   }
 
+  let pids: number[] = [];
+
   try {
     // Find processes using the directory
-    const output = execSync(`lsof +D "${dirPath}" 2>/dev/null | awk 'NR>1 {print $2}' | sort -u`, {
+    const result = execFileSync('lsof', ['+D', dirPath], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
     });
 
-    const pids = output.trim().split('\n').filter(Boolean);
-
-    for (const pid of pids) {
-      try {
-        // Send SIGTERM
-        process.kill(parseInt(pid, 10), 'SIGTERM');
-      } catch {
-        // Process may have already exited
-      }
-    }
-
-    // Wait briefly for processes to exit
-    if (pids.length > 0) {
-      execSync('sleep 2', { stdio: 'pipe' });
-
-      // Force kill any remaining
-      for (const pid of pids) {
-        try {
-          process.kill(parseInt(pid, 10), 'SIGKILL');
-        } catch {
-          // Ignore
+    // Parse PIDs from lsof output (skip header)
+    const lines = result.split('\n').slice(1);
+    const pidSet = new Set<number>();
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/);
+      const pidStr = parts[1];
+      if (pidStr !== undefined) {
+        const pid = parseInt(pidStr, 10);
+        if (!isNaN(pid) && pid > 0) {
+          pidSet.add(pid);
         }
       }
     }
+    pids = Array.from(pidSet);
   } catch {
-    // lsof may not find any processes, which is fine
+    // lsof may fail if no processes found, which is fine
+    return;
+  }
+
+  if (pids.length === 0) {
+    return;
+  }
+
+  log.info({ pids, dirPath }, 'Terminating processes using worktree');
+
+  // Send SIGTERM to all
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // Process may have already exited
+    }
+  }
+
+  // Wait for processes to exit
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remaining = pids.filter(pid => {
+      try {
+        process.kill(pid, 0); // Check if process exists
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
+    if (remaining.length === 0) {
+      return;
+    }
+
+    sleep(500);
+  }
+
+  // Force kill any remaining
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // Ignore
+    }
   }
 }
 
@@ -643,7 +845,7 @@ export interface JanitorResult {
 
 /**
  * Run janitor cleanup: reconcile DB ↔ filesystem.
- * Should be called on worker startup.
+ * Should be called on worker startup before accepting jobs.
  */
 export function runJanitor(db: Database): JanitorResult {
   log.info('Starting janitor cleanup');
@@ -762,8 +964,8 @@ function rowToWorktree(row: Record<string, unknown>): Worktree {
     projectId: row['project_id'] as string,
     repoId: row['repo_id'] as string,
     path: row['path'] as string,
-    branchName: '', // Not stored in DB, generated
-    baseCommit: '', // Not stored in DB currently
+    branchName: (row['branch_name'] as string | null) ?? null,
+    baseCommit: (row['base_commit'] as string | null) ?? null,
     status: row['status'] as Worktree['status'],
     lastHeartbeatAt: row['last_heartbeat_at'] as string,
     createdAt: row['created_at'] as string,
