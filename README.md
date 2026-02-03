@@ -10,24 +10,30 @@ Conductor orchestrates AI agents to turn GitHub issues into merged PRs. It is no
 
 ---
 
-## Status: Early Implementation
+## Status: WP1 + WP2 Complete
 
-**Design complete. Implementation in progress (WP1: Project Foundation).**
+**Design complete. Implementation in progress (WP3: Projects & Repos UI).**
 
-What's here:
+What's implemented:
 - Complete architectural specifications in `docs/`
-- Data model and protocol definitions
-- Monorepo scaffolding (pnpm + Turbo)
-- Next.js web app with health endpoint
-- Worker process placeholder
+- SQLite database with migrations and WAL mode
+- Redis + BullMQ job queue infrastructure
+- GitHub App integration (webhooks, API client, outbox pattern)
+- Webhook receiver with signature verification
+- Event normalization (GitHub webhooks → internal events)
+- Worker process with webhook and outbox processors
+- Bootstrap module for unified service initialization
+- Configuration validation and environment handling
+- Redaction utilities for sensitive data
+- 74 passing tests, lint clean, typecheck clean
 
-What's not here yet:
-- Database schema
-- GitHub webhook handling
-- Agent orchestration
-- UI beyond placeholder
+What's next (WP3):
+- Projects list and creation UI
+- GitHub connection flow
+- Repository registration
+- Repo profile detection
 
-Follow progress via GitHub issues labeled `wp1` and `wp2`.
+Follow progress via work packages in `docs/MVP_SCOPE.md`.
 
 ---
 

@@ -293,11 +293,33 @@ export async function executeWrite(
         };
       }
 
-      default: {
+      case 'review': {
+        // PR review writes - not yet implemented
         return {
           githubWriteId: write.githubWriteId,
           success: false,
-          error: `Unknown write kind: ${write.kind}`,
+          error: 'Review writes not yet implemented',
+          retryable: false,
+        };
+      }
+
+      case 'project_field_update': {
+        // GitHub Projects field updates - not yet implemented
+        return {
+          githubWriteId: write.githubWriteId,
+          success: false,
+          error: 'Project field update writes not yet implemented',
+          retryable: false,
+        };
+      }
+
+      default: {
+        // Exhaustive check - this should never happen if all GitHubWriteKind values are handled
+        const unknownKind: never = write.kind;
+        return {
+          githubWriteId: write.githubWriteId,
+          success: false,
+          error: `Unknown write kind: ${String(unknownKind)}`,
           retryable: false,
         };
       }

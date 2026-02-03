@@ -9,6 +9,7 @@ import { Worker, Job } from 'bullmq';
 import {
   type JobQueue,
   getQueueManager,
+  getDatabase,
   type WebhookJobData,
   type RunJobData,
   type AgentJobData,
@@ -20,6 +21,15 @@ import {
   validateNumber,
   bootstrap,
   shutdown as bootstrapShutdown,
+  // Webhook processing
+  getWebhookDelivery,
+  updateWebhookStatus,
+  normalizeWebhook,
+  createEvent,
+  // Outbox processing
+  processSingleWrite,
+  getWrite,
+  markWriteFailed,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -77,14 +87,90 @@ function loadConfig(): WorkerConfig {
 
 /**
  * Process webhook jobs
+ *
+ * Pipeline: webhook delivery -> normalize -> persist event -> mark processed
+ * Note: All database operations are synchronous (better-sqlite3)
  */
-async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
+function processWebhook(job: Job<WebhookJobData>): void {
+  const { deliveryId, eventType, action, repositoryNodeId, payloadSummary } = job.data;
+
   log.info(
-    { deliveryId: job.data.deliveryId, eventType: job.data.eventType, action: job.data.action },
+    { deliveryId, eventType, action },
     'Processing webhook'
   );
-  // TODO: Implement webhook processing in WP2
-  await Promise.resolve();
+
+  const db = getDatabase();
+
+  // Get the webhook delivery to verify it exists
+  const delivery = getWebhookDelivery(db, deliveryId);
+  if (delivery === null) {
+    log.error({ deliveryId }, 'Webhook delivery not found');
+    throw new Error(`Webhook delivery ${deliveryId} not found`);
+  }
+
+  // Normalize the webhook into an internal event
+  const normalized = normalizeWebhook(deliveryId, eventType, action, payloadSummary);
+
+  if (normalized === null) {
+    // Event type not supported or action not handled
+    updateWebhookStatus(db, deliveryId, 'ignored', {
+      ignoreReason: `Event type '${eventType}' action '${action ?? 'none'}' not handled`,
+      processedAt: new Date().toISOString(),
+    });
+    log.info({ deliveryId, eventType, action }, 'Webhook ignored (unhandled event type/action)');
+    return;
+  }
+
+  // Find the project for this repository (if any)
+  // For now, we'll use a placeholder project ID since project lookup requires WP3
+  // In the full implementation, we'd look up the repo by node_id and get its project_id
+  let projectId: string | null = null;
+
+  if (repositoryNodeId !== undefined) {
+    const repoStmt = db.prepare('SELECT project_id FROM repos WHERE github_node_id = ?');
+    const repo = repoStmt.get(repositoryNodeId) as { project_id: string } | undefined;
+    projectId = repo?.project_id ?? null;
+  }
+
+  if (projectId === null) {
+    // No project found for this repository - can't create event without project
+    updateWebhookStatus(db, deliveryId, 'ignored', {
+      ignoreReason: `No project found for repository ${repositoryNodeId ?? 'unknown'}`,
+      processedAt: new Date().toISOString(),
+    });
+    log.info({ deliveryId, repositoryNodeId }, 'Webhook ignored (no project for repo)');
+    return;
+  }
+
+  // Create the internal event
+  const event = createEvent(db, {
+    projectId,
+    repoId: undefined, // Would be looked up from repos table
+    type: normalized.eventType,
+    class: normalized.class,
+    payload: normalized.payload,
+    idempotencyKey: normalized.idempotencyKey,
+    source: 'webhook',
+  });
+
+  if (event === null) {
+    // Duplicate event (idempotency)
+    updateWebhookStatus(db, deliveryId, 'processed', {
+      processedAt: new Date().toISOString(),
+    });
+    log.info({ deliveryId }, 'Webhook already processed (duplicate event)');
+    return;
+  }
+
+  // Mark webhook as processed
+  updateWebhookStatus(db, deliveryId, 'processed', {
+    processedAt: new Date().toISOString(),
+  });
+
+  log.info(
+    { deliveryId, eventId: event.eventId, eventType: normalized.eventType },
+    'Webhook processed successfully'
+  );
 }
 
 /**
@@ -119,19 +205,69 @@ async function processCleanup(job: Job<CleanupJobData>): Promise<void> {
 
 /**
  * Process GitHub write jobs (outbox pattern)
+ *
+ * Pipeline: get write -> get installation -> execute write -> update status
  */
 async function processGitHubWrite(job: Job<GitHubWriteJobData>): Promise<void> {
+  const { githubWriteId, runId, kind, targetNodeId, retryCount } = job.data;
+
   log.info(
-    {
-      kind: job.data.kind,
-      runId: job.data.runId,
-      targetNodeId: job.data.targetNodeId,
-      retryCount: job.data.retryCount,
-    },
+    { githubWriteId, runId, kind, targetNodeId, retryCount },
     'Processing GitHub write'
   );
-  // TODO: Implement GitHub write processing in WP2
-  await Promise.resolve();
+
+  const db = getDatabase();
+
+  // Get the write record
+  const write = getWrite(db, githubWriteId);
+  if (write === null) {
+    log.error({ githubWriteId }, 'GitHub write not found');
+    throw new Error(`GitHub write ${githubWriteId} not found`);
+  }
+
+  // Check if already completed or cancelled
+  if (write.status === 'completed' || write.status === 'cancelled') {
+    log.info({ githubWriteId, status: write.status }, 'GitHub write already finished');
+    return;
+  }
+
+  // Get the installation ID from the run's project
+  const installationStmt = db.prepare(`
+    SELECT p.github_installation_id
+    FROM runs r
+    JOIN projects p ON r.project_id = p.project_id
+    WHERE r.run_id = ?
+  `);
+  const installationRow = installationStmt.get(runId) as { github_installation_id: number } | undefined;
+
+  if (installationRow === undefined) {
+    // No installation found - mark as failed
+    markWriteFailed(db, githubWriteId, 'Run or project not found, cannot determine GitHub installation');
+    log.error({ githubWriteId, runId }, 'Cannot find GitHub installation for write');
+    return;
+  }
+
+  const installationId = installationRow.github_installation_id;
+
+  // Process the write using the outbox processor
+  const result = await processSingleWrite(db, githubWriteId, installationId);
+
+  if (result.success) {
+    log.info(
+      { githubWriteId, githubId: result.githubId, githubUrl: result.githubUrl },
+      'GitHub write completed successfully'
+    );
+  } else {
+    log.warn(
+      { githubWriteId, error: result.error, retryable: result.retryable },
+      'GitHub write failed'
+    );
+
+    // If retryable, throw to trigger BullMQ retry
+    if (result.retryable) {
+      throw new Error(result.error ?? 'GitHub write failed (retryable)');
+    }
+  }
 }
 
 /** Active workers for graceful shutdown */

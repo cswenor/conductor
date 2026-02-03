@@ -197,27 +197,11 @@ export function persistWebhookDelivery(
   db: Database,
   delivery: WebhookDelivery
 ): PersistWebhookResult {
-  const existingStmt = db.prepare(
-    'SELECT delivery_id, status FROM webhook_deliveries WHERE delivery_id = ?'
-  );
-  const existing = existingStmt.get(delivery.deliveryId) as
-    | { delivery_id: string; status: string }
-    | undefined;
-
-  if (existing !== undefined) {
-    log.info(
-      { deliveryId: delivery.deliveryId, existingStatus: existing.status },
-      'Duplicate webhook delivery'
-    );
-    return {
-      deliveryId: delivery.deliveryId,
-      isNew: false,
-      status: existing.status as WebhookStatus,
-    };
-  }
-
+  // Use INSERT OR IGNORE to handle race conditions atomically
+  // This prevents unique constraint errors when concurrent requests
+  // try to insert the same delivery_id
   const insertStmt = db.prepare(`
-    INSERT INTO webhook_deliveries (
+    INSERT OR IGNORE INTO webhook_deliveries (
       delivery_id,
       event_type,
       action,
@@ -231,7 +215,7 @@ export function persistWebhookDelivery(
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  insertStmt.run(
+  const result = insertStmt.run(
     delivery.deliveryId,
     delivery.eventType,
     delivery.action ?? null,
@@ -243,6 +227,26 @@ export function persistWebhookDelivery(
     delivery.status,
     delivery.receivedAt
   );
+
+  // If changes === 0, the row already existed (INSERT was ignored)
+  if (result.changes === 0) {
+    // Get the existing status
+    const existingStmt = db.prepare(
+      'SELECT status FROM webhook_deliveries WHERE delivery_id = ?'
+    );
+    const existing = existingStmt.get(delivery.deliveryId) as { status: string } | undefined;
+
+    log.info(
+      { deliveryId: delivery.deliveryId, existingStatus: existing?.status },
+      'Duplicate webhook delivery'
+    );
+
+    return {
+      deliveryId: delivery.deliveryId,
+      isNew: false,
+      status: (existing?.status as WebhookStatus) ?? 'received',
+    };
+  }
 
   log.info(
     {

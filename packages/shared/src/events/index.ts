@@ -390,8 +390,8 @@ export function createEvent(
     INSERT INTO events (
       event_id, project_id, repo_id, task_id, run_id,
       type, class, payload_json, sequence, idempotency_key,
-      created_at, causation_id, correlation_id
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      created_at, causation_id, correlation_id, source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   insertStmt.run(
@@ -407,7 +407,8 @@ export function createEvent(
     input.idempotencyKey,
     createdAt,
     input.causationId ?? null,
-    input.correlationId ?? null
+    input.correlationId ?? null,
+    input.source
   );
 
   log.info(
@@ -518,6 +519,6 @@ function rowToEvent(row: Record<string, unknown>): EventRecord {
     processedAt: row['processed_at'] as string | undefined,
     causationId: row['causation_id'] as string | undefined,
     correlationId: row['correlation_id'] as string | undefined,
-    source: 'webhook', // Default, could be stored in DB
+    source: (row['source'] as EventSource) ?? 'webhook',
   };
 }
