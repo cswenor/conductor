@@ -40,7 +40,7 @@ export function middleware(request: NextRequest) {
   }
 
   // No session - redirect to login
-  if (!sessionToken) {
+  if (sessionToken === undefined) {
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('redirect', pathname);
     return NextResponse.redirect(loginUrl);

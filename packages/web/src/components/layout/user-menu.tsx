@@ -77,7 +77,8 @@ export function UserMenu() {
     );
   }
 
-  const initials = (user.githubName || user.githubLogin)
+  const displayName = user.githubName !== null && user.githubName !== '' ? user.githubName : user.githubLogin;
+  const initials = displayName
     .split(' ')
     .map(n => n[0])
     .join('')
@@ -94,7 +95,7 @@ export function UserMenu() {
           </Avatar>
           <div className="flex-1 truncate">
             <div className="text-sm font-medium truncate">
-              {user.githubName || user.githubLogin}
+              {displayName}
             </div>
             <div className="text-xs text-muted-foreground truncate">
               @{user.githubLogin}
@@ -105,7 +106,7 @@ export function UserMenu() {
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>
           <div className="flex flex-col space-y-1">
-            <p className="text-sm font-medium">{user.githubName || user.githubLogin}</p>
+            <p className="text-sm font-medium">{displayName}</p>
             <p className="text-xs text-muted-foreground">@{user.githubLogin}</p>
           </div>
         </DropdownMenuLabel>
