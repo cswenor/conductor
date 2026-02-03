@@ -85,7 +85,20 @@ v0.1 is complete when all of these work:
 | UI Components | shadcn/ui | Tailwind, Radix primitives |
 | Authentication | GitHub OAuth | Session cookies, encrypted tokens |
 | GitHub | Octokit | GitHub App auth for API, OAuth for users |
-| Agents | Claude API | Anthropic SDK |
+| AI Providers | Anthropic, OpenAI, Google, Mistral | Per-user API keys, encrypted at rest |
+
+### Worker Execution Modes
+
+Workers execute different step types with different credential requirements:
+
+| Mode | Steps | Credentials | Source |
+|------|-------|-------------|--------|
+| `ai_agent` | planner, reviewer, implementer | AI provider key | User's `user_api_keys` table |
+| `script` | test, lint, build | None | Runs in container |
+| `tool` | git ops, file transforms | None | Direct execution |
+| `github_api` | create PR, post comment | Installation token | GitHub App |
+
+**Key principle:** Credential validation happens at step execution, not run creation. Script-only runs work without any AI keys configured.
 
 ---
 
@@ -118,6 +131,8 @@ Each work package maps to a set of issues. Dependencies are explicit.
 - actor_id on all OperatorActions (authenticated user)
 - redact() applied at tool logging, GitHub mirroring, webhook persistence
 - OAuth tokens encrypted at rest
+- Per-user AI provider keys (encrypted at rest, resolved at step execution)
+- Identity/authorization separate from credential resolution
 
 **Exit criteria:** `pnpm dev` starts all three processes; database initializes; job enqueue/dequeue works; redaction utility exists.
 
@@ -218,21 +233,28 @@ Each work package maps to a set of issues. Dependencies are explicit.
 
 ### WP6: Agent Runtime
 
-**Goal:** Invoke Claude agents with context; capture output.
+**Goal:** Invoke AI agents with context; resolve credentials per step; capture output.
 
 **Depends on:** WP1, WP4
 
 | Task | Description | Output |
 |------|-------------|--------|
-| WP6.1 | Agent invocation framework | Call Claude API, handle response |
-| WP6.2 | Context assembly | Issue content, relevant files, plan |
-| WP6.3 | Planner agent | Generate plan from issue |
-| WP6.4 | Reviewer agent | Critique plan or code |
-| WP6.5 | Implementer agent | Write code following plan |
-| WP6.6 | Agent output capture | Store artifacts (plan, review, code) |
-| WP6.7 | Agent timeout handling | Kill after timeout, surface error |
+| WP6.1 | Step credential requirements | Map each step to execution mode + required credentials |
+| WP6.2 | Credential resolution | Resolve AI keys, GitHub tokens at step execution time |
+| WP6.3 | Agent invocation framework | Call AI provider API, handle response |
+| WP6.4 | Context assembly | Issue content, relevant files, plan |
+| WP6.5 | Planner agent | Generate plan from issue |
+| WP6.6 | Reviewer agent | Critique plan or code |
+| WP6.7 | Implementer agent | Write code following plan |
+| WP6.8 | Agent output capture | Store artifacts (plan, review, code) |
+| WP6.9 | Agent timeout handling | Kill after timeout, surface error |
 
-**Exit criteria:** Planner generates plan; Implementer writes code; outputs stored.
+**Credential resolution pattern:**
+- `mode: 'none'` — No credentials needed (script, tool steps)
+- `mode: 'ai_provider'` — Lookup user's API key for configured provider
+- `mode: 'github_installation'` — Use project's installation token
+
+**Exit criteria:** Planner generates plan; Implementer writes code; credentials resolved per step; outputs stored.
 
 ---
 
@@ -585,3 +607,4 @@ WP{N}.{M}: {Task name}
 - [DATA_MODEL.md](DATA_MODEL.md) — Database schema
 - [PROTOCOL.md](PROTOCOL.md) — State machine and events
 - [ROUTING_AND_GATES.md](ROUTING_AND_GATES.md) — Gate definitions
+- [WORKER_CREDENTIALS.md](WORKER_CREDENTIALS.md) — Execution modes and credential resolution

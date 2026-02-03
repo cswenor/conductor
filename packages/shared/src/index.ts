@@ -54,3 +54,6 @@ export * from './auth/index';
 
 // Re-export crypto module
 export * from './crypto/index';
+
+// Re-export API keys module
+export * from './api-keys/index';
