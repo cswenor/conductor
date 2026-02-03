@@ -57,6 +57,7 @@ export async function ensureBootstrap(): Promise<void> {
   } catch (err) {
     // Clear promise so we can retry
     bootstrapPromise = null;
+    console.error('Bootstrap error full stack:', err);
     throw err;
   }
 }

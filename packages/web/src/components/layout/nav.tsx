@@ -8,9 +8,9 @@ import {
   FolderKanban,
   Play,
   CheckCircle,
-  Settings,
   Activity,
 } from 'lucide-react';
+import { UserMenu } from './user-menu';
 
 const navigation = [
   { name: 'Projects', href: '/projects' as Route, icon: FolderKanban },
@@ -47,23 +47,20 @@ export function Nav() {
 
 export function NavHeader() {
   return (
-    <div className="flex items-center gap-2 px-3 py-4">
+    <Link
+      href={'/' as Route}
+      className="flex items-center gap-2 px-3 py-4 hover:opacity-80 transition-opacity"
+    >
       <Activity className="h-6 w-6 text-primary" />
-      <span className="text-lg font-semibold">Conductor</span>
-    </div>
+      <span className="text-lg font-semibold">Conductor Core</span>
+    </Link>
   );
 }
 
 export function NavFooter() {
   return (
     <div className="mt-auto border-t pt-4">
-      <Link
-        href={'/settings' as Route}
-        className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-      >
-        <Settings className="h-4 w-4" />
-        Settings
-      </Link>
+      <UserMenu />
     </div>
   );
 }

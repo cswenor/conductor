@@ -4,7 +4,9 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Github, Loader2, AlertCircle } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Loading } from '@/components/ui/loading';
+import { Github, AlertCircle, Loader2 } from 'lucide-react';
 
 const ERROR_MESSAGES: Record<string, string> = {
   oauth_denied: 'You denied the authorization request.',
@@ -65,7 +67,7 @@ function LoginContent() {
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <Loading size="lg" />
       </div>
     );
   }
@@ -74,17 +76,17 @@ function LoginContent() {
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <CardTitle className="text-2xl">Welcome to Conductor</CardTitle>
+          <CardTitle className="text-2xl">Welcome to Conductor Core</CardTitle>
           <CardDescription>
             Sign in with your GitHub account to continue
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {error !== null && (
-            <div className="flex items-center gap-2 p-3 rounded-lg bg-destructive/10 text-destructive text-sm">
-              <AlertCircle className="h-4 w-4 flex-shrink-0" />
-              <span>{error}</span>
-            </div>
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           )}
 
           <Button
@@ -107,7 +109,7 @@ function LoginContent() {
           </Button>
 
           <p className="text-xs text-center text-muted-foreground">
-            By signing in, you agree to allow Conductor to access your GitHub profile information.
+            By signing in, you agree to allow Conductor Core to access your GitHub profile information.
           </p>
         </CardContent>
       </Card>
@@ -118,7 +120,7 @@ function LoginContent() {
 function LoginFallback() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
-      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <Loading size="lg" />
     </div>
   );
 }

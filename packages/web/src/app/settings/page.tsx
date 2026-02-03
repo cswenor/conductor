@@ -7,7 +7,7 @@ export default function SettingsPage() {
     <div className="flex flex-col h-full">
       <PageHeader
         title="Settings"
-        description="Configure your Conductor instance"
+        description="Configure your Conductor Core instance"
       />
       <div className="flex-1 p-6">
         <div className="max-w-2xl space-y-6">

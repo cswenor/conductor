@@ -1,5 +1,5 @@
 {
-  "name": "Conductor",
+  "name": "Conductor Core",
   "url": "https://github.com/your-org/conductor",
   "hook_attributes": {
     "url": "https://your-conductor-host.com/api/webhooks/github",

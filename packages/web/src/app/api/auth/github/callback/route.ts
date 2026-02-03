@@ -110,7 +110,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       headers: {
         'Authorization': `Bearer ${tokenData.access_token}`,
         'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'Conductor',
+        'User-Agent': 'Conductor Core',
       },
     });
 

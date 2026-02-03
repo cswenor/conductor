@@ -30,6 +30,12 @@ function isDevelopment(): boolean {
   return process.env['NODE_ENV'] !== 'production';
 }
 
+/** Check if we're in a Next.js environment where worker threads don't work */
+function isNextJs(): boolean {
+  return typeof process.env['NEXT_RUNTIME'] !== 'undefined' ||
+    typeof (globalThis as Record<string, unknown>)['__NEXT_DATA__'] !== 'undefined';
+}
+
 /** Get the log level from environment or default */
 function getLogLevel(): LogLevel {
   const envLevel = process.env['LOG_LEVEL'];
@@ -52,7 +58,9 @@ function getLogLevel(): LogLevel {
 export function createLogger(options: LoggerOptions): pino.Logger {
   const level = options.level ?? getLogLevel();
 
-  const transport = isDevelopment()
+  // pino-pretty uses worker threads which don't work in Next.js
+  // Only use pino-pretty in non-Next.js development environments
+  const transport = isDevelopment() && !isNextJs()
     ? {
         target: 'pino-pretty',
         options: {

@@ -21,3 +21,10 @@ This runs `typecheck`, `lint`, and `test` in sequence.
 - **Outbox pattern** - Persist writes before executing (crash-safe)
 - **Webhook-first** - Persist webhooks before processing
 - **Event normalization** - Convert GitHub webhooks to internal events
+
+## UI Components
+
+- **Always use shadcn/ui** - Never create custom components if shadcn has one available
+- Check existing components in `packages/web/src/components/ui/` before creating new ones
+- Add new shadcn components with: `pnpm dlx shadcn@latest add <component>`
+- shadcn docs: https://ui.shadcn.com/docs/components

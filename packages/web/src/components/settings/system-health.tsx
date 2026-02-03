@@ -126,7 +126,7 @@ export function SystemHealth() {
         </button>
       </div>
       <p className="text-sm text-muted-foreground">
-        Monitor the health of Conductor services.
+        Monitor the health of Conductor Core services.
         {health.lastChecked !== null && (
           <span className="ml-2 text-xs">
             Last checked: {health.lastChecked.toLocaleTimeString()}
