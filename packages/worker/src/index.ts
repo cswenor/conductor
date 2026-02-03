@@ -92,7 +92,7 @@ function loadConfig(): WorkerConfig {
  * Note: All database operations are synchronous (better-sqlite3), but BullMQ
  * requires processors to return Promise<void>
  */
-function processWebhook(job: Job<WebhookJobData>): Promise<void> {
+async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
   const { deliveryId, eventType, action, repositoryNodeId, payloadSummary } = job.data;
 
   log.info(

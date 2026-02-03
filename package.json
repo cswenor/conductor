@@ -11,6 +11,7 @@
     "build": "turbo build",
     "lint": "turbo lint",
     "lint:fix": "turbo lint:fix",
+    "validate": "pnpm typecheck && pnpm lint && pnpm test",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "turbo typecheck",
