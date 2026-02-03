@@ -14,6 +14,7 @@ import type {
   GitHubWriteStatus,
   GitHubWriteTargetType,
 } from '../types/index';
+import type { QueueManager } from '../queue/index';
 
 const log = createLogger({ name: 'conductor:outbox' });
 
@@ -187,10 +188,13 @@ export function computeWritePayloadHash(payload: GitHubWritePayload): string {
  *
  * Persists the write to the outbox. If an identical write exists
  * (same idempotency key), returns the existing record.
+ *
+ * If a queue manager is provided, also enqueues a job for processing.
  */
 export function enqueueWrite(
   db: Database,
-  input: EnqueueWriteInput
+  input: EnqueueWriteInput,
+  queueManager?: QueueManager
 ): EnqueueWriteResult {
   const payloadHash = computeWritePayloadHash(input.payload);
   const idempotencyKey = input.idempotencyKey ?? generateIdempotencyKey(
@@ -264,6 +268,126 @@ export function enqueueWrite(
     },
     'Write operation enqueued'
   );
+
+  // Enqueue job for processing if queue manager is provided
+  if (queueManager !== undefined) {
+    void queueManager.addJob('github_writes', githubWriteId, {
+      githubWriteId,
+      runId: input.runId,
+      kind: input.kind,
+      targetNodeId: input.targetNodeId,
+      retryCount: 0,
+    }).then(() => {
+      log.debug({ githubWriteId }, 'GitHub write job enqueued');
+    }).catch((err: unknown) => {
+      log.error(
+        { githubWriteId, error: err instanceof Error ? err.message : 'Unknown error' },
+        'Failed to enqueue GitHub write job'
+      );
+    });
+  }
+
+  return {
+    githubWriteId,
+    isNew: true,
+    status: 'queued',
+  };
+}
+
+/**
+ * Enqueue a write operation (async version)
+ *
+ * Like enqueueWrite, but ensures the job is queued before returning.
+ * Use this when you need to guarantee the job is in the queue.
+ */
+export async function enqueueWriteAsync(
+  db: Database,
+  input: EnqueueWriteInput,
+  queueManager: QueueManager
+): Promise<EnqueueWriteResult> {
+  const payloadHash = computeWritePayloadHash(input.payload);
+  const idempotencyKey = input.idempotencyKey ?? generateIdempotencyKey(
+    input.runId,
+    input.kind,
+    input.targetNodeId,
+    payloadHash
+  );
+
+  // Check for existing write with same idempotency key
+  const existingStmt = db.prepare(
+    'SELECT github_write_id, status FROM github_writes WHERE idempotency_key = ?'
+  );
+  const existing = existingStmt.get(idempotencyKey) as
+    | { github_write_id: string; status: string }
+    | undefined;
+
+  if (existing !== undefined) {
+    log.debug(
+      { idempotencyKey, existingId: existing.github_write_id, status: existing.status },
+      'Duplicate write operation, returning existing'
+    );
+    return {
+      githubWriteId: existing.github_write_id,
+      isNew: false,
+      status: existing.status as GitHubWriteStatus,
+    };
+  }
+
+  const githubWriteId = generateWriteId();
+  const createdAt = new Date().toISOString();
+
+  const insertStmt = db.prepare(`
+    INSERT INTO github_writes (
+      github_write_id,
+      run_id,
+      kind,
+      target_node_id,
+      target_type,
+      idempotency_key,
+      payload_hash,
+      payload_hash_scheme,
+      payload_json,
+      status,
+      created_at,
+      retry_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  insertStmt.run(
+    githubWriteId,
+    input.runId,
+    input.kind,
+    input.targetNodeId,
+    input.targetType,
+    idempotencyKey,
+    payloadHash,
+    'sha256:cjson:v1',
+    JSON.stringify(input.payload),
+    'queued',
+    createdAt,
+    0
+  );
+
+  log.info(
+    {
+      githubWriteId,
+      runId: input.runId,
+      kind: input.kind,
+      targetType: input.targetType,
+    },
+    'Write operation enqueued'
+  );
+
+  // Enqueue job for processing and wait for it
+  await queueManager.addJob('github_writes', githubWriteId, {
+    githubWriteId,
+    runId: input.runId,
+    kind: input.kind,
+    targetNodeId: input.targetNodeId,
+    retryCount: 0,
+  });
+
+  log.debug({ githubWriteId }, 'GitHub write job enqueued');
 
   return {
     githubWriteId,
