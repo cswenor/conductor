@@ -72,6 +72,7 @@ export async function bootstrap(config: BootstrapConfig): Promise<BootstrapResul
   log.info({ databasePath: config.databasePath }, 'Starting bootstrap');
 
   // Initialize encryption if DATABASE_ENCRYPTION_KEY is set
+  // REQUIRED in production to protect OAuth tokens at rest
   const encryptionKey = process.env['DATABASE_ENCRYPTION_KEY'];
   if (encryptionKey !== undefined && encryptionKey !== '') {
     try {
@@ -85,9 +86,9 @@ export async function bootstrap(config: BootstrapConfig): Promise<BootstrapResul
       throw err;
     }
   } else if (process.env['NODE_ENV'] === 'production') {
-    log.warn(
-      'DATABASE_ENCRYPTION_KEY not set. OAuth tokens will be stored in plaintext. ' +
-      'Set DATABASE_ENCRYPTION_KEY for production deployments.'
+    throw new Error(
+      'DATABASE_ENCRYPTION_KEY is required in production. ' +
+      'Generate with: openssl rand -hex 32'
     );
   } else {
     log.debug('Database encryption not configured (development mode)');

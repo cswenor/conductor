@@ -30,9 +30,8 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
     await ensureBootstrap();
     const db = await getDb();
 
-    // Filter by user_id if authenticated (in production)
-    const options = request.user !== undefined ? { userId: request.user.userId } : undefined;
-    const projects = listProjects(db, options);
+    // Filter by user_id (user is always defined with withAuth)
+    const projects = listProjects(db, { userId: request.user.userId });
 
     return NextResponse.json({ projects });
   } catch (err) {
@@ -72,8 +71,10 @@ export const POST = withAuth(async (request: AuthenticatedRequest): Promise<Next
     }
 
     // If we have a pending installation, use its data
-    // Otherwise, we need the GitHub org details from the request
-    const pendingInstall = getPendingInstallation(db, body.githubInstallationId);
+    // Only allow using pending installations that belong to this user
+    const pendingInstall = getPendingInstallation(db, body.githubInstallationId, {
+      userId: request.user.userId,
+    });
 
     if (
       body.githubOrgId === undefined ||
@@ -97,7 +98,7 @@ export const POST = withAuth(async (request: AuthenticatedRequest): Promise<Next
 
     const project = createProject(db, {
       name: body.name,
-      userId: request.user?.userId,
+      userId: request.user.userId,
       githubOrgId: body.githubOrgId,
       githubOrgNodeId: body.githubOrgNodeId,
       githubOrgName: body.githubOrgName,

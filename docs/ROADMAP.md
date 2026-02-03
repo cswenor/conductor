@@ -187,6 +187,8 @@ v0.3 splits into two sub-themes that can ship independently:
 
 **Implementation path:** Add `users` and `project_members` tables; wrap all actions in auth middleware.
 
+**Prerequisite from v0.1/WP13-A:** Keep owner-only authorization checks centralized behind one policy layer so project membership/roles can be added without changing every API route.
+
 ---
 
 ## v0.4: Autonomy

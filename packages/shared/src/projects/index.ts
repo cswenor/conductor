@@ -295,17 +295,30 @@ export interface PendingInstallation {
   createdAt: string;
 }
 
+export interface GetPendingInstallationOptions {
+  userId?: string;
+}
+
 /**
- * Get a pending installation
+ * Get a pending installation.
+ * When userId is provided, only returns the installation if it belongs to that user.
  */
 export function getPendingInstallation(
   db: Database,
-  installationId: number
+  installationId: number,
+  options?: GetPendingInstallationOptions
 ): PendingInstallation | null {
+  const whereClause = options?.userId !== undefined
+    ? 'WHERE installation_id = ? AND user_id = ?'
+    : 'WHERE installation_id = ?';
+  const params = options?.userId !== undefined
+    ? [installationId, options.userId]
+    : [installationId];
+
   const stmt = db.prepare(
-    'SELECT * FROM pending_github_installations WHERE installation_id = ?'
+    `SELECT * FROM pending_github_installations ${whereClause}`
   );
-  const row = stmt.get(installationId) as Record<string, unknown> | undefined;
+  const row = stmt.get(...params) as Record<string, unknown> | undefined;
 
   if (row === undefined) {
     return null;
@@ -315,6 +328,7 @@ export function getPendingInstallation(
     installationId: row['installation_id'] as number,
     setupAction: row['setup_action'] as string,
     state: row['state'] as string | undefined,
+    userId: row['user_id'] as string | undefined,
     createdAt: row['created_at'] as string,
   };
 }

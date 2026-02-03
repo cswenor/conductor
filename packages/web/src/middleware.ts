@@ -34,15 +34,9 @@ export function middleware(request: NextRequest) {
   // Check for session cookie
   const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
-  // No session - redirect to login (or dev auth in development)
+  // No session - redirect to login
+  // In development, users can manually visit /api/auth/dev to get a session
   if (sessionToken === undefined) {
-    if (process.env.NODE_ENV === 'development') {
-      // In development, auto-redirect to dev auth endpoint
-      const devAuthUrl = new URL('/api/auth/dev', request.url);
-      devAuthUrl.searchParams.set('redirect', pathname);
-      return NextResponse.redirect(devAuthUrl);
-    }
-
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('redirect', pathname);
     return NextResponse.redirect(loginUrl);

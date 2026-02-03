@@ -357,8 +357,11 @@ Each work package maps to a set of issues. Dependencies are explicit.
 | WP13-A.3 | Bind entities to users | user_id on projects/installations, scoped queries |
 | WP13-A.4 | Secure OAuth state | Fix open redirect, signed state tokens |
 | WP13-A.5 | Minimal login UI | Login page, user indicator, sign out |
+| WP13-A.6 | Team-ready authorization boundary | Centralize access checks so owner-only can extend to project_members roles later |
 
 **Exit criteria (WP13-A):** Users must log in; projects scoped to user; API routes protected.
+
+**Future-proofing requirement:** v0.1 remains owner-only, but all authorization checks must route through one policy layer so teams/roles can be added without rewriting route handlers.
 
 #### WP13-B: Webhook Relay (Later - Self-Hosted Support)
 
@@ -444,7 +447,7 @@ These are **not bugs**—they are intentional scope locks. See [ROADMAP.md](ROAD
 
 | Feature | Why Deferred |
 |---------|--------------|
-| Multi-operator teams | WP13 adds single-user auth; team features deferred |
+| Multi-operator teams | Deferred to roadmap; WP13-A must keep a team-ready auth boundary (project_members-ready) |
 | Policy-gated auto-merge | Human merge only |
 | Cross-repo runs | Single repo per run |
 | Agent memory/learning | Fresh context is feature |

@@ -4,13 +4,14 @@
  * Redirects users to GitHub to install the Conductor GitHub App.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 
 // Prevent static prerendering since this depends on runtime config
 export const dynamic = 'force-dynamic';
 import { getConfig } from '@/lib/config';
 import { createLogger } from '@conductor/shared';
 import { createSignedState, isValidRedirect } from '@/lib/auth/oauth-state';
+import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:github-install' });
 
@@ -18,11 +19,15 @@ const log = createLogger({ name: 'conductor:github-install' });
  * GET /api/github/install
  *
  * Redirects to GitHub App installation page.
+ * Protected: requires authentication (to bind installation to user).
  * Optional query params:
  * - target_id: GitHub org/user ID to pre-select
- * - state: Optional state to pass through the flow
+ * - redirect: URL to redirect to after installation
  */
-export function GET(request: NextRequest): NextResponse {
+export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextResponse> => {
+  // withAuth requires async handler
+  await Promise.resolve();
+
   const config = getConfig();
 
   if (config.githubAppId === '') {
@@ -48,9 +53,10 @@ export function GET(request: NextRequest): NextResponse {
     params.set('target_id', targetId);
   }
 
-  // Create signed state token if redirect is valid
+  // Create signed state token with userId if redirect is valid
+  // This binds the installation to the authenticated user
   if (isValidRedirect(redirectTo)) {
-    const signedState = createSignedState(redirectTo);
+    const signedState = createSignedState(redirectTo, request.user.userId);
     params.set('state', signedState);
   }
 
@@ -58,7 +64,7 @@ export function GET(request: NextRequest): NextResponse {
     installUrl += `?${params.toString()}`;
   }
 
-  log.info({ appSlug, targetId, redirectTo }, 'Redirecting to GitHub App installation');
+  log.info({ appSlug, targetId, redirectTo, userId: request.user.userId }, 'Redirecting to GitHub App installation');
 
   return NextResponse.redirect(installUrl);
-}
+});
