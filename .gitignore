@@ -24,6 +24,12 @@ build
 *.swo
 .DS_Store
 
+# AI Agent configs (local)
+.agents
+.claude
+.codex
+.github/skills
+
 # Logs
 *.log
 npm-debug.log*
