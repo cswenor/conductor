@@ -87,12 +87,70 @@ export const migration010: Migration = {
     `);
 
     // =========================================================================
-    // 3. Handle projects.user_id - we can't make it NOT NULL easily without
-    //    recreating the table. For now, ensure new projects require user_id
-    //    via application code. The unique installation constraint prevents
-    //    the main attack vector.
+    // 3. Recreate projects table with user_id NOT NULL
     // =========================================================================
-    // Note: Making user_id NOT NULL would require table recreation which is
-    // risky for production data. The application layer enforces this requirement.
+    // SQLite requires table recreation to add NOT NULL constraint.
+    // Must disable FK enforcement to allow dropping parent table.
+
+    // First, delete any orphaned projects without user_id
+    db.exec(`DELETE FROM projects WHERE user_id IS NULL`);
+
+    // Drop indexes (will recreate after)
+    db.exec(`DROP INDEX IF EXISTS idx_projects_installation_unique`);
+    db.exec(`DROP INDEX IF EXISTS idx_projects_user`);
+
+    // Create temp table with new schema (user_id NOT NULL)
+    db.exec(`
+      CREATE TABLE projects_new (
+        project_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+        github_org_id INTEGER NOT NULL,
+        github_org_node_id TEXT NOT NULL,
+        github_org_name TEXT NOT NULL,
+        github_installation_id INTEGER NOT NULL,
+        github_projects_v2_id TEXT,
+        default_profile_id TEXT NOT NULL,
+        default_base_branch TEXT NOT NULL,
+        enforce_projects INTEGER NOT NULL DEFAULT 0,
+        port_range_start INTEGER NOT NULL,
+        port_range_end INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
+
+    // Copy data to new table
+    db.exec(`
+      INSERT INTO projects_new (
+        project_id, name, user_id, github_org_id, github_org_node_id,
+        github_org_name, github_installation_id, github_projects_v2_id,
+        default_profile_id, default_base_branch, enforce_projects,
+        port_range_start, port_range_end, created_at, updated_at
+      )
+      SELECT
+        project_id, name, user_id, github_org_id, github_org_node_id,
+        github_org_name, github_installation_id, github_projects_v2_id,
+        default_profile_id, default_base_branch, enforce_projects,
+        port_range_start, port_range_end, created_at, updated_at
+      FROM projects
+    `);
+
+    // Disable FK enforcement to drop parent table with child references
+    db.pragma('foreign_keys = OFF');
+
+    // Drop old table and rename new one
+    db.exec(`DROP TABLE projects`);
+    db.exec(`ALTER TABLE projects_new RENAME TO projects`);
+
+    // Re-enable FK enforcement
+    db.pragma('foreign_keys = ON');
+
+    // Recreate indexes
+    db.exec(`
+      CREATE UNIQUE INDEX idx_projects_installation_unique
+        ON projects(github_installation_id)
+    `);
+    db.exec(`CREATE INDEX idx_projects_user ON projects(user_id)`);
   },
 };

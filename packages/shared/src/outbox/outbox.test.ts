@@ -25,15 +25,21 @@ function cleanupTestDb() {
 }
 
 function setupTestData(db: ReturnType<typeof initDatabase>) {
+  // Create user (required for project FK)
+  db.prepare(`
+    INSERT INTO users (user_id, github_id, github_node_id, github_login, github_name, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run('user_test', 123, 'U_test123', 'testuser', 'Test User', new Date().toISOString(), new Date().toISOString());
+
   // Create project
   db.prepare(`
     INSERT INTO projects (
-      project_id, name, github_org_id, github_org_node_id, github_org_name,
+      project_id, name, user_id, github_org_id, github_org_node_id, github_org_name,
       github_installation_id, default_profile_id, default_base_branch,
       port_range_start, port_range_end, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    'proj_test', 'Test Project', 1, 'O_123', 'test-org',
+    'proj_test', 'Test Project', 'user_test', 1, 'O_123', 'test-org',
     12345, 'default', 'main', 3000, 4000,
     new Date().toISOString(), new Date().toISOString()
   );
