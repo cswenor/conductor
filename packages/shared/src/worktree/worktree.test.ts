@@ -183,6 +183,7 @@ function createLocalBareRepo(testDir: string, branchName = 'main'): BareRepoResu
   execFileSync('git', ['checkout', '-b', branchName], { cwd: workDir, encoding: 'utf8' });
   execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: workDir, encoding: 'utf8' });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: workDir, encoding: 'utf8' });
+  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: workDir, encoding: 'utf8' });
 
   writeFileSync(join(workDir, 'README.md'), '# Test\n');
   execFileSync('git', ['add', '.'], { cwd: workDir, encoding: 'utf8' });

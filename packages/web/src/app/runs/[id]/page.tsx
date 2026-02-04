@@ -1,12 +1,21 @@
 'use client';
 
 import { useState, useEffect, useCallback, use } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { PageHeader } from '@/components/layout';
 import { Badge, Button } from '@/components/ui';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Table,
   TableBody,
@@ -96,18 +105,24 @@ const TERMINAL_PHASES = new Set(['completed', 'cancelled']);
 
 export default function RunDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: runId } = use(params);
+  const router = useRouter();
   const [run, setRun] = useState<RunDetail | null>(null);
   const [task, setTask] = useState<TaskInfo | null>(null);
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [showCancelDialog, setShowCancelDialog] = useState(false);
 
   const fetchRunDetail = useCallback(async () => {
     try {
       const response = await fetch(`/api/runs/${runId}`);
       if (!response.ok) {
-        throw new Error(response.status === 404 ? 'Run not found' : 'Failed to fetch run');
+        if (response.status === 404) {
+          router.push('/runs');
+          return;
+        }
+        throw new Error('Failed to fetch run');
       }
       const data = await response.json() as {
         run: RunDetail;
@@ -122,7 +137,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     } finally {
       setLoading(false);
     }
-  }, [runId]);
+  }, [runId, router]);
 
   useEffect(() => {
     void fetchRunDetail();
@@ -131,6 +146,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   async function handleCancel() {
     if (run === null || cancelling) return;
     setCancelling(true);
+    setShowCancelDialog(false);
     try {
       const response = await fetch(`/api/runs/${runId}/actions`, {
         method: 'POST',
@@ -165,8 +181,12 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     return (
       <div className="flex flex-col h-full">
         <PageHeader title="Run Detail" description="" />
-        <div className="flex-1 p-6 flex items-center justify-center">
+        <div className="flex-1 p-6 flex flex-col items-center justify-center gap-4">
           <p className="text-destructive">{error ?? 'Run not found'}</p>
+          <Button variant="outline" onClick={() => router.push('/runs')}>
+            <ArrowLeft className="h-4 w-4 mr-2" />
+            Back to Runs
+          </Button>
         </div>
       </div>
     );
@@ -198,7 +218,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
           {!TERMINAL_PHASES.has(run.phase) && (
             <Button
               variant="destructive"
-              onClick={() => void handleCancel()}
+              onClick={() => setShowCancelDialog(true)}
               disabled={cancelling}
             >
               <XCircle className="h-4 w-4 mr-2" />
@@ -207,6 +227,26 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
           )}
         </div>
       </div>
+
+      <Dialog open={showCancelDialog} onOpenChange={setShowCancelDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel Run</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to cancel this run? This action cannot be undone.
+              The run will be moved to the cancelled state and any active worktree will be cleaned up.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowCancelDialog(false)}>
+              Keep Running
+            </Button>
+            <Button variant="destructive" onClick={() => void handleCancel()} disabled={cancelling}>
+              {cancelling ? 'Cancelling...' : 'Cancel Run'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="flex-1 p-6 space-y-6">
         {/* Summary cards */}
         <div className="grid gap-4 md:grid-cols-3">

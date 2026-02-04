@@ -173,16 +173,21 @@ export const POST = withAuth(async (
       );
     }
 
-    // Create run in pending phase
-    const run = createRun(db, {
-      taskId,
-      projectId,
-      repoId: body.repoId,
-      baseBranch: project.defaultBaseBranch ?? 'main',
-    });
+    // Capture validated values before transaction closure
+    const repoId = body.repoId;
+    const baseBranch = project.defaultBaseBranch ?? 'main';
 
-    // Set as active run for the task
-    updateTaskActiveRun(db, taskId, run.runId);
+    // Create run and link to task atomically
+    const run = db.transaction(() => {
+      const newRun = createRun(db, {
+        taskId,
+        projectId,
+        repoId,
+        baseBranch,
+      });
+      updateTaskActiveRun(db, taskId, newRun.runId);
+      return newRun;
+    })();
 
     // Enqueue run job
     await queues.addJob('runs', `run:start:${run.runId}`, {

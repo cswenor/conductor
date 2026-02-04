@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { PageHeader } from '@/components/layout';
-import { EmptyState, Badge } from '@/components/ui';
+import { EmptyState, Badge, Skeleton } from '@/components/ui';
 import {
   Table,
   TableBody,
@@ -101,8 +101,23 @@ export default function RunsPage() {
       />
       <div className="flex-1 p-6">
         {loading ? (
-          <div className="flex items-center justify-center h-64">
-            <p className="text-muted-foreground">Loading runs...</p>
+          <div className="space-y-4">
+            <div className="flex items-center gap-4">
+              <Skeleton className="h-8 w-20" />
+              <Skeleton className="h-8 w-48" />
+              <Skeleton className="h-8 w-32" />
+              <Skeleton className="h-8 w-24" />
+            </div>
+            {Array.from({ length: 5 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4">
+                <Skeleton className="h-6 w-16" />
+                <Skeleton className="h-6 w-40" />
+                <Skeleton className="h-6 w-32" />
+                <Skeleton className="h-6 w-20" />
+                <Skeleton className="h-6 w-16" />
+                <Skeleton className="h-6 w-16" />
+              </div>
+            ))}
           </div>
         ) : error !== null ? (
           <div className="flex items-center justify-center h-64">

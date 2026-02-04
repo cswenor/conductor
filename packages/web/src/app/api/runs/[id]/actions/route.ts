@@ -97,13 +97,15 @@ export const POST = withAuth(async (
         const now = new Date().toISOString();
         db.prepare(`
           INSERT INTO operator_actions (
-            operator_action_id, run_id, actor_id, action, created_at
-          ) VALUES (?, ?, ?, ?, ?)
+            operator_action_id, run_id, operator, action, from_phase, to_phase, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(
           `oa_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`,
           runId,
           request.user.userId,
           'cancel',
+          run.phase,
+          'cancelled',
           now
         );
 
