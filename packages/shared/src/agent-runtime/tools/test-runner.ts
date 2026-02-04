@@ -30,11 +30,48 @@ export const ALLOWED_TEST_COMMANDS: string[] = [
 ];
 
 // =============================================================================
+// Arg Parsing
+// =============================================================================
+
+/**
+ * Split a command string into args, respecting single and double quotes.
+ * Does not interpret escapes — keeps it simple and safe.
+ */
+export function parseCommandArgs(command: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let quote: string | null = null;
+
+  for (const ch of command.trim()) {
+    if (quote !== null) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === ' ' || ch === '\t') {
+      if (current.length > 0) {
+        args.push(current);
+        current = '';
+      }
+    } else {
+      current += ch;
+    }
+  }
+  if (current.length > 0) {
+    args.push(current);
+  }
+  return args;
+}
+
+// =============================================================================
 // Validation
 // =============================================================================
 
 export function isAllowedTestCommand(command: string): boolean {
-  const parts = command.trim().split(/\s+/);
+  const parts = parseCommandArgs(command);
   const program = parts[0];
   if (program === undefined) return false;
   return ALLOWED_TEST_COMMANDS.includes(program);
@@ -72,13 +109,15 @@ export const runTestsTool: ToolDefinition = {
       };
     }
 
-    const parts = command.split(/\s+/);
+    const parts = parseCommandArgs(command);
     const program = parts[0] ?? '';
     const args = parts.slice(1);
 
     return new Promise<ToolResult>((resolveResult) => {
       const chunks: Buffer[] = [];
       let totalBytes = 0;
+      let timedOut = false;
+      const startTime = Date.now();
 
       // Only pass through safe env vars (minimal sandbox)
       const safeEnv = {
@@ -95,6 +134,7 @@ export const runTestsTool: ToolDefinition = {
 
       // Kill timeout
       const killTimer = setTimeout(() => {
+        timedOut = true;
         child.kill('SIGTERM');
         setTimeout(() => {
           if (!child.killed) {
@@ -116,12 +156,13 @@ export const runTestsTool: ToolDefinition = {
         resolveResult({
           content: `Error spawning process: ${err.message}`,
           isError: true,
-          meta: { error: err.message },
+          meta: { error: err.message, durationMs: Date.now() - startTime },
         });
       });
 
       child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
         clearTimeout(killTimer);
+        const durationMs = Date.now() - startTime;
         let output = Buffer.concat(chunks).toString('utf8');
 
         // Truncate keeping the tail (test failures are at the end)
@@ -141,6 +182,8 @@ export const runTestsTool: ToolDefinition = {
             signal,
             totalBytes,
             truncated: totalBytes > MAX_TEST_OUTPUT_BYTES,
+            durationMs,
+            timedOut,
           },
         });
       });

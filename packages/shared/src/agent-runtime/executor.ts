@@ -21,6 +21,7 @@ import {
   createToolInvocation,
   completeToolInvocation,
   failToolInvocation,
+  blockToolInvocation,
 } from './tool-invocations.js';
 
 const log = createLogger({ name: 'conductor:executor' });
@@ -140,7 +141,7 @@ async function executeToolCall(
   if (policyResult.decision === 'block') {
     const durationMs = Date.now() - start;
 
-    createToolInvocation(db, {
+    const blockedInvocation = createToolInvocation(db, {
       agentInvocationId: context.agentInvocationId,
       runId: context.runId,
       tool: toolCall.name,
@@ -152,6 +153,15 @@ async function executeToolCall(
       argsPayloadHashScheme: redacted.payloadHashScheme,
       policyDecision: 'block',
       policyId: policyResult.policyId,
+    });
+
+    // Store completion metadata (policyId, reason) on the blocked invocation
+    blockToolInvocation(db, blockedInvocation.toolInvocationId, {
+      resultMeta: {
+        policyId: policyResult.policyId,
+        reason: policyResult.reason,
+      },
+      durationMs,
     });
 
     emitToolEvent(db, context, 'tool.policy_blocked', toolCall.name, {

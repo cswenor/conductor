@@ -89,7 +89,7 @@ function createTestWorktree(): string {
   writeFileSync(join(testDir, 'credentials.json'), '{"key":"secret"}');
 
   execFileSync('git', ['add', '-A'], { cwd: testDir });
-  execFileSync('git', ['commit', '-m', 'init'], { cwd: testDir });
+  execFileSync('git', ['-c', 'commit.gpgsign=false', 'commit', '-m', 'init'], { cwd: testDir });
 
   return testDir;
 }

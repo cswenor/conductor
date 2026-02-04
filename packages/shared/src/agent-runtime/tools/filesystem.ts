@@ -5,7 +5,7 @@
  * All operations are bounded to the worktree and respect policy rules.
  */
 
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve, relative, dirname, isAbsolute } from 'node:path';
 import { isValidFilePath } from '../agents/implementer.js';
@@ -33,6 +33,20 @@ function validatePath(path: string, worktreePath: string): string | null {
   const rel = relative(worktreePath, resolved);
   if (rel.startsWith('..') || isAbsolute(rel)) {
     return `Path escapes worktree: ${path}`;
+  }
+
+  // Resolve symlinks to detect escape via symlink targets
+  try {
+    const realWorktree = realpathSync(worktreePath);
+    if (existsSync(resolved)) {
+      const realResolved = realpathSync(resolved);
+      const realRel = relative(realWorktree, realResolved);
+      if (realRel.startsWith('..') || isAbsolute(realRel)) {
+        return `Path escapes worktree via symlink: ${path}`;
+      }
+    }
+  } catch {
+    // If realpath fails (e.g. broken symlink), allow the logical check above to govern
   }
 
   return null;
@@ -218,13 +232,27 @@ const listFilesTool: ToolDefinition = {
         gitArgs.push(directory);
       }
 
-      const output = execFileSync('git', gitArgs, {
+      const tracked = execFileSync('git', gitArgs, {
         cwd: context.worktreePath,
         encoding: 'utf8',
         maxBuffer: 1024 * 1024,
       });
 
-      const files = output.split('\n').filter((f) => f.length > 0);
+      // Also include untracked (non-ignored) files
+      const untrackedArgs = ['ls-files', '--others', '--exclude-standard'];
+      if (directory !== undefined) {
+        untrackedArgs.push(directory);
+      }
+
+      const untracked = execFileSync('git', untrackedArgs, {
+        cwd: context.worktreePath,
+        encoding: 'utf8',
+        maxBuffer: 1024 * 1024,
+      });
+
+      const trackedFiles = tracked.split('\n').filter((f) => f.length > 0);
+      const untrackedFiles = untracked.split('\n').filter((f) => f.length > 0);
+      const files = [...trackedFiles, ...untrackedFiles];
       const safeFiles = files.filter((f) => !isSensitiveFile(f));
       const limited = safeFiles.slice(0, MAX_LIST_ENTRIES);
       const truncated = safeFiles.length > MAX_LIST_ENTRIES;

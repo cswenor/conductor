@@ -7,6 +7,7 @@
  */
 
 import { existsSync, writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { resolve, relative, dirname, isAbsolute } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../../logger/index.js';
@@ -292,6 +293,12 @@ export async function runImplementerWithTools(
 
   const userPrompt = formatContextForPrompt(context);
 
+  // Look up projectId from the run record
+  const runRow = db.prepare('SELECT project_id FROM runs WHERE run_id = ?').get(input.runId) as
+    | { project_id: string }
+    | undefined;
+  const projectId = runRow?.project_id ?? '';
+
   // Create agent invocation record
   const invocation = createAgentInvocation(db, {
     runId: input.runId,
@@ -306,6 +313,19 @@ export async function runImplementerWithTools(
   registerFilesystemTools(registry);
   registerTestRunnerTool(registry);
 
+  // Snapshot existing files so we can distinguish create vs edit after tool loop
+  const existingFiles = new Set<string>();
+  try {
+    const output = execFileSync(
+      'git', ['ls-files'], { cwd: input.worktreePath, encoding: 'utf8' }
+    );
+    for (const f of output.split('\n')) {
+      if (f.length > 0) existingFiles.add(f);
+    }
+  } catch {
+    // If git ls-files fails, fall back to empty set (all writes treated as 'create')
+  }
+
   try {
     const result = await runToolLoop({
       db,
@@ -319,7 +339,7 @@ export async function runImplementerWithTools(
         agentInvocationId: invocation.agentInvocationId,
         worktreePath: input.worktreePath,
         db,
-        projectId: context.run.runId, // Will be resolved from run in executor
+        projectId,
       },
       maxTokens: 16384,
       temperature: 0.2,
@@ -340,11 +360,9 @@ export async function runImplementerWithTools(
       if (ti.status !== 'completed') continue;
 
       if (ti.tool === 'write_file' && ti.target !== undefined) {
-        // Determine create vs edit from whether file existed before
-        // Since tools already wrote to disk, we just record all as create/edit
-        const fullPath = resolve(input.worktreePath, ti.target);
+        // Use pre-loop snapshot to determine create vs edit
         files.push({
-          op: existsSync(fullPath) ? 'edit' : 'create',
+          op: existingFiles.has(ti.target) ? 'edit' : 'create',
           path: ti.target,
           content: '', // Content is already on disk
         });

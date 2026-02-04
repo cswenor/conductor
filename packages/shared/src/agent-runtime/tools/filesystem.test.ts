@@ -28,7 +28,7 @@ beforeEach(() => {
   writeFileSync(join(worktreePath, 'src/main.ts'), 'console.log("hello");');
   writeFileSync(join(worktreePath, 'README.md'), '# Test');
   execFileSync('git', ['add', '-A'], { cwd: worktreePath });
-  execFileSync('git', ['commit', '-m', 'init'], { cwd: worktreePath });
+  execFileSync('git', ['-c', 'commit.gpgsign=false', 'commit', '-m', 'init'], { cwd: worktreePath });
 
   context = {
     runId: 'run_test',
@@ -196,10 +196,23 @@ describe('list_files', () => {
     // Add a sensitive file
     writeFileSync(join(worktreePath, '.env'), 'SECRET=value');
     execFileSync('git', ['add', '.env'], { cwd: worktreePath });
-    execFileSync('git', ['commit', '-m', 'add env'], { cwd: worktreePath });
+    execFileSync('git', ['-c', 'commit.gpgsign=false', 'commit', '-m', 'add env'], { cwd: worktreePath });
 
     const result = await tool.execute({}, context);
     expect(result.content).not.toContain('.env');
+  });
+
+  it('includes untracked files', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('list_files')!;
+
+    // Create an untracked file (not git-added)
+    writeFileSync(join(worktreePath, 'untracked.ts'), 'export const y = 2;');
+
+    const result = await tool.execute({}, context);
+    expect(result.content).toContain('untracked.ts');
+    // Also still lists tracked files
+    expect(result.content).toContain('src/main.ts');
   });
 
   it('blocks path traversal in directory arg', async () => {

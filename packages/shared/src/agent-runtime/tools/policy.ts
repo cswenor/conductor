@@ -5,6 +5,7 @@
  * Rules run in order; first 'block' wins.
  */
 
+import { existsSync, realpathSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { isValidFilePath } from '../agents/implementer.js';
 import { isSensitiveFile } from '../context.js';
@@ -75,6 +76,24 @@ export const worktreeBoundaryRule: PolicyRule = {
         policyId: 'worktree_boundary',
         reason: `Path escapes worktree: ${pathArg}`,
       };
+    }
+
+    // Resolve symlinks to detect escape via symlink targets
+    try {
+      const realWorktree = realpathSync(context.worktreePath);
+      if (existsSync(resolved)) {
+        const realResolved = realpathSync(resolved);
+        const realRel = relative(realWorktree, realResolved);
+        if (realRel.startsWith('..') || isAbsolute(realRel)) {
+          return {
+            decision: 'block',
+            policyId: 'worktree_boundary',
+            reason: `Path escapes worktree via symlink: ${pathArg}`,
+          };
+        }
+      }
+    } catch {
+      // If realpath fails, logical path check above governs
     }
 
     return null;
