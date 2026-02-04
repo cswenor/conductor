@@ -169,7 +169,7 @@ interface BareRepoResult {
   commitSha: string;
 }
 
-function createLocalBareRepo(testDir: string): BareRepoResult {
+function createLocalBareRepo(testDir: string, branchName = 'main'): BareRepoResult {
   const bareRepoPath = join(testDir, 'bare-repo.git');
   const workDir = join(testDir, 'tmp-work');
 
@@ -180,7 +180,7 @@ function createLocalBareRepo(testDir: string): BareRepoResult {
   // Create a temporary working repo, add a commit, push to bare
   mkdirSync(workDir, { recursive: true });
   execFileSync('git', ['init', workDir], { encoding: 'utf8' });
-  execFileSync('git', ['checkout', '-b', 'main'], { cwd: workDir, encoding: 'utf8' });
+  execFileSync('git', ['checkout', '-b', branchName], { cwd: workDir, encoding: 'utf8' });
   execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: workDir, encoding: 'utf8' });
   execFileSync('git', ['config', 'user.name', 'Test'], { cwd: workDir, encoding: 'utf8' });
 
@@ -188,7 +188,7 @@ function createLocalBareRepo(testDir: string): BareRepoResult {
   execFileSync('git', ['add', '.'], { cwd: workDir, encoding: 'utf8' });
   execFileSync('git', ['commit', '-m', 'Initial commit'], { cwd: workDir, encoding: 'utf8' });
   execFileSync('git', ['remote', 'add', 'origin', bareRepoPath], { cwd: workDir, encoding: 'utf8' });
-  execFileSync('git', ['push', 'origin', 'main'], { cwd: workDir, encoding: 'utf8' });
+  execFileSync('git', ['push', 'origin', branchName], { cwd: workDir, encoding: 'utf8' });
 
   const commitSha = execFileSync('git', ['rev-parse', 'HEAD'], {
     cwd: workDir,
@@ -297,6 +297,78 @@ describe('Worktree Module', () => {
 
     it('should fallback to main for non-existent repo', () => {
       expect(resolveBaseBranch(db, 'nonexistent')).toBe('main');
+    });
+
+    it('should reject invalid configured branch name', () => {
+      expect(() => resolveBaseBranch(db, 'repo_test', 'branch..bad')).toThrow(/Invalid base branch name/);
+    });
+
+    it('should reject configured branch with control characters', () => {
+      expect(() => resolveBaseBranch(db, 'repo_test', 'branch\x00name')).toThrow(/Invalid base branch name/);
+    });
+  });
+
+  // ===========================================================================
+  // Branch Resolution with Clone Path (git-verified fallback)
+  // ===========================================================================
+
+  describe('Branch Resolution with Clone Path', () => {
+    beforeEach(() => {
+      seedTestData(db);
+    });
+
+    it('should return main when main branch exists in clone', () => {
+      const { bareRepoPath } = createLocalBareRepo(testDir, 'main');
+      db.prepare('UPDATE repos SET github_default_branch = ? WHERE repo_id = ?').run('', 'repo_test');
+
+      expect(resolveBaseBranch(db, 'repo_test', undefined, bareRepoPath)).toBe('main');
+    });
+
+    it('should fall back to master when only master exists in clone', () => {
+      const masterDir = join(testDir, 'master-test');
+      mkdirSync(masterDir, { recursive: true });
+      const { bareRepoPath } = createLocalBareRepo(masterDir, 'master');
+      db.prepare('UPDATE repos SET github_default_branch = ? WHERE repo_id = ?').run('', 'repo_test');
+
+      expect(resolveBaseBranch(db, 'repo_test', undefined, bareRepoPath)).toBe('master');
+    });
+
+    it('should prefer main over master when both exist', () => {
+      const { bareRepoPath } = createLocalBareRepo(testDir, 'main');
+      // Add a master branch to the same bare repo
+      const workDir = join(testDir, 'tmp-both');
+      mkdirSync(workDir, { recursive: true });
+      execFileSync('git', ['clone', bareRepoPath, workDir], { encoding: 'utf8' });
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: workDir, encoding: 'utf8' });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: workDir, encoding: 'utf8' });
+      execFileSync('git', ['checkout', '-b', 'master'], { cwd: workDir, encoding: 'utf8' });
+      execFileSync('git', ['push', 'origin', 'master'], { cwd: workDir, encoding: 'utf8' });
+      rmSync(workDir, { recursive: true, force: true });
+
+      db.prepare('UPDATE repos SET github_default_branch = ? WHERE repo_id = ?').run('', 'repo_test');
+
+      expect(resolveBaseBranch(db, 'repo_test', undefined, bareRepoPath)).toBe('main');
+    });
+
+    it('should still use GitHub default branch regardless of clone contents', () => {
+      const masterDir = join(testDir, 'gh-default-test');
+      mkdirSync(masterDir, { recursive: true });
+      // Clone only has master, but GitHub default says 'develop'
+      createLocalBareRepo(masterDir, 'master');
+      db.prepare('UPDATE repos SET github_default_branch = ? WHERE repo_id = ?').run('develop', 'repo_test');
+
+      // GitHub default takes priority over clone inspection
+      expect(resolveBaseBranch(db, 'repo_test', undefined, masterDir)).toBe('develop');
+    });
+
+    it('should return main when clone has neither main nor master', () => {
+      const otherDir = join(testDir, 'no-default-test');
+      mkdirSync(otherDir, { recursive: true });
+      const { bareRepoPath } = createLocalBareRepo(otherDir, 'develop');
+      db.prepare('UPDATE repos SET github_default_branch = ? WHERE repo_id = ?').run('', 'repo_test');
+
+      // Neither main nor master exists — falls through to default 'main'
+      expect(resolveBaseBranch(db, 'repo_test', undefined, bareRepoPath)).toBe('main');
     });
   });
 
@@ -687,6 +759,26 @@ describe('Worktree Module', () => {
         });
 
         expect(wt.baseCommit).toBe(bareRepo.commitSha);
+      });
+
+      it('should resolve master branch when repo has no main branch', () => {
+        // Create a bare repo with only 'master'
+        const masterDir = join(testDir, 'master-only');
+        mkdirSync(masterDir, { recursive: true });
+        const masterRepo = createLocalBareRepo(masterDir, 'master');
+
+        // Point repo at the master-only clone, clear the default branch
+        db.prepare('UPDATE repos SET clone_path = ?, github_default_branch = ? WHERE repo_id = ?')
+          .run(masterRepo.bareRepoPath, '', seed.repoId);
+
+        const wt = createWorktree(db, {
+          runId: seed.runId,
+          projectId: seed.projectId,
+          repoId: seed.repoId,
+        });
+
+        expect(wt.baseCommit).toBe(masterRepo.commitSha);
+        expect(existsSync(wt.path)).toBe(true);
       });
 
       it('should throw if repo not cloned (clone_path = null)', () => {

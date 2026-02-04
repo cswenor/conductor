@@ -410,8 +410,8 @@ export function createWorktree(
       throw new Error(`Repo ${repoId} is not cloned. Clone first.`);
     }
 
-    // Resolve base branch
-    const baseBranch = resolveBaseBranch(db, repoId, options.baseBranch);
+    // Resolve base branch (pass clonePath for main/master fallback verification)
+    const baseBranch = resolveBaseBranch(db, repoId, options.baseBranch, clonePath);
     const worktreeId = generateWorktreeId();
     const worktreePath = join(getWorktreesDir(), runId);
     const branchName = generateBranchName(runId);
@@ -536,15 +536,21 @@ export function getWorktreeForRun(db: Database, runId: string): Worktree | null 
 
 /**
  * Resolve the base branch for a repo.
- * Priority: configured → GitHub default → main → master
+ * Priority: configured → GitHub default → main → master (verified against clone)
+ *
+ * @param clonePath - If provided, verifies fallback branches actually exist in the clone.
  */
 export function resolveBaseBranch(
   db: Database,
   repoId: string,
-  configuredDefault?: string
+  configuredDefault?: string,
+  clonePath?: string
 ): string {
   // 1. Use explicitly configured default if provided
   if (configuredDefault !== undefined && configuredDefault !== '') {
+    if (!isValidBranchName(configuredDefault)) {
+      throw new Error(`Invalid base branch name: '${configuredDefault}'`);
+    }
     return configuredDefault;
   }
 
@@ -556,7 +562,20 @@ export function resolveBaseBranch(
     return row.github_default_branch;
   }
 
-  // 3. Fallback to main, then master
+  // 3. Fallback: check which default branch exists in the clone
+  if (clonePath !== undefined) {
+    const mainExists = execGit(['rev-parse', '--verify', 'refs/heads/main'], { cwd: clonePath });
+    if (mainExists.success) {
+      return 'main';
+    }
+
+    const masterExists = execGit(['rev-parse', '--verify', 'refs/heads/master'], { cwd: clonePath });
+    if (masterExists.success) {
+      return 'master';
+    }
+  }
+
+  // No clone to check — default to main
   return 'main';
 }
 
