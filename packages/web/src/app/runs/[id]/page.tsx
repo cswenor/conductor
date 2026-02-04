@@ -62,6 +62,13 @@ interface TaskInfo {
   githubState: string;
 }
 
+interface RepoInfo {
+  repoId: string;
+  githubFullName: string;
+  githubOwner: string;
+  githubName: string;
+}
+
 interface EventRecord {
   eventId: string;
   type: string;
@@ -108,6 +115,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   const router = useRouter();
   const [run, setRun] = useState<RunDetail | null>(null);
   const [task, setTask] = useState<TaskInfo | null>(null);
+  const [repo, setRepo] = useState<RepoInfo | null>(null);
   const [events, setEvents] = useState<EventRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -127,10 +135,12 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
       const data = await response.json() as {
         run: RunDetail;
         task: TaskInfo | null;
+        repo: RepoInfo | null;
         events: EventRecord[];
       };
       setRun(data.run);
       setTask(data.task);
+      setRepo(data.repo);
       setEvents(data.events);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -263,6 +273,11 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     {task.githubIssueNumber} &middot; {task.githubState}
                   </p>
                 )}
+                {repo !== null && (
+                  <p className="text-sm text-muted-foreground">
+                    {repo.githubFullName}
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -285,6 +300,18 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     Blocked: {run.blockedReason}
                   </p>
                 )}
+                <p className="text-sm text-muted-foreground">
+                  <Clock className="h-3 w-3 inline mr-1" />
+                  Started {formatTimestamp(run.startedAt)}
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Updated {formatTimestamp(run.updatedAt)}
+                </p>
+                {run.completedAt !== undefined && (
+                  <p className="text-sm text-muted-foreground">
+                    Completed {formatTimestamp(run.completedAt)}
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -304,12 +331,21 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                   <p className="text-sm text-muted-foreground">No branch yet</p>
                 )}
                 <p className="text-sm text-muted-foreground">
-                  <Clock className="h-3 w-3 inline mr-1" />
-                  Started {formatTimestamp(run.startedAt)}
+                  Base: {run.baseBranch}
                 </p>
-                {run.completedAt !== undefined && (
-                  <p className="text-sm text-muted-foreground">
-                    Completed {formatTimestamp(run.completedAt)}
+                {run.headSha !== undefined && (
+                  <p className="text-sm text-muted-foreground font-mono">
+                    HEAD: {run.headSha.substring(0, 7)}
+                  </p>
+                )}
+                {run.prNumber !== undefined && run.prUrl !== undefined && (
+                  <p className="text-sm">
+                    <a href={run.prUrl} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                      PR #{run.prNumber}
+                    </a>
+                    {run.prState !== undefined && (
+                      <span className="text-muted-foreground"> &middot; {run.prState}</span>
+                    )}
                   </p>
                 )}
               </div>

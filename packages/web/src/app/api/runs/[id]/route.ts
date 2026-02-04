@@ -10,6 +10,7 @@ import {
   getRun,
   getTask,
   getProject,
+  getRepo,
   canAccessProject,
   listRunEvents,
 } from '@conductor/shared';
@@ -58,6 +59,9 @@ export const GET = withAuth(async (
     // Get task info
     const task = getTask(db, run.taskId);
 
+    // Get repo info
+    const repo = getRepo(db, run.repoId);
+
     // Get events timeline
     const events = listRunEvents(db, run.runId);
 
@@ -69,6 +73,12 @@ export const GET = withAuth(async (
         githubIssueNumber: task.githubIssueNumber,
         githubType: task.githubType,
         githubState: task.githubState,
+      } : null,
+      repo: repo !== null ? {
+        repoId: repo.repoId,
+        githubFullName: repo.githubFullName,
+        githubOwner: repo.githubOwner,
+        githubName: repo.githubName,
       } : null,
       events,
     });

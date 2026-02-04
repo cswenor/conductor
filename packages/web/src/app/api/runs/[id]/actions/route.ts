@@ -31,6 +31,7 @@ interface RouteParams {
  *
  * Body:
  *   - action: 'cancel'
+ *   - comment?: string (optional reason for the action)
  */
 export const POST = withAuth(async (
   request: AuthenticatedRequest,
@@ -59,7 +60,7 @@ export const POST = withAuth(async (
       );
     }
 
-    const body = await request.json() as { action?: string };
+    const body = await request.json() as { action?: string; comment?: string };
 
     if (body.action === undefined) {
       return NextResponse.json(
@@ -83,6 +84,7 @@ export const POST = withAuth(async (
           toStep: 'cleanup',
           triggeredBy: request.user.userId,
           result: 'cancelled',
+          reason: body.comment ?? undefined,
         });
 
         if (!result.success) {
@@ -97,13 +99,14 @@ export const POST = withAuth(async (
         const now = new Date().toISOString();
         db.prepare(`
           INSERT INTO operator_actions (
-            operator_action_id, run_id, operator, action, from_phase, to_phase, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            operator_action_id, run_id, operator, action, comment, from_phase, to_phase, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           `oa_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`,
           runId,
           request.user.userId,
           'cancel',
+          body.comment ?? null,
           run.phase,
           'cancelled',
           now
