@@ -33,6 +33,15 @@ import {
   // Worktree management (WP4)
   runJanitor,
   cleanupWorktree,
+  cloneOrFetchRepo,
+  createWorktree,
+  getWorktreeForRun,
+  // Repos
+  getRepo,
+  // GitHub App
+  initGitHubApp,
+  isGitHubAppInitialized,
+  getInstallationToken,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -51,6 +60,9 @@ interface WorkerConfig {
   databasePath: string;
   redisUrl: string;
   concurrency: number;
+  githubAppId: string;
+  githubPrivateKey: string;
+  githubWebhookSecret: string;
 }
 
 /** Load configuration from environment with validation */
@@ -81,10 +93,34 @@ function loadConfig(): WorkerConfig {
     description: 'Number of concurrent jobs per queue',
   });
 
+  const githubAppId = getEnv({
+    name: 'GITHUB_APP_ID',
+    type: 'string',
+    required: true,
+    description: 'GitHub App ID',
+  });
+
+  const githubPrivateKey = getEnv({
+    name: 'GITHUB_PRIVATE_KEY',
+    type: 'string',
+    required: true,
+    description: 'GitHub App private key (PEM format or base64)',
+  });
+
+  const githubWebhookSecret = getEnv({
+    name: 'GITHUB_WEBHOOK_SECRET',
+    type: 'string',
+    required: true,
+    description: 'GitHub webhook secret for signature verification',
+  });
+
   return {
     databasePath,
     redisUrl,
     concurrency: Number.parseInt(concurrencyStr, 10),
+    githubAppId,
+    githubPrivateKey,
+    githubWebhookSecret,
   };
 }
 
@@ -183,9 +219,211 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
  * Process run jobs (start, resume, cancel, timeout)
  */
 async function processRun(job: Job<RunJobData>): Promise<void> {
-  log.info({ runId: job.data.runId, action: job.data.action }, 'Processing run');
-  // TODO: Implement run processing in WP3+
-  await Promise.resolve();
+  const { runId, action, triggeredBy } = job.data;
+  log.info({ runId, action, triggeredBy }, 'Processing run');
+
+  const db = getDatabase();
+
+  // Fetch the run record
+  const runStmt = db.prepare('SELECT * FROM runs WHERE run_id = ?');
+  const run = runStmt.get(runId) as Record<string, unknown> | undefined;
+
+  if (run === undefined) {
+    log.error({ runId }, 'Run not found');
+    return;
+  }
+
+  // Idempotency guard: skip if already in terminal state
+  const phase = run['phase'] as string;
+  if (phase === 'completed' || phase === 'cancelled') {
+    log.info({ runId, phase }, 'Run already in terminal state, skipping');
+    return;
+  }
+
+  switch (action) {
+    case 'start':
+      await handleRunStart(db, run);
+      break;
+    case 'cancel':
+      handleRunCancel(db, run, triggeredBy);
+      break;
+    case 'timeout':
+      handleRunTimeout(db, run);
+      break;
+    case 'resume':
+      // No-op stub for WP5
+      log.info({ runId }, 'Run resume not yet implemented (WP5)');
+      break;
+    default:
+      log.warn({ runId, action }, 'Unknown run action');
+  }
+}
+
+/**
+ * Handle the 'start' action for a run.
+ * Clones/fetches the repo, creates a worktree, and advances run state.
+ */
+async function handleRunStart(
+  db: ReturnType<typeof getDatabase>,
+  run: Record<string, unknown>
+): Promise<void> {
+  const runId = run['run_id'] as string;
+  const projectId = run['project_id'] as string;
+  const repoId = run['repo_id'] as string;
+  const baseBranch = run['base_branch'] as string;
+
+  log.info({ runId, projectId, repoId }, 'Starting run');
+
+  // 1. Check if worktree already exists (idempotency)
+  const existingWorktree = getWorktreeForRun(db, runId);
+  if (existingWorktree !== null) {
+    log.info({ runId, worktreeId: existingWorktree.worktreeId }, 'Worktree already exists for run');
+    // Ensure run state is advanced
+    db.prepare(
+      'UPDATE runs SET phase = ?, step = ?, branch = ?, head_sha = ?, updated_at = ? WHERE run_id = ? AND phase = ?'
+    ).run('planning', 'route', existingWorktree.branchName, existingWorktree.baseCommit, new Date().toISOString(), runId, 'pending');
+    return;
+  }
+
+  // 2. Look up repo
+  const repo = getRepo(db, repoId);
+  if (repo === null) {
+    markRunFailed(db, runId, `Repo ${repoId} not found`);
+    return;
+  }
+
+  // 3. Look up installation ID from project
+  const projectStmt = db.prepare('SELECT github_installation_id FROM projects WHERE project_id = ?');
+  const projectRow = projectStmt.get(projectId) as { github_installation_id: number | null } | undefined;
+
+  const installationId = projectRow?.github_installation_id;
+  if (installationId === undefined || installationId === null) {
+    markRunFailed(db, runId, `No GitHub installation found for project ${projectId}`);
+    return;
+  }
+
+  // 4. Get installation token
+  let installationToken: string;
+  try {
+    installationToken = await getInstallationToken(installationId);
+  } catch (err) {
+    markRunFailed(db, runId, `Failed to get installation token: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    return;
+  }
+
+  // 5. Clone or fetch repo
+  try {
+    cloneOrFetchRepo(db, {
+      projectId,
+      repoId,
+      githubOwner: repo.githubOwner,
+      githubName: repo.githubName,
+      installationToken,
+    });
+  } catch (err) {
+    markRunFailed(db, runId, `Failed to clone/fetch repo: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    return;
+  }
+
+  // 6. Create worktree
+  let worktree;
+  try {
+    worktree = createWorktree(db, {
+      runId,
+      projectId,
+      repoId,
+      baseBranch,
+    });
+  } catch (err) {
+    markRunFailed(db, runId, `Failed to create worktree: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    return;
+  }
+
+  // 7. Advance run state
+  const now = new Date().toISOString();
+  db.prepare(
+    'UPDATE runs SET phase = ?, step = ?, branch = ?, head_sha = ?, updated_at = ? WHERE run_id = ?'
+  ).run('planning', 'route', worktree.branchName, worktree.baseCommit, now, runId);
+
+  log.info(
+    { runId, worktreeId: worktree.worktreeId, branch: worktree.branchName, baseCommit: worktree.baseCommit },
+    'Run started successfully'
+  );
+}
+
+/**
+ * Handle the 'cancel' action for a run.
+ */
+function handleRunCancel(
+  db: ReturnType<typeof getDatabase>,
+  run: Record<string, unknown>,
+  triggeredBy?: string
+): void {
+  const runId = run['run_id'] as string;
+
+  log.info({ runId, triggeredBy }, 'Cancelling run');
+
+  const now = new Date().toISOString();
+  db.prepare(
+    'UPDATE runs SET phase = ?, step = ?, result = ?, updated_at = ?, completed_at = ? WHERE run_id = ?'
+  ).run('cancelled', 'cleanup', 'cancelled', now, now, runId);
+
+  // Best-effort worktree cleanup
+  try {
+    cleanupWorktree(db, runId);
+  } catch (err) {
+    log.warn(
+      { runId, error: err instanceof Error ? err.message : 'Unknown' },
+      'Worktree cleanup failed during cancel (janitor will reconcile)'
+    );
+  }
+
+  log.info({ runId }, 'Run cancelled');
+}
+
+/**
+ * Handle the 'timeout' action for a run.
+ */
+function handleRunTimeout(
+  db: ReturnType<typeof getDatabase>,
+  run: Record<string, unknown>
+): void {
+  const runId = run['run_id'] as string;
+
+  log.info({ runId }, 'Timing out run');
+
+  const now = new Date().toISOString();
+  db.prepare(
+    'UPDATE runs SET phase = ?, step = ?, result = ?, result_reason = ?, updated_at = ?, completed_at = ? WHERE run_id = ?'
+  ).run('completed', 'cleanup', 'failure', 'Run timed out', now, now, runId);
+
+  // Best-effort worktree cleanup
+  try {
+    cleanupWorktree(db, runId);
+  } catch (err) {
+    log.warn(
+      { runId, error: err instanceof Error ? err.message : 'Unknown' },
+      'Worktree cleanup failed during timeout (janitor will reconcile)'
+    );
+  }
+
+  log.info({ runId }, 'Run timed out');
+}
+
+/**
+ * Mark a run as failed.
+ */
+function markRunFailed(
+  db: ReturnType<typeof getDatabase>,
+  runId: string,
+  reason: string
+): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    'UPDATE runs SET phase = ?, result = ?, result_reason = ?, updated_at = ?, completed_at = ? WHERE run_id = ?'
+  ).run('completed', 'failure', reason, now, now, runId);
+
+  log.error({ runId, reason }, 'Run failed');
 }
 
 /**
@@ -360,6 +598,16 @@ async function main(): Promise<void> {
 
   const queueManager = getQueueManager();
   log.info('Database and Redis initialized');
+
+  // Initialize GitHub App (needed for processRun and processGitHubWrite)
+  if (!isGitHubAppInitialized()) {
+    initGitHubApp({
+      appId: config.githubAppId,
+      privateKey: config.githubPrivateKey,
+      webhookSecret: config.githubWebhookSecret,
+    });
+    log.info('GitHub App initialized');
+  }
 
   // Run janitor to reconcile DB and filesystem state before processing jobs
   log.info('Running worktree janitor');

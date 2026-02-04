@@ -130,6 +130,17 @@ export async function getInstallationOctokit(installationId: number): Promise<In
 }
 
 /**
+ * Get a raw installation access token string.
+ *
+ * Useful for git clone URLs: `https://x-access-token:{token}@github.com/...`
+ */
+export async function getInstallationToken(installationId: number): Promise<string> {
+  const octokit = await getInstallationOctokit(installationId);
+  const auth = (await octokit.auth({ type: 'installation' })) as { token: string };
+  return auth.token;
+}
+
+/**
  * Get the Webhooks instance for verification and handling
  */
 export function getWebhooks(): Webhooks {
