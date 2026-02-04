@@ -58,7 +58,7 @@ export type EventClass = 'fact' | 'decision' | 'signal';
 /** @deprecated Use EventClass instead */
 export type EventCategory = EventClass;
 
-export type EventSource = 'webhook' | 'tool_layer' | 'orchestrator' | 'operator';
+export type EventSource = 'webhook' | 'tool_layer' | 'orchestrator' | 'operator' | 'worker';
 
 // =============================================================================
 // Job Queue Types
