@@ -90,6 +90,10 @@ export interface AgentInput {
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
+  /** Tool definitions for tool-use mode */
+  tools?: Anthropic.Tool[];
+  /** Full message history for multi-turn tool loops (overrides userPrompt) */
+  messages?: Anthropic.MessageParam[];
 }
 
 export interface AgentOutput {
@@ -98,6 +102,10 @@ export interface AgentOutput {
   tokensOutput: number;
   stopReason: string;
   durationMs: number;
+  /** Extracted tool_use blocks from response */
+  toolCalls?: Array<{ id: string; name: string; input: Record<string, unknown> }>;
+  /** Raw content blocks from response (needed for conversation history) */
+  rawContentBlocks?: Anthropic.ContentBlock[];
 }
 
 export interface AgentProvider {
@@ -144,15 +152,26 @@ export class AnthropicProvider implements AgentProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+    // Use provided messages or create single user message
+    const messages: Anthropic.MessageParam[] =
+      input.messages ?? [{ role: 'user', content: input.userPrompt }];
+
     try {
+      const createParams: Anthropic.MessageCreateParams = {
+        model: this.model,
+        max_tokens: maxTokens,
+        temperature: input.temperature ?? 0.3,
+        system: input.systemPrompt,
+        messages,
+      };
+
+      // Add tools if provided
+      if (input.tools !== undefined && input.tools.length > 0) {
+        createParams.tools = input.tools;
+      }
+
       const response = await this.client.messages.create(
-        {
-          model: this.model,
-          max_tokens: maxTokens,
-          temperature: input.temperature ?? 0.3,
-          system: input.systemPrompt,
-          messages: [{ role: 'user', content: input.userPrompt }],
-        },
+        createParams,
         { signal: controller.signal }
       );
 
@@ -163,12 +182,27 @@ export class AnthropicProvider implements AgentProvider {
         .map((block) => block.text)
         .join('\n');
 
+      // Extract tool_use blocks
+      const toolUseBlocks = response.content.filter(
+        (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
+      );
+
+      const toolCalls = toolUseBlocks.length > 0
+        ? toolUseBlocks.map((block) => ({
+            id: block.id,
+            name: block.name,
+            input: block.input as Record<string, unknown>,
+          }))
+        : undefined;
+
       return {
         content,
         tokensInput: response.usage.input_tokens,
         tokensOutput: response.usage.output_tokens,
         stopReason: response.stop_reason ?? 'unknown',
         durationMs,
+        toolCalls,
+        rawContentBlocks: response.content,
       };
     } catch (err) {
       const durationMs = Date.now() - start;

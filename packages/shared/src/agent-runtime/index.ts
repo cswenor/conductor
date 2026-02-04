@@ -103,4 +103,31 @@ export {
   parseFileOperations,
   applyFileOperations,
   runImplementer,
+  runImplementerWithTools,
 } from './agents/implementer.js';
+
+// Tool system (WP7)
+export * from './tools/index.js';
+
+// Tool invocations CRUD
+export {
+  type ToolInvocation,
+  type ToolInvocationStatus,
+  type CreateToolInvocationInput,
+  generateToolInvocationId,
+  createToolInvocation,
+  completeToolInvocation,
+  failToolInvocation,
+  blockToolInvocation,
+  getToolInvocation,
+  listToolInvocations,
+  listToolInvocationsByRun,
+} from './tool-invocations.js';
+
+// Executor (tool-use loop)
+export {
+  MAX_TOOL_ITERATIONS,
+  runToolLoop,
+  type ExecutorInput,
+  type ExecutorResult,
+} from './executor.js';

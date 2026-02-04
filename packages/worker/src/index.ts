@@ -53,12 +53,14 @@ import {
   runPlanner,
   runPlanReviewer,
   runCodeReviewer,
-  runImplementer,
-  applyFileOperations,
+  runImplementerWithTools,
   AgentError,
   AgentAuthError,
   AgentRateLimitError,
   AgentTimeoutError,
+  // Agent Runtime (WP7) - Tool-use mode
+  resolveCredentials,
+  createProvider,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -644,7 +646,7 @@ async function handlePlanReviewerAgent(
 }
 
 /**
- * Handle implementer agent: apply code changes, git commit, enqueue code reviewer.
+ * Handle implementer agent: apply code changes via tools, git commit, enqueue code reviewer.
  */
 async function handleImplementerAgent(
   db: ReturnType<typeof getDatabase>,
@@ -658,18 +660,28 @@ async function handleImplementerAgent(
     return;
   }
 
-  const implResult = await runImplementer(db, { runId, worktreePath });
+  // Resolve credentials and create provider for tool-use mode
+  const creds = await resolveCredentials(db, {
+    runId,
+    step: 'implementer_apply_changes',
+  });
+
+  if (creds.mode !== 'ai_provider') {
+    markRunFailed(db, runId, `Implementer requires AI provider credentials (got: ${creds.mode})`);
+    return;
+  }
+
+  const provider = createProvider(creds.provider, creds.apiKey);
+
+  const implResult = await runImplementerWithTools(db, { runId, worktreePath, provider });
 
   log.info(
     { runId, fileCount: implResult.files.length, artifactId: implResult.artifactId },
-    'Implementer completed'
+    'Implementer completed (tool-use mode)'
   );
 
-  // Apply file operations to worktree
+  // Tools already wrote files to disk — just git add + commit
   if (implResult.files.length > 0) {
-    applyFileOperations(worktreePath, implResult.files);
-
-    // Git add + commit
     try {
       execFileSync('git', ['add', '-A'], { cwd: worktreePath });
       execFileSync('git', ['commit', '-m', `conductor: implement changes for run ${runId}`], {

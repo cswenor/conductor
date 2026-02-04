@@ -67,6 +67,9 @@ export type InternalEventType =
   | 'agent.started'
   | 'agent.completed'
   | 'agent.failed'
+  // Tool events
+  | 'tool.invoked'
+  | 'tool.policy_blocked'
   // Gate events
   | 'gate.evaluated'
   | 'gate.passed'
