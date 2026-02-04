@@ -72,3 +72,6 @@ export * from './runs/index';
 
 // Re-export orchestrator module
 export * from './orchestrator/index';
+
+// Re-export agent runtime module
+export * from './agent-runtime/index.js';

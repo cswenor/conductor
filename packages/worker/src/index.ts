@@ -6,6 +6,7 @@
  */
 
 import { Worker, Job } from 'bullmq';
+import { execFileSync } from 'node:child_process';
 import {
   type JobQueue,
   getQueueManager,
@@ -47,9 +48,59 @@ import {
   transitionPhase,
   TERMINAL_PHASES,
   type Run,
+  // Agent Runtime (WP6)
+  generateAgentInvocationId,
+  runPlanner,
+  runPlanReviewer,
+  runCodeReviewer,
+  runImplementer,
+  applyFileOperations,
+  AgentError,
+  AgentAuthError,
+  AgentRateLimitError,
+  AgentTimeoutError,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
+
+/** Max planner revision cycles before blocking */
+const MAX_PLAN_REVISIONS = 3;
+
+/** Max code review rounds before blocking */
+const MAX_REVIEW_ROUNDS = 3;
+
+/**
+ * Enqueue an agent job on the agents queue.
+ */
+async function enqueueAgentJob(
+  runId: string,
+  agent: string,
+  action: string,
+  context: Record<string, unknown> = {}
+): Promise<void> {
+  const qm = getQueueManager();
+  const agentInvocationId = generateAgentInvocationId();
+  await qm.addJob('agents', `agent-${runId}-${agent}-${action}-${Date.now()}`, {
+    runId,
+    agentInvocationId,
+    agent,
+    action,
+    context,
+  });
+  log.info({ runId, agent, action, agentInvocationId }, 'Agent job enqueued');
+}
+
+/**
+ * Update the run step without changing phase (intra-phase step tracking).
+ */
+function updateRunStep(
+  db: ReturnType<typeof getDatabase>,
+  runId: string,
+  step: string
+): void {
+  db.prepare('UPDATE runs SET step = ?, updated_at = ? WHERE run_id = ?')
+    .run(step, new Date().toISOString(), runId);
+}
 
 /** All queues the worker consumes from */
 const QUEUES: JobQueue[] = [
@@ -254,8 +305,7 @@ async function processRun(job: Job<RunJobData>): Promise<void> {
       handleRunTimeout(db, run);
       break;
     case 'resume':
-      // No-op stub — pause/resume is WP11
-      log.info({ runId }, 'Run resume not yet implemented (WP11)');
+      await handleRunResume(db, run, triggeredBy);
       break;
     default:
       log.warn({ runId, action }, 'Unknown run action');
@@ -286,13 +336,16 @@ async function handleRunStart(
     const result = transitionPhase(db, {
       runId,
       toPhase: 'planning',
-      toStep: 'route',
+      toStep: 'planner_create_plan',
       triggeredBy: 'system',
       reason: 'Worktree ready (existing)',
     });
     if (!result.success) {
       log.warn({ runId, error: result.error }, 'Phase transition failed (idempotency — may already be advanced)');
+      return;
     }
+    // Enqueue planner agent
+    await enqueueAgentJob(runId, 'planner', 'create_plan');
     return;
   }
 
@@ -359,7 +412,7 @@ async function handleRunStart(
   const result = transitionPhase(db, {
     runId,
     toPhase: 'planning',
-    toStep: 'route',
+    toStep: 'planner_create_plan',
     triggeredBy: 'system',
     reason: 'Worktree ready',
   });
@@ -368,6 +421,9 @@ async function handleRunStart(
     log.error({ runId, error: result.error }, 'Failed to transition to planning');
     return;
   }
+
+  // 9. Enqueue planner agent
+  await enqueueAgentJob(runId, 'planner', 'create_plan');
 
   log.info(
     { runId, worktreeId: worktree.worktreeId, branch: worktree.branchName, baseCommit: worktree.baseCommit },
@@ -477,15 +533,395 @@ function markRunFailed(
 }
 
 /**
+ * Handle the 'resume' action for a run.
+ * Used when an operator approves a plan (awaiting_plan_approval → executing).
+ */
+async function handleRunResume(
+  db: ReturnType<typeof getDatabase>,
+  run: Run,
+  triggeredBy?: string
+): Promise<void> {
+  const { runId, phase } = run;
+
+  if (phase !== 'awaiting_plan_approval') {
+    log.warn({ runId, phase }, 'Resume only valid from awaiting_plan_approval');
+    return;
+  }
+
+  log.info({ runId, triggeredBy }, 'Resuming run (plan approved)');
+
+  const result = transitionPhase(db, {
+    runId,
+    toPhase: 'executing',
+    toStep: 'implementer_apply_changes',
+    triggeredBy: triggeredBy ?? 'system',
+    reason: 'Plan approved by operator',
+  });
+
+  if (!result.success) {
+    log.error({ runId, error: result.error }, 'Failed to transition to executing');
+    return;
+  }
+
+  // Enqueue implementer agent
+  await enqueueAgentJob(runId, 'implementer', 'apply_changes');
+
+  log.info({ runId }, 'Run resumed — implementer enqueued');
+}
+
+// =============================================================================
+// Agent Handlers
+// =============================================================================
+
+/**
+ * Handle planner agent: create/revise plan, then enqueue plan reviewer.
+ */
+async function handlePlannerAgent(
+  db: ReturnType<typeof getDatabase>,
+  run: Run,
+  worktreePath?: string
+): Promise<void> {
+  const { runId } = run;
+
+  updateRunStep(db, runId, 'planner_create_plan');
+
+  const planResult = await runPlanner(db, { runId, worktreePath });
+
+  log.info(
+    { runId, artifactId: planResult.artifactId, invocationId: planResult.agentInvocationId },
+    'Planner completed'
+  );
+
+  // Enqueue plan reviewer
+  updateRunStep(db, runId, 'reviewer_review_plan');
+  await enqueueAgentJob(runId, 'reviewer', 'review_plan');
+}
+
+/**
+ * Handle plan reviewer: approve → awaiting_plan_approval, reject → re-run planner.
+ */
+async function handlePlanReviewerAgent(
+  db: ReturnType<typeof getDatabase>,
+  run: Run,
+  worktreePath?: string
+): Promise<void> {
+  const { runId } = run;
+
+  const reviewResult = await runPlanReviewer(db, { runId, worktreePath });
+
+  log.info(
+    { runId, approved: reviewResult.approved, artifactId: reviewResult.artifactId },
+    'Plan reviewer completed'
+  );
+
+  if (reviewResult.approved) {
+    // Transition to awaiting_plan_approval (human gate)
+    const result = transitionPhase(db, {
+      runId,
+      toPhase: 'awaiting_plan_approval',
+      toStep: 'wait_plan_approval',
+      triggeredBy: 'system',
+      reason: 'Plan approved by AI reviewer',
+    });
+
+    if (!result.success) {
+      log.error({ runId, error: result.error }, 'Failed to transition to awaiting_plan_approval');
+    }
+  } else {
+    // Re-read run to get current plan_revisions
+    const currentRun = getRun(db, runId);
+    if (currentRun !== null && currentRun.planRevisions >= MAX_PLAN_REVISIONS) {
+      // Too many revisions — block the run
+      markRunFailed(db, runId, `Plan rejected after ${MAX_PLAN_REVISIONS} revisions. Manual intervention required.`);
+      return;
+    }
+
+    // Re-run planner with review feedback
+    log.info({ runId, planRevisions: currentRun?.planRevisions }, 'Plan rejected, re-running planner');
+    updateRunStep(db, runId, 'planner_create_plan');
+    await enqueueAgentJob(runId, 'planner', 'create_plan');
+  }
+}
+
+/**
+ * Handle implementer agent: apply code changes, git commit, enqueue code reviewer.
+ */
+async function handleImplementerAgent(
+  db: ReturnType<typeof getDatabase>,
+  run: Run,
+  worktreePath?: string
+): Promise<void> {
+  const { runId } = run;
+
+  if (worktreePath === undefined) {
+    markRunFailed(db, runId, 'No worktree available for implementer');
+    return;
+  }
+
+  const implResult = await runImplementer(db, { runId, worktreePath });
+
+  log.info(
+    { runId, fileCount: implResult.files.length, artifactId: implResult.artifactId },
+    'Implementer completed'
+  );
+
+  // Apply file operations to worktree
+  if (implResult.files.length > 0) {
+    applyFileOperations(worktreePath, implResult.files);
+
+    // Git add + commit
+    try {
+      execFileSync('git', ['add', '-A'], { cwd: worktreePath });
+      execFileSync('git', ['commit', '-m', `conductor: implement changes for run ${runId}`], {
+        cwd: worktreePath,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'Conductor',
+          GIT_AUTHOR_EMAIL: 'conductor@noreply',
+          GIT_COMMITTER_NAME: 'Conductor',
+          GIT_COMMITTER_EMAIL: 'conductor@noreply',
+        },
+      });
+
+      // Update head_sha
+      const newSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: worktreePath,
+        encoding: 'utf8',
+      }).trim();
+      db.prepare('UPDATE runs SET head_sha = ?, updated_at = ? WHERE run_id = ?')
+        .run(newSha, new Date().toISOString(), runId);
+
+      log.info({ runId, headSha: newSha }, 'Implementation committed');
+    } catch (err) {
+      markRunFailed(db, runId, `Git commit failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      return;
+    }
+  } else {
+    log.warn({ runId }, 'Implementer produced no file operations');
+  }
+
+  // Transition to awaiting_review
+  const result = transitionPhase(db, {
+    runId,
+    toPhase: 'awaiting_review',
+    toStep: 'reviewer_review_code',
+    triggeredBy: 'system',
+    reason: 'Implementation complete',
+  });
+
+  if (!result.success) {
+    log.error({ runId, error: result.error }, 'Failed to transition to awaiting_review');
+    return;
+  }
+
+  // Enqueue code reviewer
+  await enqueueAgentJob(runId, 'reviewer', 'review_code');
+}
+
+/**
+ * Handle code reviewer: approve → completed, reject → re-run implementer.
+ */
+async function handleCodeReviewerAgent(
+  db: ReturnType<typeof getDatabase>,
+  run: Run,
+  worktreePath?: string
+): Promise<void> {
+  const { runId } = run;
+
+  const reviewResult = await runCodeReviewer(db, { runId, worktreePath });
+
+  log.info(
+    { runId, approved: reviewResult.approved, artifactId: reviewResult.artifactId },
+    'Code reviewer completed'
+  );
+
+  if (reviewResult.approved) {
+    // Transition to completed
+    const result = transitionPhase(db, {
+      runId,
+      toPhase: 'completed',
+      toStep: 'create_pr',
+      triggeredBy: 'system',
+      result: 'success',
+      reason: 'Code approved by AI reviewer',
+    });
+
+    if (!result.success) {
+      log.error({ runId, error: result.error }, 'Failed to transition to completed');
+    }
+  } else {
+    // Re-read run to get current review_rounds
+    const currentRun = getRun(db, runId);
+    if (currentRun !== null && currentRun.reviewRounds >= MAX_REVIEW_ROUNDS) {
+      markRunFailed(db, runId, `Code rejected after ${MAX_REVIEW_ROUNDS} review rounds. Manual intervention required.`);
+      return;
+    }
+
+    // Re-run implementer (back to executing)
+    log.info({ runId, reviewRounds: currentRun?.reviewRounds }, 'Code rejected, re-running implementer');
+
+    const result = transitionPhase(db, {
+      runId,
+      toPhase: 'executing',
+      toStep: 'implementer_apply_changes',
+      triggeredBy: 'system',
+      reason: 'Code changes requested by reviewer',
+    });
+
+    if (!result.success) {
+      log.error({ runId, error: result.error }, 'Failed to transition back to executing');
+      return;
+    }
+
+    await enqueueAgentJob(runId, 'implementer', 'apply_changes');
+  }
+}
+
+/**
+ * Handle agent errors: categorize and either block or retry.
+ */
+async function handleAgentError(
+  db: ReturnType<typeof getDatabase>,
+  run: Run,
+  agent: string,
+  action: string,
+  err: unknown
+): Promise<void> {
+  const { runId } = run;
+
+  if (err instanceof AgentTimeoutError) {
+    log.error({ runId, agent, action, timeoutMs: err.timeoutMs }, 'Agent timed out');
+    markRunFailed(db, runId, `Agent '${agent}' timed out after ${Math.round(err.timeoutMs / 1000)}s`);
+    return;
+  }
+
+  if (err instanceof AgentAuthError) {
+    log.error({ runId, agent, action }, 'Agent auth error (invalid API key)');
+    markRunFailed(db, runId, `Authentication failed for agent '${agent}': ${err.message}`);
+    return;
+  }
+
+  if (err instanceof AgentRateLimitError) {
+    log.warn({ runId, agent, action, retryAfterMs: err.retryAfterMs }, 'Agent rate limited');
+    // Re-enqueue with delay
+    const delay = err.retryAfterMs ?? 60_000;
+    const qm = getQueueManager();
+    await qm.addJob('agents', `agent-${runId}-${agent}-${action}-retry-${Date.now()}`, {
+      runId,
+      agentInvocationId: generateAgentInvocationId(),
+      agent,
+      action,
+      context: {},
+    }, { delay });
+    log.info({ runId, agent, delayMs: delay }, 'Agent job re-enqueued after rate limit');
+    return;
+  }
+
+  if (err instanceof AgentError) {
+    log.error({ runId, agent, action, code: err.code, error: err.message }, 'Agent error');
+    markRunFailed(db, runId, `Agent '${agent}' failed: ${err.message}`);
+    return;
+  }
+
+  // Unknown error
+  const message = err instanceof Error ? err.message : 'Unknown error';
+  log.error({ runId, agent, action, error: message }, 'Unexpected agent error');
+  markRunFailed(db, runId, `Agent '${agent}' failed unexpectedly: ${message}`);
+}
+
+/**
+ * Emit an agent lifecycle event (agent.started, agent.completed, agent.failed).
+ */
+function emitAgentEvent(
+  db: ReturnType<typeof getDatabase>,
+  run: Run,
+  type: 'agent.started' | 'agent.completed' | 'agent.failed',
+  agent: string,
+  action: string,
+  payload: Record<string, unknown> = {}
+): void {
+  try {
+    createEvent(db, {
+      projectId: run.projectId,
+      runId: run.runId,
+      type,
+      class: type === 'agent.started' ? 'signal' : 'decision',
+      payload: { agent, action, ...payload },
+      idempotencyKey: `${type}:${run.runId}:${agent}:${action}:${Date.now()}`,
+      source: 'worker',
+    });
+  } catch (err) {
+    log.warn(
+      { runId: run.runId, type, agent, error: err instanceof Error ? err.message : 'Unknown' },
+      'Failed to emit agent event (non-fatal)'
+    );
+  }
+}
+
+/**
  * Process agent invocation jobs
  */
 async function processAgent(job: Job<AgentJobData>): Promise<void> {
-  log.info(
-    { agent: job.data.agent, runId: job.data.runId, action: job.data.action },
-    'Processing agent'
-  );
-  // TODO: Implement agent processing in WP3+
-  await Promise.resolve();
+  const { runId, agent, action } = job.data;
+  log.info({ runId, agent, action }, 'Processing agent');
+
+  const db = getDatabase();
+
+  // Fetch run
+  const run = getRun(db, runId);
+  if (run === null) {
+    log.error({ runId }, 'Run not found for agent job');
+    return;
+  }
+
+  // Idempotency: skip if terminal
+  if (TERMINAL_PHASES.has(run.phase)) {
+    log.info({ runId, phase: run.phase }, 'Run in terminal state, skipping agent');
+    return;
+  }
+
+  // Emit agent.started event
+  emitAgentEvent(db, run, 'agent.started', agent, action);
+
+  // Get worktree path
+  const worktree = getWorktreeForRun(db, runId);
+  const worktreePath = worktree?.path;
+
+  try {
+    const routeKey = `${agent}:${action}`;
+    switch (routeKey) {
+      case 'planner:create_plan':
+        await handlePlannerAgent(db, run, worktreePath);
+        break;
+      case 'reviewer:review_plan':
+        await handlePlanReviewerAgent(db, run, worktreePath);
+        break;
+      case 'implementer:apply_changes':
+        await handleImplementerAgent(db, run, worktreePath);
+        break;
+      case 'reviewer:review_code':
+        await handleCodeReviewerAgent(db, run, worktreePath);
+        break;
+      default:
+        // Unknown routes fail deterministically rather than leaving runs hanging
+        emitAgentEvent(db, run, 'agent.failed', agent, action, {
+          errorCode: 'unknown_route',
+          errorMessage: `Unknown agent:action combination '${routeKey}'`,
+        });
+        markRunFailed(db, runId, `Unknown agent:action combination '${routeKey}'`);
+        return;
+    }
+
+    // Emit agent.completed event
+    emitAgentEvent(db, run, 'agent.completed', agent, action);
+  } catch (err) {
+    // Emit agent.failed event
+    emitAgentEvent(db, run, 'agent.failed', agent, action, {
+      errorCode: err instanceof AgentError ? err.code : 'unknown',
+      errorMessage: err instanceof Error ? err.message : 'Unknown error',
+    });
+    await handleAgentError(db, run, agent, action, err);
+  }
 }
 
 /**
