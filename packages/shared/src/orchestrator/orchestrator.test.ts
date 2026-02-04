@@ -1,0 +1,357 @@
+/**
+ * Orchestrator Module Tests
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { Database as DatabaseType } from 'better-sqlite3';
+import { initDatabase, closeDatabase } from '../db/index';
+import { createRun } from '../runs/index';
+import { updateTaskActiveRun } from '../tasks/index';
+import { createEvent, listRunEvents } from '../events/index';
+import {
+  transitionPhase,
+  isValidTransition,
+  VALID_TRANSITIONS,
+  TERMINAL_PHASES,
+} from './index';
+
+let db: DatabaseType;
+
+interface SeedResult {
+  userId: string;
+  projectId: string;
+  repoId: string;
+  taskId: string;
+}
+
+function seedTestData(db: DatabaseType, suffix = ''): SeedResult {
+  const s = suffix;
+  const now = new Date().toISOString();
+  const userId = `user_test${s}`;
+  const projectId = `proj_test${s}`;
+  const repoId = `repo_test${s}`;
+  const taskId = `task_test${s}`;
+
+  db.prepare(`
+    INSERT OR IGNORE INTO users (user_id, github_id, github_node_id, github_login, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'active', ?, ?)
+  `).run(userId, 100 + Number(s || 0), `U_test${s}`, `testuser${s}`, now, now);
+
+  db.prepare(`
+    INSERT INTO projects (
+      project_id, user_id, name, github_org_id, github_org_node_id, github_org_name,
+      github_installation_id, default_profile_id, default_base_branch,
+      port_range_start, port_range_end, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(projectId, userId, `Test Project${s}`, 1 + Number(s || 0), `O_test${s}`, `testorg${s}`,
+    12345 + Number(s || 0), 'default', 'main', 3100, 3199, now, now);
+
+  db.prepare(`
+    INSERT INTO repos (
+      repo_id, project_id, github_node_id, github_numeric_id,
+      github_owner, github_name, github_full_name, github_default_branch,
+      profile_id, status, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(repoId, projectId, `R_test${s}`, 100 + Number(s || 0),
+    'testowner', `testrepo${s}`, `testowner/testrepo${s}`, 'main',
+    'default', 'active', now, now);
+
+  db.prepare(`
+    INSERT INTO tasks (
+      task_id, project_id, repo_id, github_node_id, github_issue_number,
+      github_type, github_title, github_body, github_state, github_labels_json,
+      github_synced_at, created_at, updated_at, last_activity_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(taskId, projectId, repoId, `I_test${s}`, 42,
+    'issue', 'Test Task', 'Body', 'open', '[]',
+    now, now, now, now);
+
+  return { userId, projectId, repoId, taskId };
+}
+
+function createTestRun(db: DatabaseType, seed: SeedResult) {
+  const run = createRun(db, {
+    taskId: seed.taskId,
+    projectId: seed.projectId,
+    repoId: seed.repoId,
+    baseBranch: 'main',
+  });
+  updateTaskActiveRun(db, seed.taskId, run.runId);
+  return run;
+}
+
+beforeEach(() => {
+  db = initDatabase({ path: ':memory:' });
+});
+
+afterEach(() => {
+  closeDatabase(db);
+});
+
+describe('isValidTransition', () => {
+  it('accepts all valid transitions', () => {
+    for (const [from, targets] of Object.entries(VALID_TRANSITIONS)) {
+      for (const to of targets) {
+        expect(isValidTransition(from as never, to)).toBe(true);
+      }
+    }
+  });
+
+  it('rejects invalid transitions', () => {
+    expect(isValidTransition('pending', 'completed')).toBe(false);
+    expect(isValidTransition('pending', 'executing')).toBe(false);
+    expect(isValidTransition('planning', 'completed')).toBe(false);
+  });
+
+  it('rejects transitions from terminal states', () => {
+    expect(isValidTransition('completed', 'pending')).toBe(false);
+    expect(isValidTransition('completed', 'cancelled')).toBe(false);
+    expect(isValidTransition('cancelled', 'pending')).toBe(false);
+    expect(isValidTransition('cancelled', 'completed')).toBe(false);
+  });
+});
+
+describe('TERMINAL_PHASES', () => {
+  it('contains completed and cancelled', () => {
+    expect(TERMINAL_PHASES.has('completed')).toBe(true);
+    expect(TERMINAL_PHASES.has('cancelled')).toBe(true);
+    expect(TERMINAL_PHASES.has('pending')).toBe(false);
+    expect(TERMINAL_PHASES.has('blocked')).toBe(false);
+  });
+});
+
+describe('transitionPhase', () => {
+  it('succeeds for valid transition (pending → planning)', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    const result = transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'route',
+      triggeredBy: 'system',
+      reason: 'Worktree ready',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.run).toBeDefined();
+    expect(result.run!.phase).toBe('planning');
+    expect(result.run!.step).toBe('route');
+    expect(result.event).toBeDefined();
+  });
+
+  it('rejects invalid transition (pending → completed)', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    const result = transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'completed',
+      triggeredBy: 'system',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Invalid transition');
+  });
+
+  it('rejects transition from terminal state', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Move to planning, then cancelled
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'route', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'cancelled', toStep: 'cleanup', triggeredBy: 'user', result: 'cancelled' });
+
+    const result = transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'pending',
+      triggeredBy: 'system',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Invalid transition');
+  });
+
+  it('returns error for missing run', () => {
+    const result = transitionPhase(db, {
+      runId: 'run_nonexistent',
+      toPhase: 'planning',
+      triggeredBy: 'system',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not found');
+  });
+
+  it('allocates monotonic sequence numbers', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    const r1 = transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'route', triggeredBy: 'system' });
+    expect(r1.event!.sequence).toBe(1);
+
+    const r2 = transitionPhase(db, { runId: run.runId, toPhase: 'blocked', triggeredBy: 'system', blockedReason: 'test' });
+    expect(r2.event!.sequence).toBe(2);
+
+    const r3 = transitionPhase(db, { runId: run.runId, toPhase: 'cancelled', toStep: 'cleanup', triggeredBy: 'system', result: 'cancelled' });
+    expect(r3.event!.sequence).toBe(3);
+
+    // Verify updated run.nextSequence
+    expect(r3.run!.nextSequence).toBe(4);
+    expect(r3.run!.lastEventSequence).toBe(3);
+  });
+
+  it('creates event with correct payload', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'route',
+      triggeredBy: 'system',
+      reason: 'Worktree ready',
+    });
+
+    const events = listRunEvents(db, run.runId);
+    expect(events).toHaveLength(1);
+
+    const evt = events[0];
+    expect(evt.type).toBe('phase.transitioned');
+    expect(evt.class).toBe('decision');
+    expect(evt.source).toBe('orchestrator');
+    expect(evt.payload).toEqual({
+      from: 'pending',
+      to: 'planning',
+      triggeredBy: 'system',
+      reason: 'Worktree ready',
+      step: 'route',
+    });
+  });
+
+  it('handles optimistic lock (concurrent phase change)', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Simulate another process changing the phase
+    db.prepare('UPDATE runs SET phase = ? WHERE run_id = ?').run('planning', run.runId);
+
+    // Now try to transition from pending (stale)
+    const result = transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'route',
+      triggeredBy: 'system',
+    });
+
+    // The read will see 'planning', and planning → planning is invalid
+    expect(result.success).toBe(false);
+  });
+
+  it('sets completed_at and result for terminal phases', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'route', triggeredBy: 'system' });
+    const result = transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'cancelled',
+      toStep: 'cleanup',
+      triggeredBy: 'user_test',
+      result: 'cancelled',
+    });
+
+    expect(result.run!.phase).toBe('cancelled');
+    expect(result.run!.completedAt).toBeDefined();
+    expect(result.run!.result).toBe('cancelled');
+  });
+
+  it('sets blocked_reason and blocked_context for blocked phase', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'route', triggeredBy: 'system' });
+    const result = transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Clone failed',
+      blockedContext: { error: 'timeout' },
+    });
+
+    expect(result.run!.phase).toBe('blocked');
+    expect(result.run!.blockedReason).toBe('Clone failed');
+    expect(result.run!.blockedContextJson).toBe('{"error":"timeout"}');
+  });
+
+  it('clears tasks.active_run_id on terminal transition', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'route', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'cancelled', toStep: 'cleanup', triggeredBy: 'user', result: 'cancelled' });
+
+    const taskRow = db.prepare('SELECT active_run_id FROM tasks WHERE task_id = ?').get(seed.taskId) as { active_run_id: string | null };
+    expect(taskRow.active_run_id).toBeNull();
+  });
+
+  it('does NOT clear tasks.active_run_id on non-terminal transition', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'route', triggeredBy: 'system' });
+
+    const taskRow = db.prepare('SELECT active_run_id FROM tasks WHERE task_id = ?').get(seed.taskId) as { active_run_id: string | null };
+    expect(taskRow.active_run_id).toBe(run.runId);
+  });
+});
+
+describe('phase.transitioned event exclusivity', () => {
+  it('rejects phase.transitioned events from non-orchestrator sources via createEvent', () => {
+    const seed = seedTestData(db);
+
+    expect(() =>
+      createEvent(db, {
+        projectId: seed.projectId,
+        runId: 'run_fake',
+        type: 'phase.transitioned',
+        class: 'decision',
+        payload: { from: 'pending', to: 'planning' },
+        idempotencyKey: 'bypass:1',
+        source: 'webhook',
+      })
+    ).toThrow('phase.transitioned events can only be created with source=orchestrator');
+  });
+
+  it('rejects phase.transitioned events from tool_layer source', () => {
+    const seed = seedTestData(db);
+
+    expect(() =>
+      createEvent(db, {
+        projectId: seed.projectId,
+        runId: 'run_fake',
+        type: 'phase.transitioned',
+        class: 'decision',
+        payload: { from: 'pending', to: 'planning' },
+        idempotencyKey: 'bypass:2',
+        source: 'tool_layer',
+      })
+    ).toThrow('phase.transitioned events can only be created with source=orchestrator');
+  });
+
+  it('rejects phase.transitioned events from operator source', () => {
+    const seed = seedTestData(db);
+
+    expect(() =>
+      createEvent(db, {
+        projectId: seed.projectId,
+        runId: 'run_fake',
+        type: 'phase.transitioned',
+        class: 'decision',
+        payload: { from: 'pending', to: 'planning' },
+        idempotencyKey: 'bypass:3',
+        source: 'operator',
+      })
+    ).toThrow('phase.transitioned events can only be created with source=orchestrator');
+  });
+});

@@ -42,6 +42,11 @@ import {
   initGitHubApp,
   isGitHubAppInitialized,
   getInstallationToken,
+  // Runs & Orchestrator (WP5)
+  getRun,
+  transitionPhase,
+  TERMINAL_PHASES,
+  type Run,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -225,18 +230,16 @@ async function processRun(job: Job<RunJobData>): Promise<void> {
   const db = getDatabase();
 
   // Fetch the run record
-  const runStmt = db.prepare('SELECT * FROM runs WHERE run_id = ?');
-  const run = runStmt.get(runId) as Record<string, unknown> | undefined;
+  const run = getRun(db, runId);
 
-  if (run === undefined) {
+  if (run === null) {
     log.error({ runId }, 'Run not found');
     return;
   }
 
   // Idempotency guard: skip if already in terminal state
-  const phase = run['phase'] as string;
-  if (phase === 'completed' || phase === 'cancelled') {
-    log.info({ runId, phase }, 'Run already in terminal state, skipping');
+  if (TERMINAL_PHASES.has(run.phase)) {
+    log.info({ runId, phase: run.phase }, 'Run already in terminal state, skipping');
     return;
   }
 
@@ -251,8 +254,8 @@ async function processRun(job: Job<RunJobData>): Promise<void> {
       handleRunTimeout(db, run);
       break;
     case 'resume':
-      // No-op stub for WP5
-      log.info({ runId }, 'Run resume not yet implemented (WP5)');
+      // No-op stub — pause/resume is WP11
+      log.info({ runId }, 'Run resume not yet implemented (WP11)');
       break;
     default:
       log.warn({ runId, action }, 'Unknown run action');
@@ -265,12 +268,9 @@ async function processRun(job: Job<RunJobData>): Promise<void> {
  */
 async function handleRunStart(
   db: ReturnType<typeof getDatabase>,
-  run: Record<string, unknown>
+  run: Run
 ): Promise<void> {
-  const runId = run['run_id'] as string;
-  const projectId = run['project_id'] as string;
-  const repoId = run['repo_id'] as string;
-  const baseBranch = run['base_branch'] as string;
+  const { runId, projectId, repoId, baseBranch } = run;
 
   log.info({ runId, projectId, repoId }, 'Starting run');
 
@@ -278,10 +278,21 @@ async function handleRunStart(
   const existingWorktree = getWorktreeForRun(db, runId);
   if (existingWorktree !== null) {
     log.info({ runId, worktreeId: existingWorktree.worktreeId }, 'Worktree already exists for run');
-    // Ensure run state is advanced
+    // Update git state (branch/head_sha) directly — not a phase change
     db.prepare(
-      'UPDATE runs SET phase = ?, step = ?, branch = ?, head_sha = ?, updated_at = ? WHERE run_id = ? AND phase = ?'
-    ).run('planning', 'route', existingWorktree.branchName, existingWorktree.baseCommit, new Date().toISOString(), runId, 'pending');
+      'UPDATE runs SET branch = ?, head_sha = ?, updated_at = ? WHERE run_id = ?'
+    ).run(existingWorktree.branchName, existingWorktree.baseCommit, new Date().toISOString(), runId);
+    // Advance phase via orchestrator
+    const result = transitionPhase(db, {
+      runId,
+      toPhase: 'planning',
+      toStep: 'route',
+      triggeredBy: 'system',
+      reason: 'Worktree ready (existing)',
+    });
+    if (!result.success) {
+      log.warn({ runId, error: result.error }, 'Phase transition failed (idempotency — may already be advanced)');
+    }
     return;
   }
 
@@ -339,11 +350,24 @@ async function handleRunStart(
     return;
   }
 
-  // 7. Advance run state
-  const now = new Date().toISOString();
+  // 7. Update git state (branch/head_sha) — not a phase change
   db.prepare(
-    'UPDATE runs SET phase = ?, step = ?, branch = ?, head_sha = ?, updated_at = ? WHERE run_id = ?'
-  ).run('planning', 'route', worktree.branchName, worktree.baseCommit, now, runId);
+    'UPDATE runs SET branch = ?, head_sha = ?, updated_at = ? WHERE run_id = ?'
+  ).run(worktree.branchName, worktree.baseCommit, new Date().toISOString(), runId);
+
+  // 8. Advance phase via orchestrator
+  const result = transitionPhase(db, {
+    runId,
+    toPhase: 'planning',
+    toStep: 'route',
+    triggeredBy: 'system',
+    reason: 'Worktree ready',
+  });
+
+  if (!result.success) {
+    log.error({ runId, error: result.error }, 'Failed to transition to planning');
+    return;
+  }
 
   log.info(
     { runId, worktreeId: worktree.worktreeId, branch: worktree.branchName, baseCommit: worktree.baseCommit },
@@ -356,17 +380,25 @@ async function handleRunStart(
  */
 function handleRunCancel(
   db: ReturnType<typeof getDatabase>,
-  run: Record<string, unknown>,
+  run: Run,
   triggeredBy?: string
 ): void {
-  const runId = run['run_id'] as string;
+  const { runId } = run;
 
   log.info({ runId, triggeredBy }, 'Cancelling run');
 
-  const now = new Date().toISOString();
-  db.prepare(
-    'UPDATE runs SET phase = ?, step = ?, result = ?, updated_at = ?, completed_at = ? WHERE run_id = ?'
-  ).run('cancelled', 'cleanup', 'cancelled', now, now, runId);
+  const result = transitionPhase(db, {
+    runId,
+    toPhase: 'cancelled',
+    toStep: 'cleanup',
+    triggeredBy: triggeredBy ?? 'system',
+    result: 'cancelled',
+  });
+
+  if (!result.success) {
+    log.error({ runId, error: result.error }, 'Failed to transition to cancelled');
+    return;
+  }
 
   // Best-effort worktree cleanup
   try {
@@ -383,19 +415,29 @@ function handleRunCancel(
 
 /**
  * Handle the 'timeout' action for a run.
+ * Uses 'cancelled' since it's reachable from all non-terminal phases.
  */
 function handleRunTimeout(
   db: ReturnType<typeof getDatabase>,
-  run: Record<string, unknown>
+  run: Run
 ): void {
-  const runId = run['run_id'] as string;
+  const { runId } = run;
 
   log.info({ runId }, 'Timing out run');
 
-  const now = new Date().toISOString();
-  db.prepare(
-    'UPDATE runs SET phase = ?, step = ?, result = ?, result_reason = ?, updated_at = ?, completed_at = ? WHERE run_id = ?'
-  ).run('completed', 'cleanup', 'failure', 'Run timed out', now, now, runId);
+  const result = transitionPhase(db, {
+    runId,
+    toPhase: 'cancelled',
+    toStep: 'cleanup',
+    triggeredBy: 'system',
+    result: 'failure',
+    resultReason: 'Run timed out',
+  });
+
+  if (!result.success) {
+    log.error({ runId, error: result.error }, 'Failed to transition to cancelled (timeout)');
+    return;
+  }
 
   // Best-effort worktree cleanup
   try {
@@ -411,19 +453,27 @@ function handleRunTimeout(
 }
 
 /**
- * Mark a run as failed.
+ * Mark a run as blocked due to a failure.
  */
 function markRunFailed(
   db: ReturnType<typeof getDatabase>,
   runId: string,
   reason: string
 ): void {
-  const now = new Date().toISOString();
-  db.prepare(
-    'UPDATE runs SET phase = ?, result = ?, result_reason = ?, updated_at = ?, completed_at = ? WHERE run_id = ?'
-  ).run('completed', 'failure', reason, now, now, runId);
+  const result = transitionPhase(db, {
+    runId,
+    toPhase: 'blocked',
+    triggeredBy: 'system',
+    blockedReason: reason,
+    blockedContext: { error: reason },
+  });
 
-  log.error({ runId, reason }, 'Run failed');
+  if (!result.success) {
+    log.error({ runId, reason, transitionError: result.error }, 'Failed to transition to blocked');
+    return;
+  }
+
+  log.error({ runId, reason }, 'Run blocked due to failure');
 }
 
 /**

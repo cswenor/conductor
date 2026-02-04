@@ -60,3 +60,15 @@ export * from './api-keys/index';
 
 // Re-export worktree module
 export * from './worktree/index';
+
+// Re-export policy-sets module
+export * from './policy-sets/index';
+
+// Re-export tasks module
+export * from './tasks/index';
+
+// Re-export runs module
+export * from './runs/index';
+
+// Re-export orchestrator module
+export * from './orchestrator/index';

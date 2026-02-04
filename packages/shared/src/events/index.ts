@@ -119,6 +119,8 @@ export interface CreateEventInput {
   causationId?: string;
   correlationId?: string;
   source: EventSource;
+  /** When provided, use this sequence instead of auto-allocating. Used by the orchestrator. */
+  sequence?: number;
 }
 
 // =============================================================================
@@ -425,6 +427,11 @@ export function createEvent(
   db: Database,
   input: CreateEventInput
 ): EventRecord | null {
+  // Enforce phase.transitioned exclusivity: only orchestrator source allowed
+  if (input.type === 'phase.transitioned' && input.source !== 'orchestrator') {
+    throw new Error('phase.transitioned events can only be created with source=orchestrator');
+  }
+
   const eventId = generateEventId();
   const createdAt = new Date().toISOString();
 
@@ -442,9 +449,11 @@ export function createEvent(
     return null;
   }
 
-  // Get next sequence number if this is a run event
+  // Use provided sequence (from orchestrator) or auto-allocate for run events
   let sequence: number | undefined;
-  if (input.runId !== undefined) {
+  if (input.sequence !== undefined) {
+    sequence = input.sequence;
+  } else if (input.runId !== undefined) {
     const seqStmt = db.prepare(
       'SELECT COALESCE(MAX(sequence), 0) + 1 as next_seq FROM events WHERE run_id = ?'
     );
