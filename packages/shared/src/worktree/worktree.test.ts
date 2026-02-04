@@ -370,6 +370,26 @@ describe('Worktree Module', () => {
       // Neither main nor master exists — falls through to default 'main'
       expect(resolveBaseBranch(db, 'repo_test', undefined, bareRepoPath)).toBe('main');
     });
+
+    it('should skip invalid github_default_branch and fall through to clone inspection', () => {
+      const { bareRepoPath } = createLocalBareRepo(testDir, 'main');
+      // Set an invalid branch name in the DB (double dots violate git ref rules)
+      db.prepare('UPDATE repos SET github_default_branch = ? WHERE repo_id = ?').run('branch..bad', 'repo_test');
+
+      // Should skip the invalid DB value and find main in the clone
+      expect(resolveBaseBranch(db, 'repo_test', undefined, bareRepoPath)).toBe('main');
+    });
+
+    it('should skip invalid github_default_branch and fall back to master', () => {
+      const masterDir = join(testDir, 'invalid-db-master-test');
+      mkdirSync(masterDir, { recursive: true });
+      const { bareRepoPath } = createLocalBareRepo(masterDir, 'master');
+      // Set an invalid branch name in the DB
+      db.prepare('UPDATE repos SET github_default_branch = ? WHERE repo_id = ?').run('.dotstart', 'repo_test');
+
+      // Should skip the invalid DB value and find master in the clone
+      expect(resolveBaseBranch(db, 'repo_test', undefined, bareRepoPath)).toBe('master');
+    });
   });
 
   // ===========================================================================

@@ -126,7 +126,11 @@ const LOCK_POLL_MS = 100;
  * Acquire a file-based lock using directory creation (atomic on POSIX).
  * Returns a release function, or throws if timeout.
  */
-function acquireFileLock(lockName: string, timeoutMs = LOCK_TIMEOUT_MS): () => void {
+export function acquireFileLock(
+  lockName: string,
+  timeoutMs = LOCK_TIMEOUT_MS,
+  staleLockTimeoutMs?: number
+): () => void {
   const locksDir = getLocksDir();
   mkdirSync(locksDir, { recursive: true });
 
@@ -156,7 +160,8 @@ function acquireFileLock(lockName: string, timeoutMs = LOCK_TIMEOUT_MS): () => v
       // Check for stale lock (older than timeout)
       try {
         const stats = statSync(lockPath);
-        if (Date.now() - stats.mtimeMs > timeoutMs * 2) {
+        const staleThreshold = staleLockTimeoutMs ?? timeoutMs * 2;
+        if (Date.now() - stats.mtimeMs > staleThreshold) {
           // Stale lock, remove it
           log.warn({ lockName }, 'Removing stale lock');
           rmdirSync(lockPath);
@@ -273,7 +278,7 @@ export function cloneOrFetchRepo(
   const { projectId, repoId, githubOwner, githubName, installationToken } = options;
 
   // Acquire cross-process lock
-  const releaseLock = acquireFileLock(`clone-${repoId}`);
+  const releaseLock = acquireFileLock(`clone-${repoId}`, LOCK_TIMEOUT_MS, 600_000);
 
   try {
     const reposDir = getReposDir();
@@ -395,7 +400,7 @@ export function createWorktree(
   }
 
   // Acquire cross-process lock
-  const releaseLock = acquireFileLock(`worktree-${runId}`);
+  const releaseLock = acquireFileLock(`worktree-${runId}`, LOCK_TIMEOUT_MS, 120_000);
 
   try {
     // Double-check after acquiring lock
@@ -559,7 +564,14 @@ export function resolveBaseBranch(
   const row = stmt.get(repoId) as { github_default_branch: string } | undefined;
 
   if (row !== undefined && row.github_default_branch !== '') {
-    return row.github_default_branch;
+    if (!isValidBranchName(row.github_default_branch)) {
+      log.warn(
+        { repoId, githubDefaultBranch: row.github_default_branch },
+        'Invalid github_default_branch in DB, falling back to clone inspection'
+      );
+    } else {
+      return row.github_default_branch;
+    }
   }
 
   // 3. Fallback: check which default branch exists in the clone
