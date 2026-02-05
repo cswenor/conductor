@@ -17,6 +17,7 @@ import {
   listToolInvocations,
   listToolInvocationsByRun,
 } from './tool-invocations.js';
+import { ensureBuiltInPolicyDefinitions } from './policy-definitions.js';
 
 let db: DatabaseType;
 let runId: string;
@@ -75,6 +76,7 @@ function seedTestData(database: DatabaseType): { runId: string; agentInvocationI
 
 beforeEach(() => {
   db = initDatabase({ path: ':memory:' });
+  ensureBuiltInPolicyDefinitions(db);
   const seed = seedTestData(db);
   runId = seed.runId;
   agentInvocationId = seed.agentInvocationId;

@@ -2,7 +2,10 @@
  * Policy Evaluator Tests
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { ToolExecutionContext } from './types.js';
 import {
   worktreeBoundaryRule,
@@ -67,6 +70,69 @@ describe('worktreeBoundaryRule', () => {
       makeContext()
     );
     expect(result?.decision).toBe('block');
+  });
+
+  describe('symlink escape detection', () => {
+    let testWorktree: string;
+
+    afterEach(() => {
+      if (testWorktree) {
+        rmSync(testWorktree, { recursive: true, force: true });
+      }
+    });
+
+    it('blocks write through symlink dir to outside worktree (non-existent target)', () => {
+      testWorktree = mkdtempSync(join(tmpdir(), 'conductor-policy-symlink-'));
+      symlinkSync('/tmp', join(testWorktree, 'symlink_dir'));
+
+      const result = worktreeBoundaryRule.evaluate(
+        'write_file',
+        { path: 'symlink_dir/new_file.txt', content: 'evil' },
+        makeContext(testWorktree)
+      );
+      expect(result?.decision).toBe('block');
+      expect(result?.reason).toContain('escapes worktree via symlink');
+    });
+
+    it('allows write through symlink dir pointing inside worktree', () => {
+      testWorktree = mkdtempSync(join(tmpdir(), 'conductor-policy-symlink-'));
+      mkdirSync(join(testWorktree, 'real_dir'), { recursive: true });
+      symlinkSync(join(testWorktree, 'real_dir'), join(testWorktree, 'link_dir'));
+
+      const result = worktreeBoundaryRule.evaluate(
+        'write_file',
+        { path: 'link_dir/new_file.txt', content: 'safe' },
+        makeContext(testWorktree)
+      );
+      expect(result).toBeNull();
+    });
+
+    it('allows normal nested create (no symlinks)', () => {
+      testWorktree = mkdtempSync(join(tmpdir(), 'conductor-policy-symlink-'));
+
+      const result = worktreeBoundaryRule.evaluate(
+        'write_file',
+        { path: 'deep/nested/new.ts', content: 'code' },
+        makeContext(testWorktree)
+      );
+      expect(result).toBeNull();
+    });
+
+    it('blocks existing file symlink escape', () => {
+      testWorktree = mkdtempSync(join(tmpdir(), 'conductor-policy-symlink-'));
+      const outsideDir = mkdtempSync(join(tmpdir(), 'conductor-outside-'));
+      writeFileSync(join(outsideDir, 'secret.txt'), 'secret');
+      symlinkSync(join(outsideDir, 'secret.txt'), join(testWorktree, 'link_to_secret.txt'));
+
+      const result = worktreeBoundaryRule.evaluate(
+        'read_file',
+        { path: 'link_to_secret.txt' },
+        makeContext(testWorktree)
+      );
+      expect(result?.decision).toBe('block');
+
+      rmSync(outsideDir, { recursive: true, force: true });
+    });
   });
 });
 

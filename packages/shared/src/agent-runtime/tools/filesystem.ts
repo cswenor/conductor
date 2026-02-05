@@ -5,11 +5,12 @@
  * All operations are bounded to the worktree and respect policy rules.
  */
 
-import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve, relative, dirname, isAbsolute } from 'node:path';
 import { isValidFilePath } from '../agents/implementer.js';
 import { isSensitiveFile } from '../context.js';
+import { checkSymlinkEscape } from './path-safety.js';
 import type { ToolDefinition, ToolResult } from './types.js';
 import type { ToolRegistry } from './registry.js';
 
@@ -18,7 +19,7 @@ import type { ToolRegistry } from './registry.js';
 // =============================================================================
 
 const MAX_READ_BYTES = 100_000; // 100KB
-const MAX_LIST_ENTRIES = 2000;
+const MAX_LIST_ENTRIES = 500;
 
 // =============================================================================
 // Helpers
@@ -35,18 +36,10 @@ function validatePath(path: string, worktreePath: string): string | null {
     return `Path escapes worktree: ${path}`;
   }
 
-  // Resolve symlinks to detect escape via symlink targets
-  try {
-    const realWorktree = realpathSync(worktreePath);
-    if (existsSync(resolved)) {
-      const realResolved = realpathSync(resolved);
-      const realRel = relative(realWorktree, realResolved);
-      if (realRel.startsWith('..') || isAbsolute(realRel)) {
-        return `Path escapes worktree via symlink: ${path}`;
-      }
-    }
-  } catch {
-    // If realpath fails (e.g. broken symlink), allow the logical check above to govern
+  // Resolve symlinks (including parent symlinks for non-existent targets) to detect escape
+  const symlinkEscape = checkSymlinkEscape(resolved, worktreePath);
+  if (symlinkEscape !== null) {
+    return `${symlinkEscape}: ${path}`;
   }
 
   return null;
@@ -58,6 +51,47 @@ function ok(content: string, meta: Record<string, unknown>): Promise<ToolResult>
 
 function err(content: string, meta: Record<string, unknown>): Promise<ToolResult> {
   return Promise.resolve({ content, isError: true, meta });
+}
+
+/**
+ * Simple glob matcher supporting `*` (any chars except `/`) and `**` (any chars including `/`).
+ * Normalizes backslashes to forward slashes before matching.
+ * If pattern contains `/`, matches against full path; otherwise matches against filename only.
+ */
+export function matchesGlob(filePath: string, pattern: string): boolean {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const normalizedPattern = pattern.replace(/\\/g, '/');
+
+  // If pattern has no directory separator, match against filename only
+  const matchTarget = normalizedPattern.includes('/')
+    ? normalizedPath
+    : normalizedPath.split('/').pop() ?? normalizedPath;
+
+  // Convert glob pattern to regex
+  let regexStr = '';
+  let i = 0;
+  while (i < normalizedPattern.length) {
+    if (normalizedPattern[i] === '*' && normalizedPattern[i + 1] === '*') {
+      regexStr += '.*';
+      i += 2;
+      // Skip trailing / after **
+      if (normalizedPattern[i] === '/') i++;
+    } else if (normalizedPattern[i] === '*') {
+      regexStr += '[^/]*';
+      i++;
+    } else if (normalizedPattern[i] === '?') {
+      regexStr += '[^/]';
+      i++;
+    } else if ('.+^${}()|[]\\'.includes(normalizedPattern[i] ?? '')) {
+      regexStr += '\\' + normalizedPattern[i];
+      i++;
+    } else {
+      regexStr += normalizedPattern[i];
+      i++;
+    }
+  }
+
+  return new RegExp(`^${regexStr}$`).test(matchTarget);
 }
 
 // =============================================================================
@@ -205,7 +239,7 @@ const deleteFileTool: ToolDefinition = {
 
 const listFilesTool: ToolDefinition = {
   name: 'list_files',
-  description: 'List files in the repository using git ls-files. Optionally filter by a subdirectory. Sensitive files (.env, .pem, etc) are excluded. Maximum 2000 entries.',
+  description: 'List files in the repository using git ls-files. Optionally filter by a subdirectory and/or glob pattern. Sensitive files (.env, .pem, etc) are excluded. Maximum 500 entries.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -213,11 +247,16 @@ const listFilesTool: ToolDefinition = {
         type: 'string',
         description: 'Optional subdirectory to list (relative to repository root). Omit to list all files.',
       },
+      pattern: {
+        type: 'string',
+        description: 'Optional glob pattern to filter results (e.g., "*.ts", "**/*.test.ts"). Supports * (any non-/ chars) and ** (any chars including /).',
+      },
     },
   },
   extractTarget: (input) => input['directory'] as string | undefined,
   execute: (input, context) => {
     const directory = input['directory'] as string | undefined;
+    const pattern = input['pattern'] as string | undefined;
 
     if (directory !== undefined) {
       const validationError = validatePath(directory, context.worktreePath);
@@ -250,8 +289,15 @@ const listFilesTool: ToolDefinition = {
         maxBuffer: 1024 * 1024,
       });
 
-      const trackedFiles = tracked.split('\n').filter((f) => f.length > 0);
-      const untrackedFiles = untracked.split('\n').filter((f) => f.length > 0);
+      let trackedFiles = tracked.split('\n').filter((f) => f.length > 0);
+      let untrackedFiles = untracked.split('\n').filter((f) => f.length > 0);
+
+      // Apply pattern filter (post-filter for correct directory+pattern intersection)
+      if (pattern !== undefined && pattern.length > 0) {
+        trackedFiles = trackedFiles.filter((f) => matchesGlob(f, pattern));
+        untrackedFiles = untrackedFiles.filter((f) => matchesGlob(f, pattern));
+      }
+
       const files = [...trackedFiles, ...untrackedFiles];
       const safeFiles = files.filter((f) => !isSensitiveFile(f));
       const limited = safeFiles.slice(0, MAX_LIST_ENTRIES);

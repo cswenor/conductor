@@ -23,6 +23,7 @@ import {
   failToolInvocation,
   blockToolInvocation,
 } from './tool-invocations.js';
+import { ensureBuiltInPolicyDefinitions } from './policy-definitions.js';
 
 const log = createLogger({ name: 'conductor:executor' });
 
@@ -116,8 +117,29 @@ async function executeToolCall(
   const { db, registry, policyRules, context } = input;
   const tool = registry.get(toolCall.name);
 
-  // Unknown tool → error result
+  // Unknown tool → log invocation then error result
   if (tool === undefined) {
+    const unknownStart = Date.now();
+    const argsForRedaction = redactToolArgs(toolCall.name, toolCall.input);
+    const redacted = redact(argsForRedaction);
+
+    const invocation = createToolInvocation(db, {
+      agentInvocationId: context.agentInvocationId,
+      runId: context.runId,
+      tool: toolCall.name,
+      argsRedactedJson: redacted.json,
+      argsFieldsRemovedJson: JSON.stringify(redacted.fieldsRemoved),
+      argsSecretsDetected: redacted.secretsDetected,
+      argsPayloadHash: redacted.payloadHash,
+      argsPayloadHashScheme: redacted.payloadHashScheme,
+      policyDecision: 'allow',
+    });
+
+    failToolInvocation(db, invocation.toolInvocationId, {
+      resultMeta: { errorCode: 'unknown_tool', toolName: toolCall.name },
+      durationMs: Date.now() - unknownStart,
+    });
+
     return {
       type: 'tool_result',
       tool_use_id: toolCall.id,
@@ -251,6 +273,7 @@ async function executeToolCall(
 // =============================================================================
 
 export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult> {
+  ensureBuiltInPolicyDefinitions(input.db);
   const maxIterations = input.maxIterations ?? MAX_TOOL_ITERATIONS;
   const tools = input.registry.toAnthropicTools();
 

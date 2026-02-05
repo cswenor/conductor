@@ -124,6 +124,13 @@ export {
   listToolInvocationsByRun,
 } from './tool-invocations.js';
 
+// Policy definitions seeder
+export {
+  type BuiltInPolicy,
+  BUILT_IN_POLICIES,
+  ensureBuiltInPolicyDefinitions,
+} from './policy-definitions.js';
+
 // Executor (tool-use loop)
 export {
   MAX_TOOL_ITERATIONS,

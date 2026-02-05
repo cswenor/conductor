@@ -5,6 +5,8 @@
  * Only allows a curated set of test runner programs.
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from './types.js';
 import type { ToolRegistry } from './registry.js';
@@ -78,27 +80,120 @@ export function isAllowedTestCommand(command: string): boolean {
 }
 
 // =============================================================================
+// Auto-detection
+// =============================================================================
+
+const DETECTION_CHECKS = [
+  'package.json',
+  'Makefile',
+  'pytest.ini',
+  'pyproject.toml',
+  'setup.cfg',
+  'Cargo.toml',
+  'go.mod',
+] as const;
+
+/**
+ * Auto-detect a test command based on project files.
+ * Checks in priority order: npm > make > pytest > cargo > go.
+ */
+export function detectTestCommand(worktreePath: string): string | null {
+  // 1. package.json with scripts.test
+  const pkgPath = join(worktreePath, 'package.json');
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as Record<string, unknown>;
+      const scripts = pkg['scripts'] as Record<string, unknown> | undefined;
+      if (scripts?.['test'] !== undefined && scripts['test'] !== '') {
+        return 'npm test';
+      }
+    } catch {
+      // Malformed package.json — skip
+    }
+  }
+
+  // 2. Makefile with test target
+  const makefilePath = join(worktreePath, 'Makefile');
+  if (existsSync(makefilePath)) {
+    try {
+      const content = readFileSync(makefilePath, 'utf8');
+      if (/^test\s*:/m.test(content)) {
+        return 'make test';
+      }
+    } catch {
+      // Skip
+    }
+  }
+
+  // 3. pytest indicators
+  if (existsSync(join(worktreePath, 'pytest.ini'))) {
+    return 'pytest';
+  }
+  const pyprojectPath = join(worktreePath, 'pyproject.toml');
+  if (existsSync(pyprojectPath)) {
+    try {
+      const content = readFileSync(pyprojectPath, 'utf8');
+      if (content.includes('[tool.pytest')) {
+        return 'pytest';
+      }
+    } catch {
+      // Skip
+    }
+  }
+  const setupCfgPath = join(worktreePath, 'setup.cfg');
+  if (existsSync(setupCfgPath)) {
+    try {
+      const content = readFileSync(setupCfgPath, 'utf8');
+      if (content.includes('[tool:pytest]')) {
+        return 'pytest';
+      }
+    } catch {
+      // Skip
+    }
+  }
+
+  // 4. Cargo.toml
+  if (existsSync(join(worktreePath, 'Cargo.toml'))) {
+    return 'cargo test';
+  }
+
+  // 5. go.mod
+  if (existsSync(join(worktreePath, 'go.mod'))) {
+    return 'go test ./...';
+  }
+
+  return null;
+}
+
+// =============================================================================
 // Tool Definition
 // =============================================================================
 
 export const runTestsTool: ToolDefinition = {
   name: 'run_tests',
-  description: 'Run a test command in the repository. The command must start with an allowed test runner (npm, pnpm, yarn, jest, vitest, pytest, go, cargo, make). Shell operators are not allowed. Output is truncated to keep the tail (where test failures appear).',
+  description: 'Run a test command in the repository. The command must start with an allowed test runner (npm, pnpm, yarn, jest, vitest, pytest, go, cargo, make). Shell operators are not allowed. Output is truncated to keep the tail (where test failures appear). If command is omitted, auto-detects based on project files (package.json, Makefile, pytest.ini, Cargo.toml, go.mod).',
   inputSchema: {
     type: 'object',
     properties: {
       command: {
         type: 'string',
-        description: 'The test command to run (e.g., "npm test", "pnpm test -- --coverage", "pytest tests/")',
+        description: 'The test command to run (e.g., "npm test", "pnpm test -- --coverage", "pytest tests/"). If omitted, auto-detects from project files.',
       },
     },
-    required: ['command'],
   },
   execute: async (input, context): Promise<ToolResult> => {
-    const command = (input['command'] as string ?? '').trim();
+    let command = (input['command'] as string ?? '').trim();
 
     if (command.length === 0) {
-      return { content: 'Error: No command provided', isError: true, meta: { error: 'empty_command' } };
+      const detected = detectTestCommand(context.worktreePath);
+      if (detected === null) {
+        return {
+          content: `Error: No command provided and auto-detection failed. Checked: ${DETECTION_CHECKS.join(', ')}. Please provide an explicit command.`,
+          isError: true,
+          meta: { error: 'no_command_detected', checked: DETECTION_CHECKS },
+        };
+      }
+      command = detected;
     }
 
     if (!isAllowedTestCommand(command)) {

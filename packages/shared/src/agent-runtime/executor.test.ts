@@ -259,9 +259,9 @@ describe('runToolLoop', () => {
     registry.register(makeEchoTool());
 
     const blockAllRule = {
-      policyId: 'block_all',
-      description: 'Blocks everything',
-      evaluate: () => ({ decision: 'block' as const, policyId: 'block_all', reason: 'Test block' }),
+      policyId: 'worktree_boundary',
+      description: 'Blocks everything (test)',
+      evaluate: () => ({ decision: 'block' as const, policyId: 'worktree_boundary', reason: 'Test block' }),
     };
 
     const result = await runToolLoop({
@@ -280,9 +280,10 @@ describe('runToolLoop', () => {
     expect(invocations).toHaveLength(1);
     expect(invocations[0]?.status).toBe('blocked');
     expect(invocations[0]?.policyDecision).toBe('block');
+    expect(invocations[0]?.policyId).toBe('worktree_boundary');
   });
 
-  it('handles unknown tool gracefully', async () => {
+  it('handles unknown tool gracefully and logs to tool_invocations', async () => {
     const provider = createMockProvider([
       {
         content: '',
@@ -308,6 +309,56 @@ describe('runToolLoop', () => {
     });
 
     expect(result.content).toBe('Tool not found, giving up.');
+
+    const invocations = listToolInvocations(db, agentInvocationId);
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]?.tool).toBe('nonexistent');
+    expect(invocations[0]?.status).toBe('failed');
+    expect(JSON.parse(invocations[0]!.resultMetaJson)).toEqual({
+      errorCode: 'unknown_tool',
+      toolName: 'nonexistent',
+    });
+  });
+
+  it('logs unknown tool independently of policy rules', async () => {
+    const provider = createMockProvider([
+      {
+        content: '',
+        stopReason: 'tool_use',
+        toolCalls: [{ id: 'tc_1', name: 'totally_unknown', input: { data: 'test' } }],
+        rawContentBlocks: [
+          { type: 'tool_use' as const, id: 'tc_1', name: 'totally_unknown', input: { data: 'test' } },
+        ],
+      },
+      { content: 'Done.', stopReason: 'end_turn' },
+    ]);
+
+    const registry = createToolRegistry();
+
+    // Even with a strict block-all policy, unknown tool should get a 'failed' record
+    // (not blocked — the tool doesn't exist, so policy doesn't apply)
+    const blockAllRule = {
+      policyId: 'worktree_boundary',
+      description: 'Blocks everything (test)',
+      evaluate: () => ({ decision: 'block' as const, policyId: 'worktree_boundary', reason: 'Strict' }),
+    };
+
+    await runToolLoop({
+      db,
+      provider,
+      systemPrompt: 'Test',
+      userPrompt: 'Test',
+      registry,
+      policyRules: [blockAllRule],
+      context: makeContext(),
+    });
+
+    const invocations = listToolInvocations(db, agentInvocationId);
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]?.status).toBe('failed');
+    expect(JSON.parse(invocations[0]!.resultMetaJson)).toMatchObject({
+      errorCode: 'unknown_tool',
+    });
   });
 
   it('handles tool execution error', async () => {

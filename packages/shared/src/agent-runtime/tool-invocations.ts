@@ -148,7 +148,7 @@ export function createToolInvocation(
     '',    // result_payload_hash starts empty
     'sha256:cjson:v1',
     input.policyDecision,
-    null,  // policy_id (FK to policy_definitions — only set for DB-defined policies)
+    input.policyId ?? null,
     null,  // policy_set_id
     input.violationId ?? null,
     status,
