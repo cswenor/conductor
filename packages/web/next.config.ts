@@ -10,8 +10,13 @@ const nextConfig: NextConfig = {
   // typedRoutes disabled — broken in Next.js 16 (vercel/next.js#86156)
   // experimental: { typedRoutes: true },
   serverExternalPackages: ['better-sqlite3'],
-  turbopack: {
-    resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
+  // Turbopack lacks extensionAlias support (vercel/next.js#82945) needed for
+  // the shared package's .js→.ts imports, so we keep webpack for now.
+  webpack: (webpackConfig) => {
+    webpackConfig.resolve.extensionAlias = {
+      '.js': ['.ts', '.tsx', '.js'],
+    };
+    return webpackConfig;
   },
 };
 
