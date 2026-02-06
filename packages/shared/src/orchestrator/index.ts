@@ -46,7 +46,7 @@ export const VALID_TRANSITIONS: Record<RunPhase, ReadonlyArray<RunPhase>> = {
   awaiting_plan_approval: ['planning', 'executing', 'blocked', 'cancelled'],
   executing: ['awaiting_review', 'blocked', 'cancelled'],
   awaiting_review: ['executing', 'completed', 'blocked', 'cancelled'],
-  blocked: ['cancelled'],
+  blocked: ['pending', 'planning', 'awaiting_plan_approval', 'executing', 'awaiting_review', 'cancelled'],
   completed: [],
   cancelled: [],
 };

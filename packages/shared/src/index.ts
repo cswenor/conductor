@@ -79,5 +79,8 @@ export * from './gates/index.js';
 // Re-export operator-actions module
 export * from './operator-actions/index.js';
 
+// Re-export overrides module
+export * from './overrides/index.js';
+
 // Re-export agent runtime module
 export * from './agent-runtime/index.js';

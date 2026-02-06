@@ -1,7 +1,9 @@
 /**
  * Run Actions API
  *
- * Operator actions: cancel. (Pause/resume deferred to WP11.)
+ * Operator actions: approve_plan, revise_plan, reject_run, retry,
+ * grant_policy_exception, deny_policy_exception, cancel.
+ * (Pause/resume deferred to WP11.)
  */
 
 import { NextResponse } from 'next/server';
@@ -12,6 +14,8 @@ import {
   canAccessProject,
   transitionPhase,
   TERMINAL_PHASES,
+  recordOperatorAction,
+  evaluateGate,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
@@ -22,16 +26,19 @@ interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
+interface ActionBody {
+  action?: string;
+  comment?: string;
+  justification?: string;
+  scope?: string;
+}
+
 /**
  * POST /api/runs/[id]/actions
  *
  * Execute an operator action on a run.
  * Protected: requires authentication.
  * Enforces ownership through project access.
- *
- * Body:
- *   - action: 'cancel'
- *   - comment?: string (optional reason for the action)
  */
 export const POST = withAuth(async (
   request: AuthenticatedRequest,
@@ -60,7 +67,7 @@ export const POST = withAuth(async (
       );
     }
 
-    const body = await request.json() as { action?: string; comment?: string };
+    const body = await request.json() as ActionBody;
 
     if (body.action === undefined) {
       return NextResponse.json(
@@ -69,7 +76,379 @@ export const POST = withAuth(async (
       );
     }
 
+    const userId = request.user.userId;
+
     switch (body.action) {
+      // =====================================================================
+      // approve_plan
+      // =====================================================================
+      case 'approve_plan': {
+        if (run.phase !== 'awaiting_plan_approval') {
+          return NextResponse.json(
+            { error: 'Run is not awaiting plan approval' },
+            { status: 400 }
+          );
+        }
+
+        recordOperatorAction(db, {
+          runId,
+          action: 'approve_plan',
+          actorId: userId,
+          actorType: 'operator',
+          comment: body.comment,
+          fromPhase: run.phase,
+          toPhase: 'executing',
+        });
+
+        // Evaluate the gate (records gate evaluation)
+        evaluateGate(db, run, 'plan_approval');
+
+        const result = transitionPhase(db, {
+          runId,
+          toPhase: 'executing',
+          toStep: 'implementer_apply_changes',
+          triggeredBy: userId,
+          reason: 'Plan approved by operator',
+        });
+
+        if (!result.success) {
+          log.error({ runId, error: result.error }, 'Approve transition failed');
+          return NextResponse.json(
+            { error: result.error ?? 'Failed to approve plan' },
+            { status: 409 }
+          );
+        }
+
+        log.info({ runId, userId }, 'Plan approved by operator');
+        return NextResponse.json({ success: true, run: result.run });
+      }
+
+      // =====================================================================
+      // revise_plan
+      // =====================================================================
+      case 'revise_plan': {
+        if (run.phase !== 'awaiting_plan_approval') {
+          return NextResponse.json(
+            { error: 'Run is not awaiting plan approval' },
+            { status: 400 }
+          );
+        }
+
+        if (body.comment === undefined || body.comment.trim() === '') {
+          return NextResponse.json(
+            { error: 'Comment is required for plan revision' },
+            { status: 400 }
+          );
+        }
+
+        recordOperatorAction(db, {
+          runId,
+          action: 'revise_plan',
+          actorId: userId,
+          actorType: 'operator',
+          comment: body.comment,
+          fromPhase: run.phase,
+          toPhase: 'planning',
+        });
+
+        // Increment plan revisions
+        db.prepare(
+          'UPDATE runs SET plan_revisions = plan_revisions + 1 WHERE run_id = ?'
+        ).run(runId);
+
+        // Check plan revision limit (default 3)
+        const updatedRun = getRun(db, runId);
+        const maxRevisions = 3;
+        if (updatedRun !== null && updatedRun.planRevisions >= maxRevisions) {
+          const blockResult = transitionPhase(db, {
+            runId,
+            toPhase: 'blocked',
+            triggeredBy: userId,
+            reason: 'Plan revision limit exceeded',
+            blockedReason: 'retry_limit_exceeded',
+            blockedContext: { prior_phase: run.phase, revisions: updatedRun.planRevisions },
+          });
+
+          log.info({ runId, userId, revisions: updatedRun.planRevisions }, 'Plan revision limit exceeded');
+          return NextResponse.json({ success: true, run: blockResult.run });
+        }
+
+        const result = transitionPhase(db, {
+          runId,
+          toPhase: 'planning',
+          toStep: 'planner_create_plan',
+          triggeredBy: userId,
+          reason: `Revision requested: ${body.comment}`,
+        });
+
+        if (!result.success) {
+          log.error({ runId, error: result.error }, 'Revise transition failed');
+          return NextResponse.json(
+            { error: result.error ?? 'Failed to revise plan' },
+            { status: 409 }
+          );
+        }
+
+        log.info({ runId, userId }, 'Plan revision requested');
+        return NextResponse.json({ success: true, run: result.run });
+      }
+
+      // =====================================================================
+      // reject_run
+      // =====================================================================
+      case 'reject_run': {
+        if (run.phase !== 'awaiting_plan_approval') {
+          return NextResponse.json(
+            { error: 'Run is not awaiting plan approval' },
+            { status: 400 }
+          );
+        }
+
+        if (body.comment === undefined || body.comment.trim() === '') {
+          return NextResponse.json(
+            { error: 'Comment is required for rejection' },
+            { status: 400 }
+          );
+        }
+
+        recordOperatorAction(db, {
+          runId,
+          action: 'reject_run',
+          actorId: userId,
+          actorType: 'operator',
+          comment: body.comment,
+          fromPhase: run.phase,
+          toPhase: 'cancelled',
+        });
+
+        evaluateGate(db, run, 'plan_approval');
+
+        const result = transitionPhase(db, {
+          runId,
+          toPhase: 'cancelled',
+          toStep: 'cleanup',
+          triggeredBy: userId,
+          result: 'cancelled',
+          resultReason: 'Plan rejected by operator',
+        });
+
+        if (!result.success) {
+          log.error({ runId, error: result.error }, 'Reject transition failed');
+          return NextResponse.json(
+            { error: result.error ?? 'Failed to reject run' },
+            { status: 409 }
+          );
+        }
+
+        await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
+          type: 'worktree',
+          targetId: runId,
+        });
+
+        log.info({ runId, userId }, 'Run rejected by operator');
+        return NextResponse.json({ success: true, run: result.run });
+      }
+
+      // =====================================================================
+      // retry
+      // =====================================================================
+      case 'retry': {
+        if (run.phase !== 'blocked') {
+          return NextResponse.json(
+            { error: 'Run is not in blocked state' },
+            { status: 400 }
+          );
+        }
+
+        recordOperatorAction(db, {
+          runId,
+          action: 'retry',
+          actorId: userId,
+          actorType: 'operator',
+          comment: body.comment,
+          fromPhase: run.phase,
+        });
+
+        // Determine prior phase from blocked context
+        let priorPhase: string = 'executing';
+        if (run.blockedContextJson !== undefined) {
+          const ctx = JSON.parse(run.blockedContextJson) as Record<string, unknown>;
+          if (typeof ctx['prior_phase'] === 'string') {
+            priorPhase = ctx['prior_phase'];
+          }
+        }
+
+        const result = transitionPhase(db, {
+          runId,
+          toPhase: priorPhase as 'executing',
+          triggeredBy: userId,
+          reason: 'Retried by operator',
+        });
+
+        if (!result.success) {
+          log.error({ runId, error: result.error }, 'Retry transition failed');
+          return NextResponse.json(
+            { error: result.error ?? 'Failed to retry run' },
+            { status: 409 }
+          );
+        }
+
+        // Clear blocked state
+        db.prepare(
+          'UPDATE runs SET blocked_reason = NULL, blocked_context_json = NULL WHERE run_id = ?'
+        ).run(runId);
+
+        log.info({ runId, userId, priorPhase }, 'Run retried by operator');
+        return NextResponse.json({ success: true, run: getRun(db, runId) });
+      }
+
+      // =====================================================================
+      // grant_policy_exception
+      // =====================================================================
+      case 'grant_policy_exception': {
+        if (run.phase !== 'blocked') {
+          return NextResponse.json(
+            { error: 'Run is not in blocked state' },
+            { status: 400 }
+          );
+        }
+
+        if (run.blockedReason !== 'policy_exception_required') {
+          return NextResponse.json(
+            { error: 'Run is not blocked for a policy exception' },
+            { status: 400 }
+          );
+        }
+
+        if (body.justification === undefined || body.justification.trim() === '') {
+          return NextResponse.json(
+            { error: 'Justification is required for policy exceptions' },
+            { status: 400 }
+          );
+        }
+
+        recordOperatorAction(db, {
+          runId,
+          action: 'grant_policy_exception',
+          actorId: userId,
+          actorType: 'operator',
+          comment: body.justification,
+          fromPhase: run.phase,
+        });
+
+        // Create override record
+        const overrideId = `ov_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`;
+        const now = new Date().toISOString();
+        const scope = body.scope ?? 'this_run';
+
+        // Read blocked context for target info
+        let targetId = '';
+        let priorPhase = 'executing';
+        if (run.blockedContextJson !== undefined) {
+          const ctx = JSON.parse(run.blockedContextJson) as Record<string, unknown>;
+          targetId = (ctx['policy_id'] as string) ?? '';
+          if (typeof ctx['prior_phase'] === 'string') {
+            priorPhase = ctx['prior_phase'];
+          }
+        }
+
+        db.prepare(`
+          INSERT INTO overrides (
+            override_id, run_id, kind, target_id, scope,
+            operator, justification, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(overrideId, runId, 'policy_exception', targetId, scope,
+          userId, body.justification, now);
+
+        // Resume from prior phase
+        const result = transitionPhase(db, {
+          runId,
+          toPhase: priorPhase as 'executing',
+          triggeredBy: userId,
+          reason: 'Policy exception granted',
+        });
+
+        if (!result.success) {
+          log.error({ runId, error: result.error }, 'Grant exception transition failed');
+          return NextResponse.json(
+            { error: result.error ?? 'Failed to grant exception' },
+            { status: 409 }
+          );
+        }
+
+        // Clear blocked state
+        db.prepare(
+          'UPDATE runs SET blocked_reason = NULL, blocked_context_json = NULL WHERE run_id = ?'
+        ).run(runId);
+
+        log.info({ runId, userId, overrideId }, 'Policy exception granted');
+        return NextResponse.json({ success: true, run: getRun(db, runId) });
+      }
+
+      // =====================================================================
+      // deny_policy_exception
+      // =====================================================================
+      case 'deny_policy_exception': {
+        if (run.phase !== 'blocked') {
+          return NextResponse.json(
+            { error: 'Run is not in blocked state' },
+            { status: 400 }
+          );
+        }
+
+        if (run.blockedReason !== 'policy_exception_required') {
+          return NextResponse.json(
+            { error: 'Run is not blocked for a policy exception' },
+            { status: 400 }
+          );
+        }
+
+        if (body.comment === undefined || body.comment.trim() === '') {
+          return NextResponse.json(
+            { error: 'Comment is required for denial' },
+            { status: 400 }
+          );
+        }
+
+        recordOperatorAction(db, {
+          runId,
+          action: 'deny_policy_exception',
+          actorId: userId,
+          actorType: 'operator',
+          comment: body.comment,
+          fromPhase: run.phase,
+          toPhase: 'cancelled',
+        });
+
+        const result = transitionPhase(db, {
+          runId,
+          toPhase: 'cancelled',
+          toStep: 'cleanup',
+          triggeredBy: userId,
+          result: 'cancelled',
+          resultReason: 'Policy exception denied',
+        });
+
+        if (!result.success) {
+          log.error({ runId, error: result.error }, 'Deny exception transition failed');
+          return NextResponse.json(
+            { error: result.error ?? 'Failed to deny exception' },
+            { status: 409 }
+          );
+        }
+
+        await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
+          type: 'worktree',
+          targetId: runId,
+        });
+
+        log.info({ runId, userId }, 'Policy exception denied');
+        return NextResponse.json({ success: true, run: result.run });
+      }
+
+      // =====================================================================
+      // cancel (refactored to use shared service)
+      // =====================================================================
       case 'cancel': {
         if (TERMINAL_PHASES.has(run.phase)) {
           return NextResponse.json(
@@ -78,11 +457,21 @@ export const POST = withAuth(async (
           );
         }
 
+        recordOperatorAction(db, {
+          runId,
+          action: 'cancel',
+          actorId: userId,
+          actorType: 'operator',
+          comment: body.comment,
+          fromPhase: run.phase,
+          toPhase: 'cancelled',
+        });
+
         const result = transitionPhase(db, {
           runId,
           toPhase: 'cancelled',
           toStep: 'cleanup',
-          triggeredBy: request.user.userId,
+          triggeredBy: userId,
           result: 'cancelled',
           reason: body.comment ?? undefined,
         });
@@ -95,39 +484,15 @@ export const POST = withAuth(async (
           );
         }
 
-        // Record operator action for audit
-        const now = new Date().toISOString();
-        db.prepare(`
-          INSERT INTO operator_actions (
-            operator_action_id, run_id, operator, action, comment, from_phase, to_phase, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          `oa_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`,
-          runId,
-          request.user.userId,
-          'cancel',
-          body.comment ?? null,
-          run.phase,
-          'cancelled',
-          now
-        );
-
-        // Enqueue cleanup job
         await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
           type: 'worktree',
           targetId: runId,
         });
 
-        log.info(
-          { runId, userId: request.user.userId },
-          'Run cancelled by operator'
-        );
-
-        return NextResponse.json({
-          success: true,
-          run: result.run,
-        });
+        log.info({ runId, userId }, 'Run cancelled by operator');
+        return NextResponse.json({ success: true, run: result.run });
       }
+
       default:
         return NextResponse.json(
           { error: `Unknown action: ${body.action}` },
