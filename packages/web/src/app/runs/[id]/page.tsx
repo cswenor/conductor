@@ -194,6 +194,9 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   } | null>(null);
   const [commentText, setCommentText] = useState('');
 
+  /** Whether the active dialog's comment field is optional (approve, cancel). */
+  const commentOptional = commentDialog?.action === 'approve_plan' || commentDialog?.action === 'cancel';
+
   const fetchRunDetail = useCallback(async () => {
     try {
       const response = await fetch(`/api/runs/${runId}`);
@@ -340,7 +343,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
               id="action-comment"
               value={commentText}
               onChange={(e) => setCommentText(e.target.value)}
-              placeholder="Enter your reason..."
+              placeholder={commentOptional ? 'Optional...' : 'Enter your reason...'}
               rows={3}
             />
           </div>
@@ -350,15 +353,16 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
             </Button>
             <Button
               variant={commentDialog?.confirmVariant ?? 'default'}
-              disabled={actionInProgress !== null || commentText.trim() === ''}
+              disabled={actionInProgress !== null || (!commentOptional && commentText.trim() === '')}
               onClick={() => {
                 if (commentDialog === null) return;
-                const payload = commentDialog.fieldKey === 'justification'
-                  ? { justification: commentText }
-                  : { comment: commentText };
+                const text = commentText.trim();
+                const action = commentDialog.action;
                 setCommentDialog(null);
-                void handleAction(commentDialog.action, payload.comment ?? payload.justification);
                 setCommentText('');
+                // Only pass the comment/justification if non-empty
+                const value = text !== '' ? text : undefined;
+                void handleAction(action, value);
               }}
             >
               {commentDialog?.confirmLabel}
@@ -666,7 +670,15 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                 <Button
                   variant="default"
                   size="sm"
-                  onClick={() => void handleAction('approve_plan')}
+                  onClick={() => setCommentDialog({
+                    action: 'approve_plan',
+                    title: 'Approve Plan',
+                    description: 'Optionally add a comment. Leave blank to approve without comment.',
+                    fieldLabel: 'Comment (optional)',
+                    fieldKey: 'comment',
+                    confirmLabel: 'Approve Plan',
+                    confirmVariant: 'default',
+                  })}
                   disabled={actionInProgress !== null}
                 >
                   <ThumbsUp className="h-4 w-4 mr-1" />
@@ -720,6 +732,25 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                   <RefreshCw className="h-4 w-4 mr-1" />
                   Retry
                 </Button>
+                {run.blockedReason !== 'policy_exception_required' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCommentDialog({
+                      action: 'retry',
+                      title: 'Manual Fix Applied',
+                      description: 'Describe the manual fix you applied. The run will resume from where it was blocked.',
+                      fieldLabel: 'What was fixed',
+                      fieldKey: 'comment',
+                      confirmLabel: 'Resume Run',
+                      confirmVariant: 'default',
+                    })}
+                    disabled={actionInProgress !== null}
+                  >
+                    <Pencil className="h-4 w-4 mr-1" />
+                    Manual Fix
+                  </Button>
+                )}
                 {run.blockedReason === 'policy_exception_required' && (
                   <>
                     <Button

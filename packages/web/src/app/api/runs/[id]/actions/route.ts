@@ -93,18 +93,10 @@ export const POST = withAuth(async (
           );
         }
 
-        recordOperatorAction(db, {
-          runId,
-          action: 'approve_plan',
-          actorId: userId,
-          actorType: 'operator',
-          comment: body.comment,
-          fromPhase: run.phase,
-          toPhase: 'executing',
-        });
-
         // Evaluate gate + transition atomically via orchestrator.
         // This ensures: gate passes before transition, events persist atomically.
+        // Record the operator action AFTER the gate check passes to avoid
+        // recording an approval action when artifacts are incomplete.
         const { gateCheck, transition: txnResult } = evaluateGatesAndTransition(
           db, run, 'awaiting_plan_approval',
           {
@@ -131,6 +123,17 @@ export const POST = withAuth(async (
             { status: 409 }
           );
         }
+
+        // Record operator action only after successful gate check + transition
+        recordOperatorAction(db, {
+          runId,
+          action: 'approve_plan',
+          actorId: userId,
+          actorType: 'operator',
+          comment: body.comment,
+          fromPhase: run.phase,
+          toPhase: 'executing',
+        });
 
         log.info({ runId, userId }, 'Plan approved by operator');
         return NextResponse.json({ success: true, run: txnResult.run });
@@ -380,13 +383,13 @@ export const POST = withAuth(async (
           }
         }
 
-        // Finding 10: Enforce that constraint fields are present from blocked context.
-        // Overrides without constraints are overly permissive — they must be scoped
-        // to the specific policy/constraint that caused the block.
-        if (targetId === undefined) {
-          log.warn({ runId }, 'Grant exception: blocked context missing policy_id');
+        // Enforce that constraint fields are present from blocked context.
+        // Overrides without targetId or constraintKind are overly permissive —
+        // they must be scoped to the specific policy/constraint that caused the block.
+        if (targetId === undefined || constraintKind === undefined) {
+          log.warn({ runId, targetId, constraintKind }, 'Grant exception: blocked context missing required fields');
           return NextResponse.json(
-            { error: 'Cannot grant exception — blocked context is missing policy details. Try retrying instead.' },
+            { error: 'Cannot grant exception — blocked context is missing policy or constraint details. Try retrying instead.' },
             { status: 400 }
           );
         }

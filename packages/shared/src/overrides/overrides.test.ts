@@ -325,6 +325,59 @@ describe('findMatchingOverride', () => {
     expect(match).toBeNull();
   });
 
+  it('matches override with constraint_value', () => {
+    const { runId } = seedTestData(db);
+
+    createOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      scope: 'this_run',
+      constraintKind: 'path',
+      constraintValue: '/tmp/specific',
+      constraintHash: 'abc123',
+      operator: 'user_test',
+      justification: 'Allow specific path',
+    });
+
+    const match = findMatchingOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      constraintKind: 'path',
+      constraintValue: '/tmp/specific',
+      constraintHash: 'abc123',
+    });
+    expect(match).not.toBeNull();
+    expect(match?.constraintValue).toBe('/tmp/specific');
+  });
+
+  it('does not match override with wrong constraint_value', () => {
+    const { runId } = seedTestData(db);
+
+    createOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      scope: 'this_run',
+      constraintKind: 'path',
+      constraintValue: '/tmp/specific',
+      constraintHash: 'abc123',
+      operator: 'user_test',
+      justification: 'Allow specific path',
+    });
+
+    const match = findMatchingOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      constraintKind: 'path',
+      constraintValue: '/tmp/different',
+      constraintHash: 'abc123',
+    });
+    expect(match).toBeNull();
+  });
+
   it('wildcard override (null constraints) matches any constraint', () => {
     const { runId } = seedTestData(db);
 

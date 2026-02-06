@@ -212,12 +212,25 @@ function ApprovalCard({
               </Button>
             </>
           )}
-          {/* Finding 8: Escalation actions — retry + cancel */}
+          {/* Escalation actions — retry, manual fix, cancel */}
           {item.gateType === 'escalation' && (
             <>
               <Button variant="outline" size="sm" disabled={busy} onClick={() => onAction(item.runId, 'retry')}>
                 <RefreshCw className="h-3 w-3 mr-1" />
                 Retry
+              </Button>
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => onCommentAction({
+                action: 'retry',
+                runId: item.runId,
+                title: 'Manual Fix Applied',
+                description: 'Describe the manual fix you applied. The run will resume from where it was blocked.',
+                fieldLabel: 'What was fixed',
+                fieldKey: 'comment',
+                confirmLabel: 'Resume Run',
+                confirmVariant: 'default',
+              })}>
+                <Pencil className="h-3 w-3 mr-1" />
+                Manual Fix
               </Button>
               <Button variant="outline" size="sm" disabled={busy} onClick={() => onCommentAction({
                 action: 'cancel',
@@ -469,6 +482,10 @@ export default function ApprovalsPage() {
                         <div className="flex items-center space-x-2">
                           <RadioGroupItem value="this_task" id="scope-task" />
                           <Label htmlFor="scope-task" className="font-normal">All runs for this task</Label>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="this_repo" id="scope-repo" />
+                          <Label htmlFor="scope-repo" className="font-normal">All runs for this repo</Label>
                         </div>
                         <div className="flex items-center space-x-2">
                           <RadioGroupItem value="project_wide" id="scope-project" />

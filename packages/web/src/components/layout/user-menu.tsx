@@ -49,7 +49,9 @@ export function UserMenu() {
     setLoggingOut(true);
     try {
       await fetch('/api/auth/session', { method: 'DELETE' });
-      router.push('/login');
+      // Hard navigation to clear all client-side state and trigger middleware
+      // (router.push does a soft navigation that preserves layout state)
+      window.location.href = '/login';
     } catch {
       setLoggingOut(false);
     }

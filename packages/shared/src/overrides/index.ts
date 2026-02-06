@@ -211,6 +211,7 @@ export function findMatchingOverride(
     kind: OverrideKind;
     targetId?: string;
     constraintKind?: string;
+    constraintValue?: string;
     constraintHash?: string;
   },
 ): Override | null {
@@ -218,7 +219,7 @@ export function findMatchingOverride(
 
   // Join overrides with runs to match broader scopes.
   // Constraint matching: NULL in the override means "any" (wildcard).
-  // A specific constraint_kind/constraint_hash must match exactly.
+  // A specific constraint_kind/constraint_value/constraint_hash must match exactly.
   const row = db.prepare(`
     SELECT o.* FROM overrides o
     JOIN runs override_run ON o.run_id = override_run.run_id
@@ -227,6 +228,7 @@ export function findMatchingOverride(
       AND (o.target_id IS NULL OR o.target_id = ?)
       AND (o.expires_at IS NULL OR o.expires_at > ?)
       AND (o.constraint_kind IS NULL OR o.constraint_kind = ?)
+      AND (o.constraint_value IS NULL OR o.constraint_value = ?)
       AND (o.constraint_hash IS NULL OR o.constraint_hash = ?)
       AND (
         (o.scope = 'this_run' AND o.run_id = ?)
@@ -249,6 +251,7 @@ export function findMatchingOverride(
     params.targetId ?? '',
     now,
     params.constraintKind ?? null,
+    params.constraintValue ?? null,
     params.constraintHash ?? null,
     params.runId,
   ) as OverrideRow | undefined;

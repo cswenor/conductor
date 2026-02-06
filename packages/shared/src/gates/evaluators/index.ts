@@ -7,16 +7,14 @@
  * Per PROTOCOL.md: decision events MUST be emitted with source='orchestrator'
  * and state mutation + event creation MUST happen in the same transaction.
  *
- * evaluateGate() runs the evaluator and persists the gate_evaluation record
- * + gate.evaluated event in a single transaction with source='orchestrator'.
+ * Gate persistence is handled exclusively by the orchestrator module
+ * (persistGateResult / evaluateGatesAndTransition) to enforce the
+ * invariant that all decision events originate from the orchestrator boundary.
  */
 
 import type { Database } from 'better-sqlite3';
 import type { GateStatus } from '../../types/index.js';
 import type { Run } from '../../runs/index.js';
-import { createEvent } from '../../events/index.js';
-import { createGateEvaluation } from '../gate-evaluations.js';
-import { getGateDefinition } from '../gate-definitions.js';
 import { evaluatePlanApproval } from './plan-approval.js';
 import { evaluateTestsPass } from './tests-pass.js';
 
@@ -59,66 +57,3 @@ export function evaluateGatePure(
   return evaluator(db, run);
 }
 
-/**
- * Evaluate a gate for a run and persist the result.
- *
- * Runs the evaluator, then creates a gate.evaluated event (source='orchestrator')
- * and a gate_evaluation record in a single transaction.
- *
- * Per PROTOCOL.md: decision events use source='orchestrator' and state
- * mutation + event must be in the same transaction.
- *
- * Returns null if the gate has no registered evaluator.
- */
-export function evaluateGate(
-  db: Database,
-  run: Run,
-  gateId: string,
-): GateResult | null {
-  const evaluator = GATE_EVALUATORS[gateId];
-  if (evaluator === undefined) {
-    return null;
-  }
-
-  const gateDef = getGateDefinition(db, gateId);
-  if (gateDef === null) {
-    return null;
-  }
-
-  // Run the evaluator (pure — reads only)
-  const result = evaluator(db, run);
-
-  // Persist event + evaluation atomically
-  const persistGateEvaluation = db.transaction(() => {
-    const event = createEvent(db, {
-      projectId: run.projectId,
-      runId: run.runId,
-      type: 'gate.evaluated',
-      class: 'decision',
-      payload: {
-        gateId,
-        status: result.status,
-        reason: result.reason,
-        escalate: result.escalate,
-      },
-      idempotencyKey: `gate:${run.runId}:${gateId}:${Date.now()}`,
-      source: 'orchestrator',
-    });
-
-    if (event !== null) {
-      createGateEvaluation(db, {
-        runId: run.runId,
-        gateId,
-        kind: gateDef.kind,
-        status: result.status,
-        reason: result.reason,
-        details: result.details,
-        causationEventId: event.eventId,
-      });
-    }
-  });
-
-  persistGateEvaluation();
-
-  return result;
-}
