@@ -86,6 +86,13 @@ export function loadConfig(): AppConfig {
       default: isDev ? '' : undefined,
       description: 'GitHub webhook secret',
     },
+    {
+      name: 'GITHUB_APP_SLUG',
+      type: 'string',
+      required: false,
+      default: 'conductor',
+      description: 'GitHub App URL slug',
+    },
   ];
 
   // Validate each field

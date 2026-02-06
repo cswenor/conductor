@@ -7,7 +7,8 @@ import { PageHeader } from '@/components/layout';
 import { EmptyState, Button } from '@/components/ui';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { FolderKanban, Plus, GitBranch, Play } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { FolderKanban, Plus, GitBranch, Play, Settings, ExternalLink, CheckCircle2 } from 'lucide-react';
 
 interface ProjectSummary {
   projectId: string;
@@ -17,6 +18,139 @@ interface ProjectSummary {
   activeRunCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+interface InstallationInfo {
+  installationId: number;
+  accountLogin: string;
+  accountType: 'User' | 'Organization';
+  isPending: boolean;
+}
+
+interface InstallationsResponse {
+  installations: InstallationInfo[];
+  githubConfigured: boolean;
+}
+
+type OnboardingState = 'loading' | 'no-github-app' | 'no-installations' | 'has-installations';
+
+function OnboardingGuide() {
+  const [state, setState] = useState<OnboardingState>('loading');
+  const [installations, setInstallations] = useState<InstallationInfo[]>([]);
+
+  useEffect(() => {
+    async function checkInstallations() {
+      try {
+        const response = await fetch('/api/github/installations');
+        if (!response.ok) {
+          setState('no-github-app');
+          return;
+        }
+        const data = await response.json() as InstallationsResponse;
+        if (!data.githubConfigured) {
+          setState('no-github-app');
+        } else if (data.installations.length === 0) {
+          setState('no-installations');
+        } else {
+          setInstallations(data.installations);
+          setState('has-installations');
+        }
+      } catch {
+        setState('no-github-app');
+      }
+    }
+
+    void checkInstallations();
+  }, []);
+
+  if (state === 'loading') {
+    return (
+      <EmptyState
+        icon={<FolderKanban className="h-12 w-12 text-muted-foreground" />}
+        title="Checking setup..."
+        description="Verifying your GitHub connection."
+      />
+    );
+  }
+
+  if (state === 'no-github-app') {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 max-w-lg mx-auto space-y-4">
+        <Settings className="h-12 w-12 text-muted-foreground" />
+        <h2 className="text-xl font-semibold">Configure GitHub App</h2>
+        <p className="text-muted-foreground text-center">
+          Conductor requires a GitHub App to manage repositories. Please configure your GitHub App credentials in your environment settings.
+        </p>
+        <Alert>
+          <AlertDescription>
+            Set <code className="font-mono text-sm">GITHUB_APP_ID</code>, <code className="font-mono text-sm">GITHUB_PRIVATE_KEY</code>, and <code className="font-mono text-sm">GITHUB_WEBHOOK_SECRET</code> in your environment.
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
+
+  if (state === 'no-installations') {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 max-w-lg mx-auto space-y-6">
+        <FolderKanban className="h-12 w-12 text-muted-foreground" />
+        <div className="text-center space-y-2">
+          <h2 className="text-xl font-semibold">Get Started with Conductor</h2>
+          <p className="text-muted-foreground">
+            Connect a GitHub organization to start orchestrating AI agents on your repositories.
+          </p>
+        </div>
+        <div className="w-full space-y-3">
+          <div className="flex items-start gap-3 text-sm">
+            <Badge variant="outline" className="mt-0.5 shrink-0">1</Badge>
+            <div>
+              <span className="font-medium">Sign in with GitHub</span>
+              <span className="text-muted-foreground ml-1">— Done!</span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 text-sm">
+            <Badge variant="default" className="mt-0.5 shrink-0">2</Badge>
+            <div>
+              <span className="font-medium">Install the GitHub App</span>
+              <span className="text-muted-foreground ml-1">— Connect an organization or account</span>
+            </div>
+          </div>
+          <div className="flex items-start gap-3 text-sm text-muted-foreground">
+            <Badge variant="outline" className="mt-0.5 shrink-0">3</Badge>
+            <span>Create your first project</span>
+          </div>
+        </div>
+        <a href="/api/github/install">
+          <Button size="lg">
+            <ExternalLink className="h-4 w-4 mr-2" />
+            Connect GitHub Organization
+          </Button>
+        </a>
+      </div>
+    );
+  }
+
+  // has-installations
+  return (
+    <div className="flex flex-col items-center justify-center h-64 max-w-lg mx-auto space-y-6">
+      <CheckCircle2 className="h-12 w-12 text-green-500" />
+      <div className="text-center space-y-2">
+        <h2 className="text-xl font-semibold">Almost there!</h2>
+        <p className="text-muted-foreground">
+          {installations.length === 1
+            ? `GitHub App installed on ${installations[0]?.accountLogin ?? 'your account'}. Create a project to get started.`
+            : `GitHub App installed on ${installations.length} accounts. Create a project to get started.`
+          }
+        </p>
+      </div>
+      <Link href={'/projects/new' as Route}>
+        <Button size="lg">
+          <Plus className="h-4 w-4 mr-2" />
+          Create Your First Project
+        </Button>
+      </Link>
+    </div>
+  );
 }
 
 export default function ProjectsPage() {
@@ -67,19 +201,7 @@ export default function ProjectsPage() {
             <p className="text-destructive">{error}</p>
           </div>
         ) : projects.length === 0 ? (
-          <EmptyState
-            icon={<FolderKanban className="h-12 w-12 text-muted-foreground" />}
-            title="No projects yet"
-            description="Create your first project to start orchestrating AI agents."
-            action={
-              <Link href={'/projects/new' as Route}>
-                <Button>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Create Project
-                </Button>
-              </Link>
-            }
-          />
+          <OnboardingGuide />
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
             {projects.map((project) => (
