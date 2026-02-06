@@ -187,6 +187,30 @@ export function getLatestArtifact(
 }
 
 /**
+ * Get the latest validated artifact for a run and type.
+ * Gates MUST only read artifacts with validation_status = 'valid'.
+ * Per ROUTING_AND_GATES.md: "getValidArtifact() returns only artifacts
+ * where validation_status = 'valid'."
+ */
+export function getValidArtifact(
+  db: Database,
+  runId: string,
+  type: ArtifactType
+): Artifact | null {
+  const row = db.prepare(
+    `SELECT * FROM artifacts
+     WHERE run_id = ? AND type = ? AND validation_status = 'valid'
+     ORDER BY version DESC LIMIT 1`
+  ).get(runId, type) as ArtifactRow | undefined;
+
+  if (row === undefined) {
+    return null;
+  }
+
+  return mapRow(row);
+}
+
+/**
  * List artifacts for a run, optionally filtered by type.
  * Ordered by version descending.
  */

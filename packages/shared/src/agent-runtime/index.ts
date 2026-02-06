@@ -42,6 +42,7 @@ export {
   createArtifact,
   getArtifact,
   getLatestArtifact,
+  getValidArtifact,
   listArtifacts,
   updateValidationStatus,
 } from './artifacts.js';

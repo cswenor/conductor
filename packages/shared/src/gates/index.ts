@@ -25,3 +25,12 @@ export {
   deriveGateState,
   getRunsAwaitingGates,
 } from './gate-evaluations.js';
+
+// Gate evaluators
+export {
+  type GateResult,
+  type GateEvaluatorFn,
+  evaluateGate,
+} from './evaluators/index.js';
+export { evaluatePlanApproval } from './evaluators/plan-approval.js';
+export { evaluateTestsPass, getTestExecutionTruth } from './evaluators/tests-pass.js';
