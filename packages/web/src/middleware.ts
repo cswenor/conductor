@@ -26,6 +26,15 @@ function isPublicPath(pathname: string): boolean {
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // Normalize paths with trailing whitespace (e.g. %20 from misconfigured
+  // GitHub App callback URLs). Rewrite to the trimmed path so the route matches.
+  const trimmed = pathname.replace(/\s+$/, '');
+  if (trimmed !== pathname) {
+    const cleanUrl = request.nextUrl.clone();
+    cleanUrl.pathname = trimmed;
+    return NextResponse.redirect(cleanUrl);
+  }
+
   // Allow public paths
   if (isPublicPath(pathname)) {
     return NextResponse.next();

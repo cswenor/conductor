@@ -158,8 +158,30 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       ipAddress: request.headers.get('x-forwarded-for') ?? request.headers.get('x-real-ip') ?? undefined,
     });
 
+    // If this is also a GitHub App installation callback (GitHub combines OAuth
+    // + installation when the Setup URL points here), forward to the dedicated
+    // installation handler so the installation_id gets recorded.
+    const installationId = searchParams.get('installation_id');
+    let finalRedirect: string;
+
+    if (installationId !== null) {
+      const installCallbackUrl = new URL('/api/github/callback', request.url);
+      installCallbackUrl.searchParams.set('installation_id', installationId);
+      const setupAction = searchParams.get('setup_action');
+      if (setupAction !== null) {
+        installCallbackUrl.searchParams.set('setup_action', setupAction);
+      }
+      if (state !== null) {
+        installCallbackUrl.searchParams.set('state', state);
+      }
+      finalRedirect = installCallbackUrl.pathname + installCallbackUrl.search;
+      log.info({ installationId, userId: user.userId }, 'OAuth callback includes installation_id — forwarding to installation handler');
+    } else {
+      finalRedirect = redirectTo;
+    }
+
     // Redirect with session cookie
-    const response = NextResponse.redirect(new URL(redirectTo, request.url));
+    const response = NextResponse.redirect(new URL(finalRedirect, request.url));
     response.cookies.set(SESSION_COOKIE_NAME, session.token, {
       httpOnly: true,
       secure: process.env['NODE_ENV'] === 'production',
