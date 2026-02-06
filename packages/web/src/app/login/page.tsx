@@ -36,7 +36,7 @@ function LoginContent() {
           const data = await response.json() as { user: unknown };
           if (data.user !== null) {
             // Already logged in, redirect
-            router.push(redirectTo as Parameters<typeof router.push>[0]);
+            router.push(redirectTo);
             return;
           }
         }

@@ -1,21 +1,17 @@
+import type { NextConfig } from 'next';
 import { config } from 'dotenv';
 import { resolve } from 'path';
 
 // Load .env.local from monorepo root
 config({ path: resolve(process.cwd(), '../../.env.local') });
 
-/** @type {import('next').NextConfig} */
-const nextConfig = {
+const nextConfig: NextConfig = {
   transpilePackages: ['@conductor/shared'],
-  experimental: {
-    typedRoutes: true,
-  },
+  // typedRoutes disabled — broken in Next.js 16 (vercel/next.js#86156)
+  // experimental: { typedRoutes: true },
   serverExternalPackages: ['better-sqlite3'],
-  webpack: (config, { isServer }) => {
-    if (isServer) {
-      config.externals = [...(config.externals || []), 'better-sqlite3'];
-    }
-    return config;
+  turbopack: {
+    resolveExtensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
   },
 };
 

@@ -1,5 +1,5 @@
 /**
- * Next.js Middleware
+ * Next.js Proxy (formerly Middleware)
  *
  * Handles authentication redirects for protected pages.
  */
@@ -23,7 +23,7 @@ function isPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some(path => pathname.startsWith(path));
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
   // Normalize paths with trailing whitespace (e.g. %20 from misconfigured
