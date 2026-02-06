@@ -161,21 +161,24 @@ function loadConfig(): WorkerConfig {
   const githubAppId = getEnv({
     name: 'GITHUB_APP_ID',
     type: 'string',
-    required: true,
+    required: false,
+    default: '',
     description: 'GitHub App ID',
   });
 
   const githubPrivateKey = getEnv({
     name: 'GITHUB_PRIVATE_KEY',
     type: 'string',
-    required: true,
+    required: false,
+    default: '',
     description: 'GitHub App private key (PEM format or base64)',
   });
 
   const githubWebhookSecret = getEnv({
     name: 'GITHUB_WEBHOOK_SECRET',
     type: 'string',
-    required: true,
+    required: false,
+    default: '',
     description: 'GitHub webhook secret for signature verification',
   });
 
@@ -766,15 +769,21 @@ async function handleImplementerAgent(
 
       // Distinguish pending (retries remaining) from failed (exhausted)
       if (gateResult?.status === 'pending') {
-        // Gate is pending (e.g. tests failed but retries remain) — re-enqueue
-        // the implementer to fix the failing tests instead of blocking.
-        db.prepare(
-          'UPDATE runs SET test_fix_attempts = test_fix_attempts + 1, updated_at = ? WHERE run_id = ?'
-        ).run(new Date().toISOString(), runId);
+        // Only increment test_fix_attempts when tests actually failed
+        // (details contain testFixAttempts). Don't increment for "tests not
+        // yet run" or "cannot verify" — those indicate missing artifacts,
+        // not actual test failures.
+        const isActualTestFailure = gateResult.details?.['testFixAttempts'] !== undefined;
+
+        if (isActualTestFailure) {
+          db.prepare(
+            'UPDATE runs SET test_fix_attempts = test_fix_attempts + 1, updated_at = ? WHERE run_id = ?'
+          ).run(new Date().toISOString(), runId);
+        }
 
         log.info(
-          { runId, gate: failedGate, reason: gateResult.reason },
-          'Gate pending — re-enqueuing implementer to fix tests'
+          { runId, gate: failedGate, reason: gateResult.reason, isActualTestFailure },
+          'Gate pending — re-enqueuing implementer'
         );
         await enqueueAgentJob(runId, 'implementer', 'apply_changes', {
           retry_reason: gateResult.reason,
@@ -1197,12 +1206,16 @@ async function main(): Promise<void> {
 
   // Initialize GitHub App (needed for processRun and processGitHubWrite)
   if (!isGitHubAppInitialized()) {
-    initGitHubApp({
-      appId: config.githubAppId,
-      privateKey: config.githubPrivateKey,
-      webhookSecret: config.githubWebhookSecret,
-    });
-    log.info('GitHub App initialized');
+    if (config.githubAppId !== '' && config.githubPrivateKey !== '' && config.githubWebhookSecret !== '') {
+      initGitHubApp({
+        appId: config.githubAppId,
+        privateKey: config.githubPrivateKey,
+        webhookSecret: config.githubWebhookSecret,
+      });
+      log.info('GitHub App initialized');
+    } else {
+      log.warn('GitHub App credentials not configured — webhook/run processing will fail until set');
+    }
   }
 
   // Run janitor to reconcile DB and filesystem state before processing jobs
