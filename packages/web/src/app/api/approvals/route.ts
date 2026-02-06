@@ -12,6 +12,7 @@ import {
   getRunsAwaitingGates,
   deriveGateState,
   getLatestGateEvaluation,
+  getLatestArtifact,
   getTask,
   getRepo,
 } from '@conductor/shared';
@@ -35,6 +36,23 @@ interface ApprovalItem {
   gateType: 'plan_approval' | 'escalation' | 'policy_exception';
   latestGateStatus?: string;
   latestGateReason?: string;
+  /** Short context summary: plan excerpt, test failure, or violation details */
+  contextSummary?: string;
+  /** Blocked context details (for policy exceptions) */
+  blockedContext?: Record<string, unknown>;
+}
+
+/** Truncate markdown to a short excerpt (first non-heading paragraph, max 200 chars). */
+function excerptMarkdown(md: string, maxLen = 200): string {
+  const lines = md.split('\n');
+  for (const line of lines) {
+    const trimmed = line.trim();
+    // Skip headings, empty lines, and frontmatter
+    if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('---')) continue;
+    if (trimmed.length > maxLen) return `${trimmed.slice(0, maxLen)}...`;
+    return trimmed;
+  }
+  return md.slice(0, maxLen);
 }
 
 /**
@@ -83,6 +101,12 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
           latestGateStatus = planGate?.status;
           latestGateReason = planGate?.reason;
 
+          // Plan excerpt for context
+          const planArtifact = getLatestArtifact(db, run.runId, 'plan');
+          const contextSummary = planArtifact?.contentMarkdown !== undefined
+            ? excerptMarkdown(planArtifact.contentMarkdown)
+            : undefined;
+
           planApprovals.push({
             runId: run.runId,
             phase: run.phase,
@@ -97,9 +121,22 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
             gateType: 'plan_approval',
             latestGateStatus,
             latestGateReason,
+            contextSummary,
           });
         } else if (run.phase === 'blocked') {
+          // Parse blocked context for detail extraction
+          const blockedCtx = run.blockedContextJson !== undefined
+            ? JSON.parse(run.blockedContextJson) as Record<string, unknown>
+            : undefined;
+
           if (run.blockedReason === 'policy_exception_required') {
+            // Extract policy violation details from blocked context
+            const policyId = (blockedCtx?.['policy_id'] as string) ?? undefined;
+            const constraintKind = (blockedCtx?.['constraint_kind'] as string) ?? undefined;
+            const contextSummary = policyId !== undefined
+              ? `Policy: ${policyId}${constraintKind !== undefined ? ` (${constraintKind})` : ''}`
+              : undefined;
+
             policyExceptions.push({
               runId: run.runId,
               phase: run.phase,
@@ -115,9 +152,18 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
               gateType: 'policy_exception',
               latestGateStatus: gateState['plan_approval'],
               latestGateReason,
+              contextSummary,
+              blockedContext: blockedCtx,
             });
           } else {
             // retry_limit_exceeded, gate_failed, etc.
+            // Extract failure details from gate evaluation or blocked context
+            const testsGate = getLatestGateEvaluation(db, run.runId, 'tests_pass');
+            const contextSummary = testsGate?.reason
+              ?? (blockedCtx?.['error'] as string)
+              ?? run.blockedReason
+              ?? undefined;
+
             escalations.push({
               runId: run.runId,
               phase: run.phase,
@@ -132,7 +178,9 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
               waitDurationMs,
               gateType: 'escalation',
               latestGateStatus: gateState['tests_pass'],
-              latestGateReason,
+              latestGateReason: testsGate?.reason,
+              contextSummary,
+              blockedContext: blockedCtx,
             });
           }
         }
@@ -145,11 +193,15 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
     escalations.sort(sortByWait);
     policyExceptions.sort(sortByWait);
 
+    // Collect unique projects for filter dropdown
+    const projectOptions = projects.map(p => ({ id: p.projectId, name: p.name }));
+
     return NextResponse.json({
       planApprovals,
       escalations,
       policyExceptions,
       total: planApprovals.length + escalations.length + policyExceptions.length,
+      projects: projectOptions,
     });
   } catch (err) {
     log.error(

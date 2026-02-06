@@ -66,6 +66,8 @@ import {
   ensureBuiltInGateDefinitions,
   ensureBuiltInPolicyDefinitions,
   evaluateGatesForPhase,
+  evaluateGatesAndTransition,
+  persistGateEvaluations,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -552,8 +554,19 @@ async function handleRunResume(
   const { runId, phase } = run;
 
   if (phase === 'awaiting_plan_approval') {
-    // Evaluate plan_approval gate before proceeding
-    const gateCheck = evaluateGatesForPhase(db, run, 'awaiting_plan_approval');
+    // Evaluate gate + transition atomically via orchestrator boundary.
+    // This ensures gate.evaluated events have source='orchestrator' and
+    // gate persistence + phase transition happen in a single transaction.
+    const { gateCheck, transition: txnResult } = evaluateGatesAndTransition(
+      db, run, 'awaiting_plan_approval',
+      {
+        runId,
+        toPhase: 'executing',
+        toStep: 'implementer_apply_changes',
+        triggeredBy: triggeredBy ?? 'system',
+        reason: 'Plan approved by operator',
+      },
+    );
 
     if (!gateCheck.allPassed) {
       log.warn(
@@ -563,18 +576,8 @@ async function handleRunResume(
       return;
     }
 
-    log.info({ runId, triggeredBy }, 'Resuming run (plan approved, gate passed)');
-
-    const result = transitionPhase(db, {
-      runId,
-      toPhase: 'executing',
-      toStep: 'implementer_apply_changes',
-      triggeredBy: triggeredBy ?? 'system',
-      reason: 'Plan approved by operator',
-    });
-
-    if (!result.success) {
-      log.error({ runId, error: result.error }, 'Failed to transition to executing');
+    if (txnResult === undefined || txnResult.success !== true) {
+      log.error({ runId, error: txnResult?.error }, 'Failed to transition to executing');
       return;
     }
 
@@ -754,27 +757,48 @@ async function handleImplementerAgent(
   if (freshRun !== null) {
     const gateCheck = evaluateGatesForPhase(db, freshRun, 'executing');
 
+    // Persist gate evaluation results via orchestrator boundary
+    persistGateEvaluations(db, freshRun, gateCheck.results);
+
     if (!gateCheck.allPassed) {
       const failedGate = gateCheck.blockedBy ?? 'unknown';
       const gateResult = gateCheck.results[failedGate];
 
-      // Gate not passed — block the run regardless of status
-      const blockedReason = gateResult?.escalate === true ? 'gate_failed' : 'gate_pending';
+      // Distinguish pending (retries remaining) from failed (exhausted)
+      if (gateResult?.status === 'pending') {
+        // Gate is pending (e.g. tests failed but retries remain) — re-enqueue
+        // the implementer to fix the failing tests instead of blocking.
+        db.prepare(
+          'UPDATE runs SET test_fix_attempts = test_fix_attempts + 1, updated_at = ? WHERE run_id = ?'
+        ).run(new Date().toISOString(), runId);
+
+        log.info(
+          { runId, gate: failedGate, reason: gateResult.reason },
+          'Gate pending — re-enqueuing implementer to fix tests'
+        );
+        await enqueueAgentJob(runId, 'implementer', 'apply_changes', {
+          retry_reason: gateResult.reason,
+        });
+        return;
+      }
+
+      // Gate failed with escalation (retries exhausted) — block for operator
       const blockResult = transitionPhase(db, {
         runId,
         toPhase: 'blocked',
         triggeredBy: 'system',
-        blockedReason,
+        blockedReason: 'gate_failed',
         blockedContext: {
           prior_phase: 'executing',
           gate_id: failedGate,
-          gate_status: gateResult?.status ?? 'pending',
+          gate_status: gateResult?.status ?? 'failed',
+          escalate: gateResult?.escalate ?? false,
         },
       });
       if (blockResult.success) {
         log.info(
           { runId, gate: failedGate, status: gateResult?.status, escalate: gateResult?.escalate },
-          'Run blocked — tests_pass gate not passed'
+          'Run blocked — gate failed with escalation'
         );
       }
       return;

@@ -207,12 +207,13 @@ export function getRunsAwaitingGates(
   runId: string;
   phase: string;
   blockedReason?: string;
+  blockedContextJson?: string;
   taskId: string;
   repoId: string;
   updatedAt: string;
 }> {
   const rows = db.prepare(`
-    SELECT run_id, phase, blocked_reason, task_id, repo_id, updated_at
+    SELECT run_id, phase, blocked_reason, blocked_context_json, task_id, repo_id, updated_at
     FROM runs
     WHERE project_id = ?
       AND phase IN ('awaiting_plan_approval', 'blocked')
@@ -221,6 +222,7 @@ export function getRunsAwaitingGates(
     run_id: string;
     phase: string;
     blocked_reason: string | null;
+    blocked_context_json: string | null;
     task_id: string;
     repo_id: string;
     updated_at: string;
@@ -230,6 +232,7 @@ export function getRunsAwaitingGates(
     runId: row.run_id,
     phase: row.phase,
     blockedReason: row.blocked_reason ?? undefined,
+    blockedContextJson: row.blocked_context_json ?? undefined,
     taskId: row.task_id,
     repoId: row.repo_id,
     updatedAt: row.updated_at,

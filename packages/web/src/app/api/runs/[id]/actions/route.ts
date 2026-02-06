@@ -15,8 +15,9 @@ import {
   transitionPhase,
   TERMINAL_PHASES,
   recordOperatorAction,
-  evaluateGate,
+  evaluateGatesAndTransition,
   createOverride,
+  isValidOverrideScope,
 } from '@conductor/shared';
 import type { OverrideScope } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
@@ -102,27 +103,37 @@ export const POST = withAuth(async (
           toPhase: 'executing',
         });
 
-        // Evaluate the gate (records gate evaluation)
-        evaluateGate(db, run, 'plan_approval');
+        // Evaluate gate + transition atomically via orchestrator.
+        // This ensures: gate passes before transition, events persist atomically.
+        const { gateCheck, transition: txnResult } = evaluateGatesAndTransition(
+          db, run, 'awaiting_plan_approval',
+          {
+            runId,
+            toPhase: 'executing',
+            toStep: 'implementer_apply_changes',
+            triggeredBy: userId,
+            reason: 'Plan approved by operator',
+          },
+        );
 
-        const result = transitionPhase(db, {
-          runId,
-          toPhase: 'executing',
-          toStep: 'implementer_apply_changes',
-          triggeredBy: userId,
-          reason: 'Plan approved by operator',
-        });
-
-        if (!result.success) {
-          log.error({ runId, error: result.error }, 'Approve transition failed');
+        if (!gateCheck.allPassed) {
+          log.warn({ runId, blockedBy: gateCheck.blockedBy }, 'Approve blocked — gate not passed');
           return NextResponse.json(
-            { error: result.error ?? 'Failed to approve plan' },
+            { error: `Gate '${gateCheck.blockedBy ?? 'unknown'}' is not passed — cannot approve` },
+            { status: 409 }
+          );
+        }
+
+        if (txnResult?.success !== true) {
+          log.error({ runId, error: txnResult?.error }, 'Approve transition failed');
+          return NextResponse.json(
+            { error: txnResult?.error ?? 'Failed to approve plan' },
             { status: 409 }
           );
         }
 
         log.info({ runId, userId }, 'Plan approved by operator');
-        return NextResponse.json({ success: true, run: result.run });
+        return NextResponse.json({ success: true, run: txnResult.run });
       }
 
       // =====================================================================
@@ -223,7 +234,8 @@ export const POST = withAuth(async (
           toPhase: 'cancelled',
         });
 
-        evaluateGate(db, run, 'plan_approval');
+        // No gate evaluation needed — rejection goes straight to cancelled.
+        // The operator action record above is the audit trail for this decision.
 
         const result = transitionPhase(db, {
           runId,
@@ -338,8 +350,17 @@ export const POST = withAuth(async (
           fromPhase: run.phase,
         });
 
+        // Finding 12: Validate scope against allowed enum
+        const rawScope = body.scope ?? 'this_run';
+        if (!isValidOverrideScope(rawScope)) {
+          return NextResponse.json(
+            { error: `Invalid scope: ${rawScope}. Must be one of: this_run, this_task, this_repo, project_wide` },
+            { status: 400 }
+          );
+        }
+        const scope: OverrideScope = rawScope;
+
         // Read blocked context for target and constraint info
-        const scope = (body.scope ?? 'this_run') as OverrideScope;
         let targetId: string | undefined;
         let priorPhase = 'executing';
         let constraintKind: string | undefined;
@@ -357,6 +378,17 @@ export const POST = withAuth(async (
           if (typeof ctx['prior_phase'] === 'string') {
             priorPhase = ctx['prior_phase'];
           }
+        }
+
+        // Finding 10: Enforce that constraint fields are present from blocked context.
+        // Overrides without constraints are overly permissive — they must be scoped
+        // to the specific policy/constraint that caused the block.
+        if (targetId === undefined) {
+          log.warn({ runId }, 'Grant exception: blocked context missing policy_id');
+          return NextResponse.json(
+            { error: 'Cannot grant exception — blocked context is missing policy details. Try retrying instead.' },
+            { status: 400 }
+          );
         }
 
         // Create override via shared service (includes all constraint fields)

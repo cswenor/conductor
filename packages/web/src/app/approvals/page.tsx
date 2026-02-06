@@ -19,8 +19,16 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import {
   CheckCircle, AlertTriangle, ShieldAlert, Clock, ExternalLink,
-  ThumbsUp, ThumbsDown, Pencil, RefreshCw,
+  ThumbsUp, ThumbsDown, Pencil, RefreshCw, XCircle, Filter,
 } from 'lucide-react';
 
 interface ApprovalItem {
@@ -38,6 +46,13 @@ interface ApprovalItem {
   gateType: 'plan_approval' | 'escalation' | 'policy_exception';
   latestGateStatus?: string;
   latestGateReason?: string;
+  contextSummary?: string;
+  blockedContext?: Record<string, unknown>;
+}
+
+interface ProjectOption {
+  id: string;
+  name: string;
 }
 
 interface ApprovalsResponse {
@@ -45,6 +60,7 @@ interface ApprovalsResponse {
   escalations: ApprovalItem[];
   policyExceptions: ApprovalItem[];
   total: number;
+  projects: ProjectOption[];
 }
 
 function formatWaitDuration(ms: number): string {
@@ -64,6 +80,8 @@ interface CommentDialogConfig {
   fieldKey: 'comment' | 'justification';
   confirmLabel: string;
   confirmVariant: 'default' | 'destructive';
+  /** Whether to show scope selection (for policy exceptions) */
+  showScope?: boolean;
 }
 
 function ApprovalCard({
@@ -73,7 +91,7 @@ function ApprovalCard({
   actionInProgress,
 }: {
   item: ApprovalItem;
-  onAction: (runId: string, action: string) => void;
+  onAction: (runId: string, action: string, extra?: Record<string, unknown>) => void;
   onCommentAction: (config: CommentDialogConfig) => void;
   actionInProgress: string | null;
 }) {
@@ -95,7 +113,11 @@ function ApprovalCard({
               <span className="text-border">|</span>
               <span>{item.projectName}</span>
             </div>
-            {item.latestGateReason !== undefined && (
+            {/* Context summary (Finding 5) */}
+            {item.contextSummary !== undefined && (
+              <p className="mt-2 text-xs text-muted-foreground line-clamp-2">{item.contextSummary}</p>
+            )}
+            {item.contextSummary === undefined && item.latestGateReason !== undefined && (
               <p className="mt-2 text-xs text-muted-foreground">{item.latestGateReason}</p>
             )}
           </div>
@@ -116,7 +138,17 @@ function ApprovalCard({
         <div className="mt-3 flex items-center gap-2">
           {item.gateType === 'plan_approval' && (
             <>
-              <Button size="sm" disabled={busy} onClick={() => onAction(item.runId, 'approve_plan')}>
+              {/* Finding 9: Approve with optional comment */}
+              <Button size="sm" disabled={busy} onClick={() => onCommentAction({
+                action: 'approve_plan',
+                runId: item.runId,
+                title: 'Approve Plan',
+                description: 'Optionally add a comment. Leave blank to approve without comment.',
+                fieldLabel: 'Comment (optional)',
+                fieldKey: 'comment',
+                confirmLabel: 'Approve Plan',
+                confirmVariant: 'default',
+              })}>
                 <ThumbsUp className="h-3 w-3 mr-1" />
                 Approve
               </Button>
@@ -150,15 +182,17 @@ function ApprovalCard({
           )}
           {item.gateType === 'policy_exception' && (
             <>
+              {/* Finding 7: Scope selection in grant dialog */}
               <Button variant="outline" size="sm" disabled={busy} onClick={() => onCommentAction({
                 action: 'grant_policy_exception',
                 runId: item.runId,
                 title: 'Grant Policy Exception',
-                description: 'Provide justification for granting this exception.',
+                description: 'Provide justification and choose the scope for this exception.',
                 fieldLabel: 'Justification',
                 fieldKey: 'justification',
                 confirmLabel: 'Grant Exception',
                 confirmVariant: 'default',
+                showScope: true,
               })}>
                 <ShieldAlert className="h-3 w-3 mr-1" />
                 Grant
@@ -178,11 +212,27 @@ function ApprovalCard({
               </Button>
             </>
           )}
+          {/* Finding 8: Escalation actions — retry + cancel */}
           {item.gateType === 'escalation' && (
-            <Button variant="outline" size="sm" disabled={busy} onClick={() => onAction(item.runId, 'retry')}>
-              <RefreshCw className="h-3 w-3 mr-1" />
-              Retry
-            </Button>
+            <>
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => onAction(item.runId, 'retry')}>
+                <RefreshCw className="h-3 w-3 mr-1" />
+                Retry
+              </Button>
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => onCommentAction({
+                action: 'cancel',
+                runId: item.runId,
+                title: 'Cancel Run',
+                description: 'This will permanently cancel the run. Optionally provide a reason.',
+                fieldLabel: 'Reason (optional)',
+                fieldKey: 'comment',
+                confirmLabel: 'Cancel Run',
+                confirmVariant: 'destructive',
+              })}>
+                <XCircle className="h-3 w-3 mr-1" />
+                Cancel
+              </Button>
+            </>
           )}
         </div>
       </CardContent>
@@ -203,7 +253,7 @@ function ApprovalSection({
   icon: React.ReactNode;
   badge: 'secondary' | 'destructive' | 'warning';
   items: ApprovalItem[];
-  onAction: (runId: string, action: string) => void;
+  onAction: (runId: string, action: string, extra?: Record<string, unknown>) => void;
   onCommentAction: (config: CommentDialogConfig) => void;
   actionInProgress: string | null;
 }) {
@@ -238,10 +288,14 @@ export default function ApprovalsPage() {
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [commentDialog, setCommentDialog] = useState<CommentDialogConfig | null>(null);
   const [commentText, setCommentText] = useState('');
+  const [scopeSelection, setScopeSelection] = useState('this_run');
+  // Finding 6: Project filter
+  const [filterProjectId, setFilterProjectId] = useState<string>('all');
 
   const fetchApprovals = useCallback(async () => {
     try {
-      const response = await fetch('/api/approvals');
+      const params = filterProjectId !== 'all' ? `?projectId=${filterProjectId}` : '';
+      const response = await fetch(`/api/approvals${params}`);
       if (!response.ok) {
         throw new Error('Failed to fetch approvals');
       }
@@ -252,7 +306,7 @@ export default function ApprovalsPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [filterProjectId]);
 
   useEffect(() => {
     void fetchApprovals();
@@ -265,17 +319,10 @@ export default function ApprovalsPage() {
     return () => clearInterval(interval);
   }, [fetchApprovals]);
 
-  async function handleAction(runId: string, action: string, commentOrJustification?: string) {
+  async function handleAction(runId: string, action: string, extra?: Record<string, unknown>) {
     setActionInProgress(`${runId}:${action}`);
     try {
-      const body: Record<string, unknown> = { action };
-      if (commentOrJustification !== undefined) {
-        if (action === 'grant_policy_exception') {
-          body['justification'] = commentOrJustification;
-        } else {
-          body['comment'] = commentOrJustification;
-        }
-      }
+      const body: Record<string, unknown> = { action, ...extra };
 
       const response = await fetch(`/api/runs/${runId}/actions`, {
         method: 'POST',
@@ -294,14 +341,18 @@ export default function ApprovalsPage() {
     }
   }
 
-  function onAction(runId: string, action: string) {
-    void handleAction(runId, action);
+  function onAction(runId: string, action: string, extra?: Record<string, unknown>) {
+    void handleAction(runId, action, extra);
   }
 
   function onCommentAction(config: CommentDialogConfig) {
     setCommentDialog(config);
     setCommentText('');
+    setScopeSelection('this_run');
   }
+
+  /** Whether the active dialog's comment field is optional (approve, cancel). */
+  const commentOptional = commentDialog?.action === 'approve_plan' || commentDialog?.action === 'cancel';
 
   return (
     <div className="flex flex-col h-full">
@@ -310,6 +361,24 @@ export default function ApprovalsPage() {
         description="Pending decisions requiring your action"
       />
       <div className="flex-1 p-6">
+        {/* Finding 6: Project filter */}
+        {data !== null && data.projects.length > 1 && (
+          <div className="flex items-center gap-2 mb-4 max-w-3xl">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <Select value={filterProjectId} onValueChange={setFilterProjectId}>
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="All projects" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All projects</SelectItem>
+                {data.projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
         {loading ? (
           <div className="space-y-6">
             <Skeleton className="h-6 w-48" />
@@ -369,22 +438,45 @@ export default function ApprovalsPage() {
               actionInProgress={actionInProgress}
             />
 
-            {/* Comment dialog for actions requiring justification */}
+            {/* Comment/justification dialog for actions */}
             <Dialog open={commentDialog !== null} onOpenChange={(open) => { if (!open) { setCommentDialog(null); setCommentText(''); } }}>
               <DialogContent>
                 <DialogHeader>
                   <DialogTitle>{commentDialog?.title}</DialogTitle>
                   <DialogDescription>{commentDialog?.description}</DialogDescription>
                 </DialogHeader>
-                <div className="space-y-2">
-                  <Label htmlFor="approval-comment">{commentDialog?.fieldLabel}</Label>
-                  <Textarea
-                    id="approval-comment"
-                    value={commentText}
-                    onChange={(e) => setCommentText(e.target.value)}
-                    placeholder="Enter your reason..."
-                    rows={3}
-                  />
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="approval-comment">{commentDialog?.fieldLabel}</Label>
+                    <Textarea
+                      id="approval-comment"
+                      value={commentText}
+                      onChange={(e) => setCommentText(e.target.value)}
+                      placeholder={commentOptional ? 'Optional...' : 'Enter your reason...'}
+                      rows={3}
+                    />
+                  </div>
+
+                  {/* Finding 7: Scope selection for policy exceptions */}
+                  {commentDialog?.showScope === true && (
+                    <div className="space-y-2">
+                      <Label>Exception scope</Label>
+                      <RadioGroup value={scopeSelection} onValueChange={setScopeSelection}>
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="this_run" id="scope-run" />
+                          <Label htmlFor="scope-run" className="font-normal">This run only</Label>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="this_task" id="scope-task" />
+                          <Label htmlFor="scope-task" className="font-normal">All runs for this task</Label>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="project_wide" id="scope-project" />
+                          <Label htmlFor="scope-project" className="font-normal">Project-wide</Label>
+                        </div>
+                      </RadioGroup>
+                    </div>
+                  )}
                 </div>
                 <DialogFooter>
                   <Button variant="outline" onClick={() => { setCommentDialog(null); setCommentText(''); }}>
@@ -392,14 +484,27 @@ export default function ApprovalsPage() {
                   </Button>
                   <Button
                     variant={commentDialog?.confirmVariant ?? 'default'}
-                    disabled={actionInProgress !== null || commentText.trim() === ''}
+                    disabled={actionInProgress !== null || (!commentOptional && commentText.trim() === '')}
                     onClick={() => {
                       if (commentDialog === null) return;
                       const text = commentText;
                       const cfg = commentDialog;
+                      const scope = scopeSelection;
                       setCommentDialog(null);
                       setCommentText('');
-                      void handleAction(cfg.runId, cfg.action, text);
+
+                      // Build extra fields based on action type
+                      const extra: Record<string, unknown> = {};
+                      if (cfg.fieldKey === 'justification') {
+                        extra['justification'] = text;
+                      } else if (text.trim() !== '') {
+                        extra['comment'] = text;
+                      }
+                      if (cfg.showScope === true) {
+                        extra['scope'] = scope;
+                      }
+
+                      void handleAction(cfg.runId, cfg.action, extra);
                     }}
                   >
                     {commentDialog?.confirmLabel}

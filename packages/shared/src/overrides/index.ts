@@ -22,6 +22,15 @@ export type OverrideKind = 'policy_exception' | 'skip_tests' | 'accept_with_issu
 
 export type OverrideScope = 'this_run' | 'this_task' | 'this_repo' | 'project_wide';
 
+const VALID_SCOPES: ReadonlySet<string> = new Set<OverrideScope>([
+  'this_run', 'this_task', 'this_repo', 'project_wide',
+]);
+
+/** Validate that a string is a valid OverrideScope. */
+export function isValidOverrideScope(value: string): value is OverrideScope {
+  return VALID_SCOPES.has(value);
+}
+
 export interface Override {
   overrideId: string;
   runId: string;
@@ -183,8 +192,12 @@ export function listOverrides(
 }
 
 /**
- * Find an active (non-expired) override matching kind + target + scope.
+ * Find an active (non-expired) override matching kind + target + constraints + scope.
  * Scope hierarchy: project_wide > this_repo > this_task > this_run.
+ *
+ * Constraint matching: An override must match the constraint fields
+ * (constraintKind + constraintHash) to apply. An override with NULL
+ * constraints acts as a wildcard for that field.
  *
  * For broader scopes (this_task, this_repo, project_wide), the lookup
  * joins through the runs table to find overrides created on other runs
@@ -197,15 +210,15 @@ export function findMatchingOverride(
     runId: string;
     kind: OverrideKind;
     targetId?: string;
+    constraintKind?: string;
+    constraintHash?: string;
   },
 ): Override | null {
   const now = new Date().toISOString();
 
   // Join overrides with runs to match broader scopes.
-  // For 'this_run': override.run_id must match the target run.
-  // For 'this_task': override's run must share the same task_id.
-  // For 'this_repo': override's run must share the same repo_id.
-  // For 'project_wide': override's run must share the same project_id.
+  // Constraint matching: NULL in the override means "any" (wildcard).
+  // A specific constraint_kind/constraint_hash must match exactly.
   const row = db.prepare(`
     SELECT o.* FROM overrides o
     JOIN runs override_run ON o.run_id = override_run.run_id
@@ -213,6 +226,8 @@ export function findMatchingOverride(
     WHERE o.kind = ?
       AND (o.target_id IS NULL OR o.target_id = ?)
       AND (o.expires_at IS NULL OR o.expires_at > ?)
+      AND (o.constraint_kind IS NULL OR o.constraint_kind = ?)
+      AND (o.constraint_hash IS NULL OR o.constraint_hash = ?)
       AND (
         (o.scope = 'this_run' AND o.run_id = ?)
         OR (o.scope = 'this_task' AND override_run.task_id = target_run.task_id)
@@ -233,6 +248,8 @@ export function findMatchingOverride(
     params.kind,
     params.targetId ?? '',
     now,
+    params.constraintKind ?? null,
+    params.constraintHash ?? null,
     params.runId,
   ) as OverrideRow | undefined;
 

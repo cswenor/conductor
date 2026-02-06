@@ -12,6 +12,7 @@ import {
   getOverride,
   listOverrides,
   findMatchingOverride,
+  isValidOverrideScope,
 } from './index.js';
 
 let db: DatabaseType;
@@ -272,5 +273,93 @@ describe('findMatchingOverride', () => {
       kind: 'policy_exception',
     });
     expect(match).toBeNull();
+  });
+
+  it('matches override with constraint fields', () => {
+    const { runId } = seedTestData(db);
+
+    createOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      scope: 'this_run',
+      constraintKind: 'path',
+      constraintHash: 'abc123',
+      operator: 'user_test',
+      justification: 'Allow specific path',
+    });
+
+    const match = findMatchingOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      constraintKind: 'path',
+      constraintHash: 'abc123',
+    });
+    expect(match).not.toBeNull();
+    expect(match?.constraintKind).toBe('path');
+    expect(match?.constraintHash).toBe('abc123');
+  });
+
+  it('does not match override with wrong constraint hash', () => {
+    const { runId } = seedTestData(db);
+
+    createOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      scope: 'this_run',
+      constraintKind: 'path',
+      constraintHash: 'abc123',
+      operator: 'user_test',
+      justification: 'Allow specific path',
+    });
+
+    const match = findMatchingOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      constraintKind: 'path',
+      constraintHash: 'different_hash',
+    });
+    expect(match).toBeNull();
+  });
+
+  it('wildcard override (null constraints) matches any constraint', () => {
+    const { runId } = seedTestData(db);
+
+    // Override without constraint fields acts as wildcard
+    createOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      scope: 'this_run',
+      operator: 'user_test',
+      justification: 'Blanket exception',
+    });
+
+    const match = findMatchingOverride(db, {
+      runId,
+      kind: 'policy_exception',
+      targetId: 'worktree_boundary',
+      constraintKind: 'path',
+      constraintHash: 'any_hash',
+    });
+    expect(match).not.toBeNull();
+  });
+});
+
+describe('isValidOverrideScope', () => {
+  it('accepts valid scopes', () => {
+    expect(isValidOverrideScope('this_run')).toBe(true);
+    expect(isValidOverrideScope('this_task')).toBe(true);
+    expect(isValidOverrideScope('this_repo')).toBe(true);
+    expect(isValidOverrideScope('project_wide')).toBe(true);
+  });
+
+  it('rejects invalid scopes', () => {
+    expect(isValidOverrideScope('global')).toBe(false);
+    expect(isValidOverrideScope('')).toBe(false);
+    expect(isValidOverrideScope('all')).toBe(false);
   });
 });
