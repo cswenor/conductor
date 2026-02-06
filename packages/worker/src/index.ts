@@ -758,25 +758,26 @@ async function handleImplementerAgent(
       const failedGate = gateCheck.blockedBy ?? 'unknown';
       const gateResult = gateCheck.results[failedGate];
 
-      if (gateResult?.escalate === true) {
-        // Gate failed with escalation — block the run with context for retry
-        const blockResult = transitionPhase(db, {
-          runId,
-          toPhase: 'blocked',
-          triggeredBy: 'system',
-          blockedReason: 'gate_failed',
-          blockedContext: { prior_phase: 'executing', gate_id: failedGate },
-        });
-        if (blockResult.success) {
-          log.info({ runId, gate: failedGate }, 'Run blocked — gate failed with escalation');
-        }
-        return;
+      // Gate not passed — block the run regardless of status
+      const blockedReason = gateResult?.escalate === true ? 'gate_failed' : 'gate_pending';
+      const blockResult = transitionPhase(db, {
+        runId,
+        toPhase: 'blocked',
+        triggeredBy: 'system',
+        blockedReason,
+        blockedContext: {
+          prior_phase: 'executing',
+          gate_id: failedGate,
+          gate_status: gateResult?.status ?? 'pending',
+        },
+      });
+      if (blockResult.success) {
+        log.info(
+          { runId, gate: failedGate, status: gateResult?.status, escalate: gateResult?.escalate },
+          'Run blocked — tests_pass gate not passed'
+        );
       }
-
-      log.info(
-        { runId, gate: failedGate, status: gateResult?.status },
-        'Tests gate not yet passed, proceeding to review (pending gates checked later)'
-      );
+      return;
     }
   }
 

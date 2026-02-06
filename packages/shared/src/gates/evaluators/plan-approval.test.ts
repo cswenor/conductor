@@ -7,6 +7,8 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import { initDatabase, closeDatabase } from '../../db/index.js';
 import { createRun, getRun, type Run } from '../../runs/index.js';
 import { createArtifact, updateValidationStatus } from '../../agent-runtime/artifacts.js';
+import { createToolInvocation, completeToolInvocation } from '../../agent-runtime/tool-invocations.js';
+import { ensureBuiltInPolicyDefinitions } from '../../agent-runtime/policy-definitions.js';
 import { ensureBuiltInGateDefinitions } from '../gate-definitions.js';
 import { recordOperatorAction } from '../../operator-actions/index.js';
 import { evaluatePlanApproval } from './plan-approval.js';
@@ -79,11 +81,52 @@ function createValidPlan(database: DatabaseType, runId: string): void {
   updateValidationStatus(database, art.artifactId, 'valid');
 }
 
-function createValidReview(database: DatabaseType, runId: string, content?: string): void {
+/**
+ * Create a validated review artifact with a source tool invocation.
+ * The tool invocation's resultMetaJson contains a structured verdict field.
+ */
+function createValidReview(
+  database: DatabaseType,
+  runId: string,
+  options?: { verdict?: string; content?: string },
+): void {
+  const verdict = options?.verdict ?? 'approved';
+  const content = options?.content ?? '# Review\n\nApproved.';
+
+  // Need agent_invocation for FK chain
+  const agentInvId = `ai_test_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 6)}`;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO agent_invocations (
+      agent_invocation_id, run_id, agent, action, status,
+      tokens_input, tokens_output, started_at
+    ) VALUES (?, ?, 'reviewer', 'review_plan', 'completed', 0, 0, ?)
+  `).run(agentInvId, runId, now);
+
+  // Create tool invocation with structured verdict in resultMetaJson
+  const toolInv = createToolInvocation(database, {
+    agentInvocationId: agentInvId,
+    runId,
+    tool: 'review_plan',
+    argsRedactedJson: '{}',
+    argsFieldsRemovedJson: '[]',
+    argsSecretsDetected: false,
+    argsPayloadHash: 'test',
+    argsPayloadHashScheme: 'sha256',
+    policyDecision: 'allow',
+    policyId: 'worktree_boundary',
+  });
+
+  completeToolInvocation(database, toolInv.toolInvocationId, {
+    resultMeta: { verdict },
+    durationMs: 100,
+  });
+
   const art = createArtifact(database, {
     runId,
     type: 'review',
-    contentMarkdown: content ?? '# Review\n\nApproved.',
+    contentMarkdown: content,
+    sourceToolInvocationId: toolInv.toolInvocationId,
     createdBy: 'reviewer',
   });
   updateValidationStatus(database, art.artifactId, 'valid');
@@ -92,6 +135,7 @@ function createValidReview(database: DatabaseType, runId: string, content?: stri
 beforeEach(() => {
   db = initDatabase({ path: ':memory:' });
   ensureBuiltInGateDefinitions(db);
+  ensureBuiltInPolicyDefinitions(db);
 });
 
 afterEach(() => {
@@ -193,10 +237,10 @@ describe('evaluatePlanApproval', () => {
     expect(result.reason).toContain('inadequate');
   });
 
-  it('returns pending when review contains CHANGES_REQUESTED', () => {
+  it('returns pending when review verdict is changes_requested', () => {
     const { run } = seedTestData(db);
     createValidPlan(db, run.runId);
-    createValidReview(db, run.runId, '# Review\n\nVerdict: CHANGES_REQUESTED\n\nNeed more detail.');
+    createValidReview(db, run.runId, { verdict: 'changes_requested' });
 
     const result = evaluatePlanApproval(db, run);
     expect(result.status).toBe('pending');

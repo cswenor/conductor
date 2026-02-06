@@ -31,6 +31,7 @@ export {
   type GateResult,
   type GateEvaluatorFn,
   evaluateGate,
+  evaluateGatePure,
 } from './evaluators/index.js';
 export { evaluatePlanApproval } from './evaluators/plan-approval.js';
 export { evaluateTestsPass, getTestExecutionTruth } from './evaluators/tests-pass.js';

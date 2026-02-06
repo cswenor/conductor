@@ -185,7 +185,11 @@ export function listOverrides(
 /**
  * Find an active (non-expired) override matching kind + target + scope.
  * Scope hierarchy: project_wide > this_repo > this_task > this_run.
- * Checks all applicable scopes and returns the broadest match.
+ *
+ * For broader scopes (this_task, this_repo, project_wide), the lookup
+ * joins through the runs table to find overrides created on other runs
+ * that share the same task, repo, or project. This ensures an override
+ * granted at project_wide scope on one run applies to all runs in that project.
  */
 export function findMatchingOverride(
   db: Database,
@@ -197,16 +201,26 @@ export function findMatchingOverride(
 ): Override | null {
   const now = new Date().toISOString();
 
-  // Query for any non-expired override of the given kind,
-  // ordered by scope breadth (broadest first)
+  // Join overrides with runs to match broader scopes.
+  // For 'this_run': override.run_id must match the target run.
+  // For 'this_task': override's run must share the same task_id.
+  // For 'this_repo': override's run must share the same repo_id.
+  // For 'project_wide': override's run must share the same project_id.
   const row = db.prepare(`
-    SELECT * FROM overrides
-    WHERE run_id = ?
-      AND kind = ?
-      AND (target_id IS NULL OR target_id = ?)
-      AND (expires_at IS NULL OR expires_at > ?)
+    SELECT o.* FROM overrides o
+    JOIN runs override_run ON o.run_id = override_run.run_id
+    JOIN runs target_run ON target_run.run_id = ?
+    WHERE o.kind = ?
+      AND (o.target_id IS NULL OR o.target_id = ?)
+      AND (o.expires_at IS NULL OR o.expires_at > ?)
+      AND (
+        (o.scope = 'this_run' AND o.run_id = ?)
+        OR (o.scope = 'this_task' AND override_run.task_id = target_run.task_id)
+        OR (o.scope = 'this_repo' AND override_run.repo_id = target_run.repo_id)
+        OR (o.scope = 'project_wide' AND override_run.project_id = target_run.project_id)
+      )
     ORDER BY
-      CASE scope
+      CASE o.scope
         WHEN 'project_wide' THEN 1
         WHEN 'this_repo' THEN 2
         WHEN 'this_task' THEN 3
@@ -219,6 +233,7 @@ export function findMatchingOverride(
     params.kind,
     params.targetId ?? '',
     now,
+    params.runId,
   ) as OverrideRow | undefined;
 
   if (row === undefined) return null;

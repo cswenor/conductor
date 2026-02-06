@@ -16,6 +16,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
 import {
   Table,
   TableBody,
@@ -181,6 +183,16 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
   const [error, setError] = useState<string | null>(null);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
+  const [commentDialog, setCommentDialog] = useState<{
+    action: string;
+    title: string;
+    description: string;
+    fieldLabel: string;
+    fieldKey: 'comment' | 'justification';
+    confirmLabel: string;
+    confirmVariant: 'default' | 'destructive';
+  } | null>(null);
+  const [commentText, setCommentText] = useState('');
 
   const fetchRunDetail = useCallback(async () => {
     try {
@@ -205,12 +217,19 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     void fetchRunDetail();
   }, [fetchRunDetail]);
 
-  async function handleAction(action: string, comment?: string) {
+  async function handleAction(action: string, commentOrJustification?: string) {
     if (data === null || actionInProgress !== null) return;
     setActionInProgress(action);
     try {
       const body: Record<string, unknown> = { action };
-      if (comment !== undefined) body['comment'] = comment;
+      if (commentOrJustification !== undefined) {
+        // grant_policy_exception uses 'justification', others use 'comment'
+        if (action === 'grant_policy_exception') {
+          body['justification'] = commentOrJustification;
+        } else {
+          body['comment'] = commentOrJustification;
+        }
+      }
 
       const response = await fetch(`/api/runs/${runId}/actions`, {
         method: 'POST',
@@ -303,6 +322,46 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
               disabled={actionInProgress !== null}
             >
               Cancel Run
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Comment dialog for actions requiring justification */}
+      <Dialog open={commentDialog !== null} onOpenChange={(open) => { if (!open) { setCommentDialog(null); setCommentText(''); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{commentDialog?.title}</DialogTitle>
+            <DialogDescription>{commentDialog?.description}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="action-comment">{commentDialog?.fieldLabel}</Label>
+            <Textarea
+              id="action-comment"
+              value={commentText}
+              onChange={(e) => setCommentText(e.target.value)}
+              placeholder="Enter your reason..."
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setCommentDialog(null); setCommentText(''); }}>
+              Cancel
+            </Button>
+            <Button
+              variant={commentDialog?.confirmVariant ?? 'default'}
+              disabled={actionInProgress !== null || commentText.trim() === ''}
+              onClick={() => {
+                if (commentDialog === null) return;
+                const payload = commentDialog.fieldKey === 'justification'
+                  ? { justification: commentText }
+                  : { comment: commentText };
+                setCommentDialog(null);
+                void handleAction(commentDialog.action, payload.comment ?? payload.justification);
+                setCommentText('');
+              }}
+            >
+              {commentDialog?.confirmLabel}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -616,7 +675,15 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => void handleAction('revise_plan')}
+                  onClick={() => setCommentDialog({
+                    action: 'revise_plan',
+                    title: 'Request Plan Revision',
+                    description: 'Provide feedback for the agent to revise the plan.',
+                    fieldLabel: 'Revision feedback',
+                    fieldKey: 'comment',
+                    confirmLabel: 'Request Revision',
+                    confirmVariant: 'default',
+                  })}
                   disabled={actionInProgress !== null}
                 >
                   <Pencil className="h-4 w-4 mr-1" />
@@ -625,7 +692,15 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => void handleAction('reject_run')}
+                  onClick={() => setCommentDialog({
+                    action: 'reject_run',
+                    title: 'Reject Run',
+                    description: 'This will cancel the run. Provide a reason for rejection.',
+                    fieldLabel: 'Rejection reason',
+                    fieldKey: 'comment',
+                    confirmLabel: 'Reject Run',
+                    confirmVariant: 'destructive',
+                  })}
                   disabled={actionInProgress !== null}
                 >
                   <ThumbsDown className="h-4 w-4 mr-1" />
@@ -650,7 +725,15 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => void handleAction('grant_policy_exception')}
+                      onClick={() => setCommentDialog({
+                        action: 'grant_policy_exception',
+                        title: 'Grant Policy Exception',
+                        description: 'Provide justification for granting this policy exception.',
+                        fieldLabel: 'Justification',
+                        fieldKey: 'justification',
+                        confirmLabel: 'Grant Exception',
+                        confirmVariant: 'default',
+                      })}
                       disabled={actionInProgress !== null}
                     >
                       <ShieldAlert className="h-4 w-4 mr-1" />
@@ -659,7 +742,15 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => void handleAction('deny_policy_exception')}
+                      onClick={() => setCommentDialog({
+                        action: 'deny_policy_exception',
+                        title: 'Deny Policy Exception',
+                        description: 'This will cancel the run. Provide a reason for denial.',
+                        fieldLabel: 'Denial reason',
+                        fieldKey: 'comment',
+                        confirmLabel: 'Deny Exception',
+                        confirmVariant: 'destructive',
+                      })}
                       disabled={actionInProgress !== null}
                     >
                       Deny Exception

@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { Route } from 'next';
@@ -11,6 +12,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { UserMenu } from './user-menu';
+import { Badge } from '@/components/ui';
 
 const navigation = [
   { name: 'Projects', href: '/projects' as Route, icon: FolderKanban },
@@ -20,11 +22,31 @@ const navigation = [
 
 export function Nav() {
   const pathname = usePathname();
+  const [approvalsCount, setApprovalsCount] = useState(0);
+
+  const fetchCount = useCallback(async () => {
+    try {
+      const res = await fetch('/api/approvals/count');
+      if (res.ok) {
+        const data = await res.json() as { count: number };
+        setApprovalsCount(data.count);
+      }
+    } catch {
+      // Silently ignore — badge will show 0
+    }
+  }, []);
+
+  useEffect(() => {
+    void fetchCount();
+    const interval = setInterval(() => { void fetchCount(); }, 30000);
+    return () => clearInterval(interval);
+  }, [fetchCount]);
 
   return (
     <nav className="flex flex-col gap-1">
       {navigation.map((item) => {
         const isActive = pathname.startsWith(item.href);
+        const showBadge = item.name === 'Approvals' && approvalsCount > 0;
         return (
           <Link
             key={item.name}
@@ -38,6 +60,11 @@ export function Nav() {
           >
             <item.icon className="h-4 w-4" />
             {item.name}
+            {showBadge && (
+              <Badge variant="destructive" className="ml-auto h-5 min-w-5 justify-center text-xs px-1">
+                {approvalsCount}
+              </Badge>
+            )}
           </Link>
         );
       })}

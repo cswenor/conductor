@@ -11,6 +11,7 @@
 import type { Database } from 'better-sqlite3';
 import type { Run } from '../../runs/index.js';
 import { getValidArtifact } from '../../agent-runtime/artifacts.js';
+import { getToolInvocation } from '../../agent-runtime/tool-invocations.js';
 import { getOperatorAction } from '../../operator-actions/index.js';
 import type { GateResult } from './index.js';
 
@@ -45,16 +46,27 @@ export function evaluatePlanApproval(db: Database, run: Run): GateResult {
     };
   }
 
-  // 3. Check review verdict for CHANGES_REQUESTED
-  if (reviewArtifact.contentMarkdown !== undefined) {
-    const content = reviewArtifact.contentMarkdown;
-    // Check if review contains a CHANGES_REQUESTED verdict
-    if (content.includes('CHANGES_REQUESTED') || content.includes('changes_requested')) {
-      return {
-        status: 'pending',
-        reason: 'Review requested changes',
-      };
+  // 3. Check review verdict via structured tool invocation metadata
+  // Per ROUTING_AND_GATES.md: use source tool invocation for truth guarantee,
+  // not brittle text search on contentMarkdown.
+  if (reviewArtifact.sourceToolInvocationId !== undefined) {
+    const invocation = getToolInvocation(db, reviewArtifact.sourceToolInvocationId);
+    if (invocation !== null) {
+      const resultMeta = JSON.parse(invocation.resultMetaJson || '{}') as Record<string, unknown>;
+      const verdict = (resultMeta['verdict'] as string) ?? '';
+      if (verdict === 'changes_requested') {
+        return {
+          status: 'pending',
+          reason: 'Review requested changes',
+        };
+      }
     }
+  } else {
+    // No source tool invocation — cannot verify review verdict
+    return {
+      status: 'pending',
+      reason: 'Review artifact has no source tool invocation — cannot verify verdict',
+    };
   }
 
   // 4. Check for reject_run action (check before approve to respect operator intent)

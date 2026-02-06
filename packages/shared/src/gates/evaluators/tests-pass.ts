@@ -116,13 +116,23 @@ export function evaluateTestsPass(db: Database, run: Run): GateResult {
   }
 
   // 3. Cross-reference with tool invocation for truth guarantee
-  let testPassed = true; // default if no invocation to check
-  if (testReport.sourceToolInvocationId !== undefined) {
-    const truth = getTestExecutionTruth(db, testReport.sourceToolInvocationId);
-    if (truth !== null) {
-      testPassed = truth.actualPassed;
-    }
+  // Per ROUTING_AND_GATES.md: "Exit code checked — agent cannot fake pass."
+  // If there's no source tool invocation, we cannot verify the claim → fail safe.
+  if (testReport.sourceToolInvocationId === undefined) {
+    return {
+      status: 'pending',
+      reason: 'Test report has no source tool invocation — cannot verify results',
+    };
   }
+
+  const truth = getTestExecutionTruth(db, testReport.sourceToolInvocationId);
+  if (truth === null) {
+    return {
+      status: 'pending',
+      reason: 'Tool invocation not found — cannot verify test results',
+    };
+  }
+  const testPassed = truth.actualPassed;
 
   // 4. If tests passed → gate passed
   if (testPassed) {

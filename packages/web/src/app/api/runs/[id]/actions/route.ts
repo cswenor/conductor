@@ -16,7 +16,9 @@ import {
   TERMINAL_PHASES,
   recordOperatorAction,
   evaluateGate,
+  createOverride,
 } from '@conductor/shared';
+import type { OverrideScope } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
@@ -336,29 +338,47 @@ export const POST = withAuth(async (
           fromPhase: run.phase,
         });
 
-        // Create override record
-        const overrideId = `ov_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`;
-        const now = new Date().toISOString();
-        const scope = body.scope ?? 'this_run';
-
-        // Read blocked context for target info
-        let targetId = '';
+        // Read blocked context for target and constraint info
+        const scope = (body.scope ?? 'this_run') as OverrideScope;
+        let targetId: string | undefined;
         let priorPhase = 'executing';
+        let constraintKind: string | undefined;
+        let constraintValue: string | undefined;
+        let constraintHash: string | undefined;
+        let violationId: string | undefined;
+
         if (run.blockedContextJson !== undefined) {
           const ctx = JSON.parse(run.blockedContextJson) as Record<string, unknown>;
-          targetId = (ctx['policy_id'] as string) ?? '';
+          targetId = (ctx['policy_id'] as string) ?? undefined;
+          constraintKind = (ctx['constraint_kind'] as string) ?? undefined;
+          constraintValue = (ctx['constraint_value'] as string) ?? undefined;
+          constraintHash = (ctx['constraint_hash'] as string) ?? undefined;
+          violationId = (ctx['violation_id'] as string) ?? undefined;
           if (typeof ctx['prior_phase'] === 'string') {
             priorPhase = ctx['prior_phase'];
           }
         }
 
-        db.prepare(`
-          INSERT INTO overrides (
-            override_id, run_id, kind, target_id, scope,
-            operator, justification, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(overrideId, runId, 'policy_exception', targetId, scope,
-          userId, body.justification, now);
+        // Create override via shared service (includes all constraint fields)
+        const override = createOverride(db, {
+          runId,
+          kind: 'policy_exception',
+          targetId,
+          scope,
+          constraintKind,
+          constraintValue,
+          constraintHash,
+          policySetId: run.policySetId,
+          operator: userId,
+          justification: body.justification,
+        });
+
+        // Resolve the violation that caused the block
+        if (violationId !== undefined) {
+          db.prepare(
+            'UPDATE policy_violations SET resolved_by_override_id = ? WHERE violation_id = ?'
+          ).run(override.overrideId, violationId);
+        }
 
         // Resume from prior phase
         const result = transitionPhase(db, {
@@ -381,7 +401,7 @@ export const POST = withAuth(async (
           'UPDATE runs SET blocked_reason = NULL, blocked_context_json = NULL WHERE run_id = ?'
         ).run(runId);
 
-        log.info({ runId, userId, overrideId }, 'Policy exception granted');
+        log.info({ runId, userId, overrideId: override.overrideId }, 'Policy exception granted');
         return NextResponse.json({ success: true, run: getRun(db, runId) });
       }
 
