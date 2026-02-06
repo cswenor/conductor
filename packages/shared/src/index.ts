@@ -76,5 +76,8 @@ export * from './orchestrator/index';
 // Re-export gates module
 export * from './gates/index.js';
 
+// Re-export operator-actions module
+export * from './operator-actions/index.js';
+
 // Re-export agent runtime module
 export * from './agent-runtime/index.js';
