@@ -7,9 +7,11 @@
 
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../logger/index';
-import type { RunPhase, RunStep } from '../types/index';
+import type { RunPhase, RunStep, GateStatus } from '../types/index';
 import { getRun, clearActiveRunIfTerminal, type Run } from '../runs/index';
 import { createEvent, type EventRecord } from '../events/index';
+import { deriveGateState } from '../gates/gate-evaluations';
+import { evaluateGate, type GateResult } from '../gates/evaluators/index';
 
 const log = createLogger({ name: 'conductor:orchestrator' });
 
@@ -179,4 +181,139 @@ export function transitionPhase(db: Database, input: TransitionInput): Transitio
   });
 
   return doTransition();
+}
+
+// =============================================================================
+// Default Gate Configuration
+// =============================================================================
+
+/**
+ * Default required gates for runs without a RoutingDecision.
+ * Maps phase → gates that must pass before leaving that phase.
+ * Per ROUTING_AND_GATES.md: v0.1 uses a default set; future routing
+ * engine will provide per-run gate lists via RoutingDecision.
+ */
+const DEFAULT_PHASE_GATES: Record<string, string[]> = {
+  awaiting_plan_approval: ['plan_approval'],
+  // tests_pass is checked after implementation completes (before awaiting_review)
+  executing: ['tests_pass'],
+};
+
+const DEFAULT_REQUIRED_GATES = ['plan_approval', 'tests_pass', 'code_review', 'merge_wait'];
+const DEFAULT_OPTIONAL_GATES: string[] = [];
+
+/**
+ * Get the required and optional gate lists for a run.
+ * Uses RoutingDecision if available, otherwise default set.
+ */
+export function getRunGateConfig(
+  db: Database,
+  runId: string,
+): { requiredGates: string[]; optionalGates: string[] } {
+  // Check for a RoutingDecision in the routing_decisions table
+  const row = db.prepare(`
+    SELECT required_gates_json, optional_gates_json
+    FROM routing_decisions
+    WHERE run_id = ?
+    ORDER BY decided_at DESC
+    LIMIT 1
+  `).get(runId) as {
+    required_gates_json: string | null;
+    optional_gates_json: string | null;
+  } | undefined;
+
+  if (row?.required_gates_json !== undefined && row.required_gates_json !== null) {
+    try {
+      const required = JSON.parse(row.required_gates_json) as string[];
+      const optional = row.optional_gates_json !== null
+        ? JSON.parse(row.optional_gates_json) as string[]
+        : [];
+      return { requiredGates: required, optionalGates: optional };
+    } catch {
+      log.warn({ runId }, 'Invalid RoutingDecision JSON, using defaults');
+    }
+  }
+
+  return {
+    requiredGates: DEFAULT_REQUIRED_GATES,
+    optionalGates: DEFAULT_OPTIONAL_GATES,
+  };
+}
+
+// =============================================================================
+// Gate-Aware Phase Evaluation
+// =============================================================================
+
+export interface GateCheckResult {
+  allPassed: boolean;
+  results: Record<string, GateResult>;
+  blockedBy?: string;
+}
+
+/**
+ * Evaluate gates required before leaving a phase.
+ * Consults the run's RoutingDecision (or default) to determine which
+ * gates apply, then evaluates each via the evaluator registry.
+ *
+ * Returns the evaluation results and whether all required gates passed.
+ */
+export function evaluateGatesForPhase(
+  db: Database,
+  run: Run,
+  phase: string,
+): GateCheckResult {
+  const { requiredGates } = getRunGateConfig(db, run.runId);
+  const phaseGateIds = DEFAULT_PHASE_GATES[phase] ?? [];
+
+  // Only evaluate gates that are both required for this phase and in the run's required list
+  const applicableGates = phaseGateIds.filter(g => requiredGates.includes(g));
+
+  const results: Record<string, GateResult> = {};
+  let allPassed = true;
+  let blockedBy: string | undefined;
+
+  for (const gateId of applicableGates) {
+    const result = evaluateGate(db, run, gateId);
+    if (result !== null) {
+      results[gateId] = result;
+      if (result.status !== 'passed') {
+        allPassed = false;
+        if (blockedBy === undefined) {
+          blockedBy = gateId;
+        }
+      }
+    }
+  }
+
+  return { allPassed, results, blockedBy };
+}
+
+/**
+ * Check if all required gates for a phase are currently passed.
+ * Uses the derived gate state (latest evaluations) rather than
+ * re-evaluating. Useful for pre-transition validation.
+ */
+export function areGatesPassed(
+  db: Database,
+  runId: string,
+  phase: string,
+): { passed: boolean; blockedBy?: string } {
+  const { requiredGates } = getRunGateConfig(db, runId);
+  const phaseGateIds = DEFAULT_PHASE_GATES[phase] ?? [];
+  const applicableGates = phaseGateIds.filter(g => requiredGates.includes(g));
+
+  if (applicableGates.length === 0) {
+    return { passed: true };
+  }
+
+  const gateState = deriveGateState(db, runId);
+
+  for (const gateId of applicableGates) {
+    const status: GateStatus | undefined = gateState[gateId];
+    if (status !== 'passed') {
+      return { passed: false, blockedBy: gateId };
+    }
+  }
+
+  return { passed: true };
 }

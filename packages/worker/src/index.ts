@@ -48,6 +48,7 @@ import {
   transitionPhase,
   TERMINAL_PHASES,
   type Run,
+  type RunPhase,
   // Agent Runtime (WP6)
   generateAgentInvocationId,
   runPlanner,
@@ -61,6 +62,10 @@ import {
   // Agent Runtime (WP7) - Tool-use mode
   resolveCredentials,
   createProvider,
+  // Gates (WP8)
+  ensureBuiltInGateDefinitions,
+  ensureBuiltInPolicyDefinitions,
+  evaluateGatesForPhase,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -536,7 +541,8 @@ function markRunFailed(
 
 /**
  * Handle the 'resume' action for a run.
- * Used when an operator approves a plan (awaiting_plan_approval → executing).
+ * Used when an operator approves a plan (awaiting_plan_approval → executing)
+ * or when retrying from blocked state.
  */
 async function handleRunResume(
   db: ReturnType<typeof getDatabase>,
@@ -545,30 +551,61 @@ async function handleRunResume(
 ): Promise<void> {
   const { runId, phase } = run;
 
-  if (phase !== 'awaiting_plan_approval') {
-    log.warn({ runId, phase }, 'Resume only valid from awaiting_plan_approval');
-    return;
+  if (phase === 'awaiting_plan_approval') {
+    // Evaluate plan_approval gate before proceeding
+    const gateCheck = evaluateGatesForPhase(db, run, 'awaiting_plan_approval');
+
+    if (!gateCheck.allPassed) {
+      log.warn(
+        { runId, blockedBy: gateCheck.blockedBy },
+        'Cannot resume — plan_approval gate not passed'
+      );
+      return;
+    }
+
+    log.info({ runId, triggeredBy }, 'Resuming run (plan approved, gate passed)');
+
+    const result = transitionPhase(db, {
+      runId,
+      toPhase: 'executing',
+      toStep: 'implementer_apply_changes',
+      triggeredBy: triggeredBy ?? 'system',
+      reason: 'Plan approved by operator',
+    });
+
+    if (!result.success) {
+      log.error({ runId, error: result.error }, 'Failed to transition to executing');
+      return;
+    }
+
+    // Enqueue implementer agent
+    await enqueueAgentJob(runId, 'implementer', 'apply_changes');
+    log.info({ runId }, 'Run resumed — implementer enqueued');
+  } else if (phase === 'blocked') {
+    // Retry from blocked state — read blocked_context for target phase
+    const blockedContext = run.blockedContextJson !== undefined
+      ? JSON.parse(run.blockedContextJson) as Record<string, unknown>
+      : {};
+    const priorPhase = (blockedContext['prior_phase'] as string) ?? 'pending';
+
+    log.info({ runId, triggeredBy, priorPhase }, 'Retrying from blocked state');
+
+    const result = transitionPhase(db, {
+      runId,
+      toPhase: priorPhase as RunPhase,
+      triggeredBy: triggeredBy ?? 'system',
+      reason: 'Operator retry from blocked state',
+    });
+
+    if (!result.success) {
+      log.error({ runId, error: result.error, targetPhase: priorPhase }, 'Failed to transition from blocked');
+      return;
+    }
+
+    log.info({ runId, toPhase: priorPhase }, 'Run retried from blocked');
+  } else {
+    log.warn({ runId, phase }, 'Resume not valid from this phase');
   }
-
-  log.info({ runId, triggeredBy }, 'Resuming run (plan approved)');
-
-  const result = transitionPhase(db, {
-    runId,
-    toPhase: 'executing',
-    toStep: 'implementer_apply_changes',
-    triggeredBy: triggeredBy ?? 'system',
-    reason: 'Plan approved by operator',
-  });
-
-  if (!result.success) {
-    log.error({ runId, error: result.error }, 'Failed to transition to executing');
-    return;
-  }
-
-  // Enqueue implementer agent
-  await enqueueAgentJob(runId, 'implementer', 'apply_changes');
-
-  log.info({ runId }, 'Run resumed — implementer enqueued');
 }
 
 // =============================================================================
@@ -710,6 +747,37 @@ async function handleImplementerAgent(
     }
   } else {
     log.warn({ runId }, 'Implementer produced no file operations');
+  }
+
+  // Evaluate tests_pass gate before transitioning
+  const freshRun = getRun(db, runId);
+  if (freshRun !== null) {
+    const gateCheck = evaluateGatesForPhase(db, freshRun, 'executing');
+
+    if (!gateCheck.allPassed) {
+      const failedGate = gateCheck.blockedBy ?? 'unknown';
+      const gateResult = gateCheck.results[failedGate];
+
+      if (gateResult?.escalate === true) {
+        // Gate failed with escalation — block the run with context for retry
+        const blockResult = transitionPhase(db, {
+          runId,
+          toPhase: 'blocked',
+          triggeredBy: 'system',
+          blockedReason: 'gate_failed',
+          blockedContext: { prior_phase: 'executing', gate_id: failedGate },
+        });
+        if (blockResult.success) {
+          log.info({ runId, gate: failedGate }, 'Run blocked — gate failed with escalation');
+        }
+        return;
+      }
+
+      log.info(
+        { runId, gate: failedGate, status: gateResult?.status },
+        'Tests gate not yet passed, proceeding to review (pending gates checked later)'
+      );
+    }
   }
 
   // Transition to awaiting_review
@@ -1096,6 +1164,11 @@ async function main(): Promise<void> {
 
   const queueManager = getQueueManager();
   log.info('Database and Redis initialized');
+
+  // Seed built-in definitions (idempotent)
+  ensureBuiltInGateDefinitions(getDatabase());
+  ensureBuiltInPolicyDefinitions(getDatabase());
+  log.info('Built-in gate and policy definitions seeded');
 
   // Initialize GitHub App (needed for processRun and processGitHubWrite)
   if (!isGitHubAppInitialized()) {

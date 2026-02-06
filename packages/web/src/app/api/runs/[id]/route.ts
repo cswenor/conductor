@@ -13,6 +13,10 @@ import {
   getRepo,
   canAccessProject,
   listRunEvents,
+  deriveGateState,
+  listGateEvaluations,
+  listOperatorActions,
+  getRunGateConfig,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
@@ -65,6 +69,12 @@ export const GET = withAuth(async (
     // Get events timeline
     const events = listRunEvents(db, run.runId);
 
+    // Get gate state (WP8)
+    const gates = deriveGateState(db, run.runId);
+    const gateEvaluations = listGateEvaluations(db, run.runId);
+    const operatorActions = listOperatorActions(db, run.runId);
+    const { requiredGates, optionalGates } = getRunGateConfig(db, run.runId);
+
     return NextResponse.json({
       run,
       task: task !== null ? {
@@ -81,6 +91,11 @@ export const GET = withAuth(async (
         githubName: repo.githubName,
       } : null,
       events,
+      gates,
+      gateEvaluations,
+      operatorActions,
+      requiredGates,
+      optionalGates,
     });
   } catch (err) {
     log.error(

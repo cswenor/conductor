@@ -13,7 +13,13 @@ import {
   isValidTransition,
   VALID_TRANSITIONS,
   TERMINAL_PHASES,
+  getRunGateConfig,
+  evaluateGatesForPhase,
+  areGatesPassed,
 } from './index';
+import { ensureBuiltInGateDefinitions } from '../gates/gate-definitions';
+import { createGateEvaluation } from '../gates/gate-evaluations';
+import { getRun } from '../runs/index';
 
 let db: DatabaseType;
 
@@ -353,5 +359,116 @@ describe('phase.transitioned event exclusivity', () => {
         source: 'operator',
       })
     ).toThrow('phase.transitioned events can only be created with source=orchestrator');
+  });
+});
+
+describe('getRunGateConfig', () => {
+  it('returns default gates when no routing decision exists', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    const config = getRunGateConfig(db, run.runId);
+    expect(config.requiredGates).toContain('plan_approval');
+    expect(config.requiredGates).toContain('tests_pass');
+    expect(config.requiredGates).toContain('code_review');
+    expect(config.requiredGates).toContain('merge_wait');
+    expect(config.optionalGates).toHaveLength(0);
+  });
+
+  it('returns gates from routing decision when available', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    const now = new Date().toISOString();
+
+    db.prepare(`
+      INSERT INTO routing_decisions (
+        routing_decision_id, run_id, inputs_json, agent_graph_json,
+        required_gates_json, optional_gates_json, reasoning, decided_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      'rd_test', run.runId, '{}', '{}',
+      '["plan_approval","tests_pass"]', '["code_review"]',
+      'Custom routing', now
+    );
+
+    const config = getRunGateConfig(db, run.runId);
+    expect(config.requiredGates).toEqual(['plan_approval', 'tests_pass']);
+    expect(config.optionalGates).toEqual(['code_review']);
+  });
+});
+
+describe('evaluateGatesForPhase', () => {
+  it('returns allPassed=true when no gates apply for phase', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    ensureBuiltInGateDefinitions(db);
+
+    const runObj = getRun(db, run.runId);
+    const result = evaluateGatesForPhase(db, runObj!, 'planning');
+    expect(result.allPassed).toBe(true);
+    expect(Object.keys(result.results)).toHaveLength(0);
+  });
+
+  it('evaluates plan_approval gate for awaiting_plan_approval phase', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    ensureBuiltInGateDefinitions(db);
+
+    // Move to awaiting_plan_approval
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', triggeredBy: 'system' });
+
+    const runObj = getRun(db, run.runId);
+    const result = evaluateGatesForPhase(db, runObj!, 'awaiting_plan_approval');
+
+    expect(result.results['plan_approval']).toBeDefined();
+    // Without any artifacts or actions, plan_approval should be pending
+    expect(result.results['plan_approval'].status).toBe('pending');
+    expect(result.allPassed).toBe(false);
+  });
+});
+
+describe('areGatesPassed', () => {
+  it('returns passed=true when no gates for the phase', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    ensureBuiltInGateDefinitions(db);
+
+    const result = areGatesPassed(db, run.runId, 'planning');
+    expect(result.passed).toBe(true);
+  });
+
+  it('returns passed=false when gate evaluation is pending', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    ensureBuiltInGateDefinitions(db);
+
+    // No gate evaluations recorded yet
+    const result = areGatesPassed(db, run.runId, 'awaiting_plan_approval');
+    expect(result.passed).toBe(false);
+    expect(result.blockedBy).toBe('plan_approval');
+  });
+
+  it('returns passed=true when gate evaluation is passed', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    ensureBuiltInGateDefinitions(db);
+
+    // Move to awaiting_plan_approval to get an event for causation
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', triggeredBy: 'system' });
+    const result2 = transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', triggeredBy: 'system' });
+
+    // Create a passed gate evaluation
+    createGateEvaluation(db, {
+      runId: run.runId,
+      gateId: 'plan_approval',
+      kind: 'human',
+      status: 'passed',
+      reason: 'Operator approved',
+      causationEventId: result2.event?.eventId ?? 'evt_test',
+    });
+
+    const check = areGatesPassed(db, run.runId, 'awaiting_plan_approval');
+    expect(check.passed).toBe(true);
   });
 });

@@ -24,7 +24,11 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { ArrowLeft, XCircle, GitBranch, Clock, Hash } from 'lucide-react';
+import {
+  ArrowLeft, XCircle, GitBranch, Clock, Hash,
+  CheckCircle, AlertTriangle, Circle, RefreshCw,
+  ThumbsUp, ThumbsDown, Pencil, ShieldAlert,
+} from 'lucide-react';
 
 interface RunDetail {
   runId: string;
@@ -44,6 +48,7 @@ interface RunDetail {
   prUrl?: string;
   prState?: string;
   blockedReason?: string;
+  blockedContextJson?: string;
   planRevisions: number;
   testFixAttempts: number;
   reviewRounds: number;
@@ -79,6 +84,37 @@ interface EventRecord {
   createdAt: string;
 }
 
+interface GateEvaluationRecord {
+  gateEvaluationId: string;
+  runId: string;
+  gateId: string;
+  kind: string;
+  status: string;
+  reason?: string;
+  evaluatedAt: string;
+}
+
+interface OperatorActionRecord {
+  operatorActionId: string;
+  runId: string;
+  action: string;
+  operator: string;
+  comment?: string;
+  createdAt: string;
+}
+
+interface RunDetailResponse {
+  run: RunDetail;
+  task: TaskInfo | null;
+  repo: RepoInfo | null;
+  events: EventRecord[];
+  gates: Record<string, string>;
+  gateEvaluations: GateEvaluationRecord[];
+  operatorActions: OperatorActionRecord[];
+  requiredGates: string[];
+  optionalGates: string[];
+}
+
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning';
 
 function phaseBadgeVariant(phase: string): BadgeVariant {
@@ -100,6 +136,29 @@ function phaseBadgeVariant(phase: string): BadgeVariant {
   }
 }
 
+function gateStatusBadgeVariant(status: string): BadgeVariant {
+  switch (status) {
+    case 'passed':
+      return 'success';
+    case 'failed':
+      return 'destructive';
+    case 'pending':
+    default:
+      return 'secondary';
+  }
+}
+
+function GateStatusIcon({ status }: { status: string }) {
+  switch (status) {
+    case 'passed':
+      return <CheckCircle className="h-4 w-4 text-green-500" />;
+    case 'failed':
+      return <AlertTriangle className="h-4 w-4 text-red-500" />;
+    default:
+      return <Circle className="h-4 w-4 text-muted-foreground" />;
+  }
+}
+
 function formatPhase(phase: string): string {
   return phase.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
@@ -108,18 +167,19 @@ function formatTimestamp(dateString: string): string {
   return new Date(dateString).toLocaleString();
 }
 
+function formatGateId(gateId: string): string {
+  return gateId.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
 const TERMINAL_PHASES = new Set(['completed', 'cancelled']);
 
 export default function RunDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: runId } = use(params);
   const router = useRouter();
-  const [run, setRun] = useState<RunDetail | null>(null);
-  const [task, setTask] = useState<TaskInfo | null>(null);
-  const [repo, setRepo] = useState<RepoInfo | null>(null);
-  const [events, setEvents] = useState<EventRecord[]>([]);
+  const [data, setData] = useState<RunDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [cancelling, setCancelling] = useState(false);
+  const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
 
   const fetchRunDetail = useCallback(async () => {
@@ -132,16 +192,8 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
         }
         throw new Error('Failed to fetch run');
       }
-      const data = await response.json() as {
-        run: RunDetail;
-        task: TaskInfo | null;
-        repo: RepoInfo | null;
-        events: EventRecord[];
-      };
-      setRun(data.run);
-      setTask(data.task);
-      setRepo(data.repo);
-      setEvents(data.events);
+      const result = await response.json() as RunDetailResponse;
+      setData(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -153,26 +205,27 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     void fetchRunDetail();
   }, [fetchRunDetail]);
 
-  async function handleCancel() {
-    if (run === null || cancelling) return;
-    setCancelling(true);
-    setShowCancelDialog(false);
+  async function handleAction(action: string, comment?: string) {
+    if (data === null || actionInProgress !== null) return;
+    setActionInProgress(action);
     try {
+      const body: Record<string, unknown> = { action };
+      if (comment !== undefined) body['comment'] = comment;
+
       const response = await fetch(`/api/runs/${runId}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cancel' }),
+        body: JSON.stringify(body),
       });
       if (!response.ok) {
-        const data = await response.json() as { error?: string };
-        throw new Error(data.error ?? 'Failed to cancel run');
+        const result = await response.json() as { error?: string };
+        throw new Error(result.error ?? `Failed to ${action}`);
       }
-      // Refresh run detail
       await fetchRunDetail();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      setCancelling(false);
+      setActionInProgress(null);
     }
   }
 
@@ -187,7 +240,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     );
   }
 
-  if (error !== null || run === null) {
+  if (error !== null || data === null) {
     return (
       <div className="flex flex-col h-full">
         <PageHeader title="Run Detail" description="" />
@@ -202,11 +255,16 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
     );
   }
 
-  // Phase timeline: filter for phase.transitioned events
+  const { run, task, repo, events, gates, gateEvaluations, operatorActions, requiredGates, optionalGates } = data;
   const phaseEvents = events.filter(e => e.type === 'phase.transitioned');
+  const isTerminal = TERMINAL_PHASES.has(run.phase);
+  const blockedContext = run.blockedContextJson !== undefined
+    ? JSON.parse(run.blockedContextJson) as Record<string, unknown>
+    : null;
 
   return (
     <div className="flex flex-col h-full">
+      {/* Header */}
       <div className="flex items-center justify-between border-b px-6 py-4">
         <div>
           <div className="flex items-center gap-3">
@@ -224,18 +282,6 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
             {task !== null ? `${task.githubType} #${task.githubIssueNumber}: ${task.githubTitle}` : run.taskId}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {!TERMINAL_PHASES.has(run.phase) && (
-            <Button
-              variant="destructive"
-              onClick={() => setShowCancelDialog(true)}
-              disabled={cancelling}
-            >
-              <XCircle className="h-4 w-4 mr-2" />
-              {cancelling ? 'Cancelling...' : 'Cancel Run'}
-            </Button>
-          )}
-        </div>
       </div>
 
       <Dialog open={showCancelDialog} onOpenChange={setShowCancelDialog}>
@@ -251,13 +297,46 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
             <Button variant="outline" onClick={() => setShowCancelDialog(false)}>
               Keep Running
             </Button>
-            <Button variant="destructive" onClick={() => void handleCancel()} disabled={cancelling}>
-              {cancelling ? 'Cancelling...' : 'Cancel Run'}
+            <Button
+              variant="destructive"
+              onClick={() => { setShowCancelDialog(false); void handleAction('cancel'); }}
+              disabled={actionInProgress !== null}
+            >
+              Cancel Run
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <div className="flex-1 p-6 space-y-6">
+
+      <div className="flex-1 p-6 space-y-6 pb-24">
+        {/* Blocked State Explanation */}
+        {run.phase === 'blocked' && run.blockedReason !== undefined && (
+          <Card className="border-destructive">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-destructive flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4" />
+                Run Blocked
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                <p className="text-sm font-medium">{run.blockedReason}</p>
+                {blockedContext !== null && blockedContext['gate_id'] !== undefined && (
+                  <p className="text-xs text-muted-foreground">
+                    Failed gate: {formatGateId(blockedContext['gate_id'] as string)}
+                  </p>
+                )}
+                {run.resultReason !== undefined && (
+                  <p className="text-xs text-muted-foreground">{run.resultReason}</p>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  Use the actions bar below to retry or cancel this run.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Summary cards */}
         <div className="grid gap-4 md:grid-cols-3">
           <Card>
@@ -293,11 +372,6 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                   <p className="text-sm text-muted-foreground">
                     Result: {run.result}
                     {run.resultReason !== undefined && ` — ${run.resultReason}`}
-                  </p>
-                )}
-                {run.blockedReason !== undefined && (
-                  <p className="text-sm text-destructive">
-                    Blocked: {run.blockedReason}
                   </p>
                 )}
                 <p className="text-sm text-muted-foreground">
@@ -354,6 +428,96 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
         </div>
 
         <Separator />
+
+        {/* Gate Status */}
+        {requiredGates.length > 0 && (
+          <>
+            <div>
+              <h3 className="text-lg font-semibold mb-4">Gates</h3>
+              <div className="grid gap-3 md:grid-cols-2">
+                {requiredGates.map((gateId) => {
+                  const status = gates[gateId] ?? 'pending';
+                  const latestEval = gateEvaluations
+                    .filter(e => e.gateId === gateId)
+                    .at(-1);
+
+                  return (
+                    <Card key={gateId}>
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <GateStatusIcon status={status} />
+                            <span className="text-sm font-medium">{formatGateId(gateId)}</span>
+                            <Badge variant="secondary" className="text-xs">required</Badge>
+                          </div>
+                          <Badge variant={gateStatusBadgeVariant(status)}>
+                            {status}
+                          </Badge>
+                        </div>
+                        {latestEval?.reason !== undefined && (
+                          <p className="text-xs text-muted-foreground mt-2 ml-6">
+                            {latestEval.reason}
+                          </p>
+                        )}
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+                {optionalGates.map((gateId) => {
+                  const status = gates[gateId] ?? 'pending';
+                  return (
+                    <Card key={gateId}>
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <GateStatusIcon status={status} />
+                            <span className="text-sm font-medium">{formatGateId(gateId)}</span>
+                            <Badge variant="secondary" className="text-xs">optional</Badge>
+                          </div>
+                          <Badge variant={gateStatusBadgeVariant(status)}>
+                            {status}
+                          </Badge>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+
+            <Separator />
+          </>
+        )}
+
+        {/* Operator Actions History */}
+        {operatorActions.length > 0 && (
+          <>
+            <div>
+              <h3 className="text-lg font-semibold mb-4">Operator Actions</h3>
+              <div className="space-y-2">
+                {operatorActions.map((oa) => (
+                  <div key={oa.operatorActionId} className="flex items-start gap-3">
+                    <div className="w-2 h-2 mt-2 rounded-full bg-blue-500 flex-shrink-0" />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="secondary">{formatPhase(oa.action)}</Badge>
+                        <span className="text-xs text-muted-foreground">by {oa.operator}</span>
+                      </div>
+                      {oa.comment !== undefined && (
+                        <p className="text-sm text-muted-foreground mt-1">{oa.comment}</p>
+                      )}
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {formatTimestamp(oa.createdAt)}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <Separator />
+          </>
+        )}
 
         {/* Phase Timeline */}
         <div>
@@ -432,6 +596,98 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
           )}
         </div>
       </div>
+
+      {/* Actions Bar — sticky bottom per CONTROL_PLANE_UX.md */}
+      {!isTerminal && (
+        <div className="sticky bottom-0 border-t bg-background px-6 py-3 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            {/* Phase-specific actions */}
+            {run.phase === 'awaiting_plan_approval' && (
+              <>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => void handleAction('approve_plan')}
+                  disabled={actionInProgress !== null}
+                >
+                  <ThumbsUp className="h-4 w-4 mr-1" />
+                  Approve Plan
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleAction('revise_plan')}
+                  disabled={actionInProgress !== null}
+                >
+                  <Pencil className="h-4 w-4 mr-1" />
+                  Revise
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleAction('reject_run')}
+                  disabled={actionInProgress !== null}
+                >
+                  <ThumbsDown className="h-4 w-4 mr-1" />
+                  Reject
+                </Button>
+              </>
+            )}
+
+            {run.phase === 'blocked' && (
+              <>
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => void handleAction('retry')}
+                  disabled={actionInProgress !== null}
+                >
+                  <RefreshCw className="h-4 w-4 mr-1" />
+                  Retry
+                </Button>
+                {run.blockedReason === 'policy_exception_required' && (
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void handleAction('grant_policy_exception')}
+                      disabled={actionInProgress !== null}
+                    >
+                      <ShieldAlert className="h-4 w-4 mr-1" />
+                      Grant Exception
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void handleAction('deny_policy_exception')}
+                      disabled={actionInProgress !== null}
+                    >
+                      Deny Exception
+                    </Button>
+                  </>
+                )}
+              </>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {actionInProgress !== null && (
+              <span className="text-sm text-muted-foreground">
+                {formatPhase(actionInProgress)}...
+              </span>
+            )}
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setShowCancelDialog(true)}
+              disabled={actionInProgress !== null}
+            >
+              <XCircle className="h-4 w-4 mr-1" />
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
