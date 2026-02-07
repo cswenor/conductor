@@ -22,30 +22,7 @@ import {
   getPhaseVariant,
   timeAgo,
 } from '@/lib/phase-config';
-
-interface RunSummary {
-  runId: string;
-  taskId: string;
-  projectId: string;
-  repoId: string;
-  runNumber: number;
-  phase: string;
-  step: string;
-  status: string;
-  taskTitle: string;
-  projectName: string;
-  repoFullName: string;
-  branch: string;
-  startedAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  result?: string;
-}
-
-interface RunsResponse {
-  runs: RunSummary[];
-  total: number;
-}
+import type { RunSummary, RunsResponse } from '@/lib/types';
 
 
 const TAB_LABELS: Record<WorkTab, string> = {

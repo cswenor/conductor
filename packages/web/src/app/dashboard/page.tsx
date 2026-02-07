@@ -19,42 +19,7 @@ import {
   Play, Clock, AlertTriangle, CheckCircle, ThumbsUp, Eye, ExternalLink,
 } from 'lucide-react';
 import { getPhaseLabel, getPhaseVariant, timeAgo, formatWaitDuration } from '@/lib/phase-config';
-
-interface RunSummary {
-  runId: string;
-  taskId: string;
-  projectId: string;
-  repoId: string;
-  runNumber: number;
-  phase: string;
-  step: string;
-  status: string;
-  taskTitle: string;
-  projectName: string;
-  repoFullName: string;
-  branch: string;
-  startedAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  result?: string;
-}
-
-interface ApprovalItem {
-  runId: string;
-  phase: string;
-  taskTitle: string;
-  projectName: string;
-  repoFullName: string;
-  waitDurationMs: number;
-  gateType: 'plan_approval' | 'escalation' | 'policy_exception';
-}
-
-interface ApprovalsResponse {
-  planApprovals: ApprovalItem[];
-  escalations: ApprovalItem[];
-  policyExceptions: ApprovalItem[];
-  total: number;
-}
+import type { RunSummary, ApprovalItem, ApprovalsResponse } from '@/lib/types';
 
 
 interface DashboardData {

@@ -13,21 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { getPhaseLabel, getPhaseVariant, timeAgo } from '@/lib/phase-config';
-
-interface RunSummary {
-  runId: string;
-  taskId: string;
-  phase: string;
-  status: string;
-  taskTitle: string;
-  repoFullName: string;
-  blockedReason?: string;
-  prUrl?: string;
-  prNumber?: number;
-  updatedAt: string;
-  completedAt?: string;
-  result?: string;
-}
+import type { RunSummary } from '@/lib/types';
 
 interface OverviewData {
   activeCount: number;
@@ -114,7 +100,8 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
         awaitingApprovalRuns: awaitingData.runs,
         lastShippedPr: lastShippedData.runs[0] ?? null,
       });
-    } catch {
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to load overview data');
       setData({
         activeCount: 0,
         blockedCount: 0,

@@ -32,38 +32,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatWaitDuration } from '@/lib/phase-config';
-
-interface ApprovalItem {
-  runId: string;
-  phase: string;
-  blockedReason?: string;
-  taskId: string;
-  repoId: string;
-  taskTitle: string;
-  repoFullName: string;
-  projectName: string;
-  projectId: string;
-  updatedAt: string;
-  waitDurationMs: number;
-  gateType: 'plan_approval' | 'escalation' | 'policy_exception';
-  latestGateStatus?: string;
-  latestGateReason?: string;
-  contextSummary?: string;
-  blockedContext?: Record<string, unknown>;
-}
-
-interface ProjectOption {
-  id: string;
-  name: string;
-}
-
-interface ApprovalsResponse {
-  planApprovals: ApprovalItem[];
-  escalations: ApprovalItem[];
-  policyExceptions: ApprovalItem[];
-  total: number;
-  projects: ProjectOption[];
-}
+import type { ApprovalItem, ApprovalsResponse } from '@/lib/types';
 
 
 interface CommentDialogConfig {
