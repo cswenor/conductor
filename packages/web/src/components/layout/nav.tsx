@@ -6,18 +6,27 @@ import { usePathname } from 'next/navigation';
 import type { Route } from 'next';
 import { cn } from '@/lib/utils';
 import {
-  FolderKanban,
+  LayoutDashboard,
   Play,
   CheckCircle,
+  FolderKanban,
+  BarChart3,
+  Settings,
   Activity,
 } from 'lucide-react';
 import { UserMenu } from './user-menu';
-import { Badge } from '@/components/ui';
+import { Badge, Separator } from '@/components/ui';
 
-const navigation = [
-  { name: 'Projects', href: '/projects' as Route, icon: FolderKanban },
-  { name: 'Runs', href: '/runs' as Route, icon: Play },
+const mainNavigation = [
+  { name: 'Dashboard', href: '/dashboard' as Route, icon: LayoutDashboard },
+  { name: 'Work', href: '/work' as Route, icon: Play },
   { name: 'Approvals', href: '/approvals' as Route, icon: CheckCircle },
+  { name: 'Projects', href: '/projects' as Route, icon: FolderKanban },
+  { name: 'Analytics', href: '/analytics' as Route, icon: BarChart3 },
+];
+
+const settingsNavigation = [
+  { name: 'Settings', href: '/settings' as Route, icon: Settings },
 ];
 
 export function Nav() {
@@ -44,8 +53,11 @@ export function Nav() {
 
   return (
     <nav className="flex flex-col gap-1">
-      {navigation.map((item) => {
-        const isActive = pathname.startsWith(item.href);
+      {mainNavigation.map((item) => {
+        const isActive =
+          item.href === '/dashboard'
+            ? pathname === '/dashboard' || pathname === '/'
+            : pathname.startsWith(item.href);
         const showBadge = item.name === 'Approvals' && approvalsCount > 0;
         return (
           <Link
@@ -68,6 +80,27 @@ export function Nav() {
           </Link>
         );
       })}
+
+      <Separator className="my-2" />
+
+      {settingsNavigation.map((item) => {
+        const isActive = pathname.startsWith(item.href);
+        return (
+          <Link
+            key={item.name}
+            href={item.href}
+            className={cn(
+              'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              isActive
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
+            )}
+          >
+            <item.icon className="h-4 w-4" />
+            {item.name}
+          </Link>
+        );
+      })}
     </nav>
   );
 }
@@ -75,7 +108,7 @@ export function Nav() {
 export function NavHeader() {
   return (
     <Link
-      href={'/' as Route}
+      href={'/dashboard' as Route}
       className="flex items-center gap-2 px-3 py-4 hover:opacity-80 transition-opacity"
     >
       <Activity className="h-6 w-6 text-primary" />
