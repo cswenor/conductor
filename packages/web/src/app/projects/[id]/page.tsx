@@ -1,17 +1,29 @@
 'use client';
 
-import { useState, useEffect, use } from 'react';
+import { useState, useEffect, useCallback, use } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { Route } from 'next';
 import { PageHeader } from '@/components/layout';
 import { Button, EmptyState } from '@/components/ui';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import {
   ArrowLeft,
-  Settings,
   GitBranch,
   FolderKanban,
   Play,
@@ -20,7 +32,13 @@ import {
   Github,
   Plus,
   Loader2,
+  Settings,
+  Workflow,
+  Trash2,
 } from 'lucide-react';
+import { ProjectWorkTab } from '@/components/projects/project-work-tab';
+import { ProjectWorkflowTab } from '@/components/projects/project-workflow-tab';
+import { ProjectOverviewTab } from '@/components/projects/project-overview-tab';
 
 interface Project {
   projectId: string;
@@ -50,6 +68,160 @@ interface PageProps {
   params: Promise<{ id: string }>;
 }
 
+function SettingsTab({ project, projectId }: { project: Project; projectId: string }) {
+  const router = useRouter();
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirmName, setConfirmName] = useState('');
+
+  async function handleDelete() {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const response = await fetch(`/api/projects/${projectId}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        const data = await response.json() as { error?: string };
+        throw new Error(data.error ?? 'Failed to delete project');
+      }
+      router.push('/projects' as Route);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Unknown error');
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* GitHub Connection */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Github className="h-4 w-4" />
+            GitHub Connection
+          </CardTitle>
+          <CardDescription>
+            GitHub App installation linked to this project.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Organization</span>
+              <span className="text-sm font-medium">{project.githubOrgName}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Installation ID</span>
+              <span className="text-sm font-mono">{project.githubInstallationId}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Status</span>
+              <Badge variant="default">Connected</Badge>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Configuration */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Settings className="h-4 w-4" />
+            Configuration
+          </CardTitle>
+          <CardDescription>
+            Project settings and defaults.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Default Base Branch</span>
+              <span className="text-sm font-mono">{project.defaultBaseBranch}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Port Range</span>
+              <span className="text-sm font-mono">
+                {project.portRangeStart}-{project.portRangeEnd}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-muted-foreground">Enforce Projects</span>
+              <Badge variant={project.enforceProjects ? 'default' : 'secondary'}>
+                {project.enforceProjects ? 'Yes' : 'No'}
+              </Badge>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Danger Zone */}
+      <Card className="border-destructive/50">
+        <CardHeader>
+          <CardTitle className="text-base text-destructive">Danger Zone</CardTitle>
+          <CardDescription>
+            Irreversible actions that affect this project.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium">Delete this project</p>
+              <p className="text-sm text-muted-foreground">
+                Permanently remove this project and all associated data.
+              </p>
+            </div>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" size="sm">
+                  <Trash2 className="h-4 w-4 mr-1" />
+                  Delete Project
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete project?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete <strong>{project.name}</strong> and all its runs, tasks, and configuration. This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-2 py-2">
+                  <Label htmlFor="confirm-name" className="text-sm">
+                    Type <strong>{project.name}</strong> to confirm:
+                  </Label>
+                  <Input
+                    id="confirm-name"
+                    value={confirmName}
+                    onChange={(e) => setConfirmName(e.target.value)}
+                    placeholder={project.name}
+                  />
+                </div>
+                {deleteError !== null && (
+                  <p className="text-sm text-destructive">{deleteError}</p>
+                )}
+                <AlertDialogFooter>
+                  <AlertDialogCancel onClick={() => setConfirmName('')}>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    disabled={confirmName !== project.name || deleting}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      void handleDelete();
+                    }}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    {deleting ? 'Deleting...' : 'Delete Project'}
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function ProjectDetailPage({ params }: PageProps) {
   const { id } = use(params);
   const searchParams = useSearchParams();
@@ -59,34 +231,34 @@ export default function ProjectDetailPage({ params }: PageProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    async function fetchProject() {
-      try {
-        const response = await fetch(`/api/projects/${id}`);
-        if (!response.ok) {
-          if (response.status === 404) {
-            throw new Error('Project not found');
-          }
-          throw new Error('Failed to fetch project');
+  const fetchProject = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/projects/${id}`);
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error('Project not found');
         }
-        const data = await response.json() as { project: Project };
-        setProject(data.project);
-
-        // Fetch repos for this project
-        const reposResponse = await fetch(`/api/projects/${id}/repos`);
-        if (reposResponse.ok) {
-          const reposData = await reposResponse.json() as { repos: Repo[] };
-          setRepos(reposData.repos);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        setLoading(false);
+        throw new Error('Failed to fetch project');
       }
-    }
+      const data = await response.json() as { project: Project };
+      setProject(data.project);
 
-    void fetchProject();
+      // Fetch repos for this project
+      const reposResponse = await fetch(`/api/projects/${id}/repos`);
+      if (reposResponse.ok) {
+        const reposData = await reposResponse.json() as { repos: Repo[] };
+        setRepos(reposData.repos);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
   }, [id]);
+
+  useEffect(() => {
+    void fetchProject();
+  }, [fetchProject]);
 
   if (loading) {
     return (
@@ -132,18 +304,12 @@ export default function ProjectDetailPage({ params }: PageProps) {
         title={project.name}
         description={`GitHub: ${project.githubOrgName}`}
         action={
-          <div className="flex items-center gap-2">
-            <Link href={'/projects' as Route}>
-              <Button variant="outline">
-                <ArrowLeft className="h-4 w-4 mr-2" />
-                Back
-              </Button>
-            </Link>
+          <Link href={'/projects' as Route}>
             <Button variant="outline">
-              <Settings className="h-4 w-4 mr-2" />
-              Settings
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back
             </Button>
-          </div>
+          </Link>
         }
       />
       <div className="flex-1 p-6">
@@ -157,97 +323,31 @@ export default function ProjectDetailPage({ params }: PageProps) {
               <FileText className="h-4 w-4 mr-2" />
               Backlog
             </TabsTrigger>
+            <TabsTrigger value="work">
+              <Play className="h-4 w-4 mr-2" />
+              Work
+            </TabsTrigger>
+            <TabsTrigger value="workflow">
+              <Workflow className="h-4 w-4 mr-2" />
+              Workflow
+            </TabsTrigger>
             <TabsTrigger value="repos">
               <GitBranch className="h-4 w-4 mr-2" />
               Repos
-            </TabsTrigger>
-            <TabsTrigger value="runs">
-              <Play className="h-4 w-4 mr-2" />
-              Runs
             </TabsTrigger>
             <TabsTrigger value="policies">
               <Shield className="h-4 w-4 mr-2" />
               Policies
             </TabsTrigger>
+            <TabsTrigger value="settings">
+              <Settings className="h-4 w-4 mr-2" />
+              Settings
+            </TabsTrigger>
           </TabsList>
 
           {/* Overview Tab */}
           <TabsContent value="overview">
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {/* GitHub Connection */}
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Github className="h-4 w-4" />
-                    GitHub Connection
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Organization</span>
-                      <span className="text-sm font-medium">{project.githubOrgName}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Installation ID</span>
-                      <span className="text-sm font-mono">{project.githubInstallationId}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Status</span>
-                      <Badge variant="default">Connected</Badge>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Repositories */}
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <GitBranch className="h-4 w-4" />
-                    Repositories
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Connected</span>
-                      <span className="text-sm font-medium">{repos.length}</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Default Branch</span>
-                      <span className="text-sm font-mono">{project.defaultBaseBranch}</span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Configuration */}
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Settings className="h-4 w-4" />
-                    Configuration
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Port Range</span>
-                      <span className="text-sm font-mono">
-                        {project.portRangeStart}-{project.portRangeEnd}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Enforce Projects</span>
-                      <Badge variant={project.enforceProjects ? 'default' : 'secondary'}>
-                        {project.enforceProjects ? 'Yes' : 'No'}
-                      </Badge>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+            <ProjectOverviewTab projectId={id} />
           </TabsContent>
 
           {/* Backlog Tab */}
@@ -267,6 +367,16 @@ export default function ProjectDetailPage({ params }: PageProps) {
                 />
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* Work Tab */}
+          <TabsContent value="work">
+            <ProjectWorkTab projectId={id} />
+          </TabsContent>
+
+          {/* Workflow Tab */}
+          <TabsContent value="workflow">
+            <ProjectWorkflowTab />
           </TabsContent>
 
           {/* Repos Tab */}
@@ -331,25 +441,6 @@ export default function ProjectDetailPage({ params }: PageProps) {
             </Card>
           </TabsContent>
 
-          {/* Runs Tab */}
-          <TabsContent value="runs">
-            <Card>
-              <CardHeader>
-                <CardTitle>Runs</CardTitle>
-                <CardDescription>
-                  Active and recent orchestration runs for this project.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <EmptyState
-                  icon={<Play className="h-12 w-12 text-muted-foreground" />}
-                  title="No runs yet"
-                  description="Start a run from the backlog to see it here."
-                />
-              </CardContent>
-            </Card>
-          </TabsContent>
-
           {/* Policies Tab */}
           <TabsContent value="policies">
             <Card>
@@ -367,6 +458,11 @@ export default function ProjectDetailPage({ params }: PageProps) {
                 />
               </CardContent>
             </Card>
+          </TabsContent>
+
+          {/* Settings Tab */}
+          <TabsContent value="settings">
+            <SettingsTab project={project} projectId={id} />
           </TabsContent>
         </Tabs>
       </div>

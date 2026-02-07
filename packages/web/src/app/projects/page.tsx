@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { FolderKanban, Plus, GitBranch, Play, Settings, ExternalLink, CheckCircle2 } from 'lucide-react';
+import type { ProjectHealth } from '@conductor/shared';
 
 interface ProjectSummary {
   projectId: string;
@@ -16,6 +17,7 @@ interface ProjectSummary {
   githubOrgName: string;
   repoCount: number;
   activeRunCount: number;
+  health: ProjectHealth;
   createdAt: string;
   updatedAt: string;
 }
@@ -33,6 +35,22 @@ interface InstallationsResponse {
 }
 
 type OnboardingState = 'loading' | 'no-github-app' | 'no-installations' | 'has-installations';
+
+const HEALTH_CONFIG: Record<ProjectHealth, { label: string; dotClass: string; variant: 'default' | 'secondary' | 'destructive' | 'warning' }> = {
+  healthy:         { label: 'Healthy',         dotClass: 'bg-green-500', variant: 'default' },
+  needs_attention: { label: 'Needs Attention', dotClass: 'bg-yellow-500', variant: 'warning' },
+  blocked:         { label: 'Blocked',         dotClass: 'bg-red-500', variant: 'destructive' },
+};
+
+function HealthIndicator({ health }: { health: ProjectHealth }) {
+  const config = HEALTH_CONFIG[health];
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={`inline-block h-2 w-2 rounded-full ${config.dotClass}`} />
+      <span className="text-xs text-muted-foreground">{config.label}</span>
+    </div>
+  );
+}
 
 function OnboardingGuide() {
   const [state, setState] = useState<OnboardingState>('loading');
@@ -221,21 +239,24 @@ export default function ProjectsPage() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                      <div className="flex items-center gap-1">
-                        <GitBranch className="h-4 w-4" />
-                        <span>{project.githubOrgName}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <FolderKanban className="h-4 w-4" />
-                        <span>{project.repoCount} repos</span>
-                      </div>
-                      {project.activeRunCount > 0 && (
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
                         <div className="flex items-center gap-1">
-                          <Play className="h-4 w-4" />
-                          <span>{project.activeRunCount} runs</span>
+                          <GitBranch className="h-4 w-4" />
+                          <span>{project.githubOrgName}</span>
                         </div>
-                      )}
+                        <div className="flex items-center gap-1">
+                          <FolderKanban className="h-4 w-4" />
+                          <span>{project.repoCount} repos</span>
+                        </div>
+                        {project.activeRunCount > 0 && (
+                          <div className="flex items-center gap-1">
+                            <Play className="h-4 w-4" />
+                            <span>{project.activeRunCount} runs</span>
+                          </div>
+                        )}
+                      </div>
+                      <HealthIndicator health={project.health} />
                     </div>
                   </CardContent>
                 </Card>

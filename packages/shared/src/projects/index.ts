@@ -31,6 +31,8 @@ export interface Project {
   updatedAt: string;
 }
 
+export type ProjectHealth = 'healthy' | 'needs_attention' | 'blocked';
+
 export interface ProjectSummary {
   projectId: string;
   name: string;
@@ -38,6 +40,7 @@ export interface ProjectSummary {
   githubOrgName: string;
   repoCount: number;
   activeRunCount: number;
+  health: ProjectHealth;
   createdAt: string;
   updatedAt: string;
 }
@@ -189,6 +192,9 @@ export function listProjects(db: Database, options?: ListProjectsOptions): Proje
   const whereClause = options?.userId !== undefined ? 'WHERE p.user_id = ?' : '';
   const params = options?.userId !== undefined ? [options.userId] : [];
 
+  // Threshold for "needs attention": awaiting_plan_approval for > 1 hour
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
   const stmt = db.prepare(`
     SELECT
       p.project_id,
@@ -198,7 +204,9 @@ export function listProjects(db: Database, options?: ListProjectsOptions): Proje
       p.created_at,
       p.updated_at,
       COUNT(DISTINCT r.repo_id) as repo_count,
-      COUNT(DISTINCT CASE WHEN runs.phase NOT IN ('completed', 'cancelled') THEN runs.run_id END) as active_run_count
+      COUNT(DISTINCT CASE WHEN runs.phase NOT IN ('completed', 'cancelled') THEN runs.run_id END) as active_run_count,
+      COUNT(DISTINCT CASE WHEN runs.phase = 'blocked' THEN runs.run_id END) as blocked_run_count,
+      COUNT(DISTINCT CASE WHEN runs.phase = 'awaiting_plan_approval' AND runs.updated_at <= ? THEN runs.run_id END) as stale_approval_count
     FROM projects p
     LEFT JOIN repos r ON r.project_id = p.project_id
     LEFT JOIN runs ON runs.project_id = p.project_id
@@ -207,18 +215,30 @@ export function listProjects(db: Database, options?: ListProjectsOptions): Proje
     ORDER BY p.updated_at DESC
   `);
 
-  const rows = stmt.all(...params) as Array<Record<string, unknown>>;
+  const rows = stmt.all(oneHourAgo, ...params) as Array<Record<string, unknown>>;
 
-  return rows.map((row) => ({
-    projectId: row['project_id'] as string,
-    name: row['name'] as string,
-    userId: row['user_id'] as string | undefined,
-    githubOrgName: row['github_org_name'] as string,
-    repoCount: (row['repo_count'] as number) ?? 0,
-    activeRunCount: (row['active_run_count'] as number) ?? 0,
-    createdAt: row['created_at'] as string,
-    updatedAt: row['updated_at'] as string,
-  }));
+  return rows.map((row) => {
+    const blockedCount = (row['blocked_run_count'] as number) ?? 0;
+    const staleApprovalCount = (row['stale_approval_count'] as number) ?? 0;
+    let health: ProjectHealth = 'healthy';
+    if (blockedCount > 0) {
+      health = 'blocked';
+    } else if (staleApprovalCount > 0) {
+      health = 'needs_attention';
+    }
+
+    return {
+      projectId: row['project_id'] as string,
+      name: row['name'] as string,
+      userId: row['user_id'] as string | undefined,
+      githubOrgName: row['github_org_name'] as string,
+      repoCount: (row['repo_count'] as number) ?? 0,
+      activeRunCount: (row['active_run_count'] as number) ?? 0,
+      health,
+      createdAt: row['created_at'] as string,
+      updatedAt: row['updated_at'] as string,
+    };
+  });
 }
 
 /**
