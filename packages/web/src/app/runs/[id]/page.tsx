@@ -31,6 +31,8 @@ import {
   CheckCircle, AlertTriangle, Circle, RefreshCw,
   ThumbsUp, ThumbsDown, Pencil, ShieldAlert,
 } from 'lucide-react';
+import { toast } from 'sonner';
+import { getPhaseLabel, getPhaseVariant, formatTimestamp } from '@/lib/phase-config';
 
 interface RunDetail {
   runId: string;
@@ -117,28 +119,7 @@ interface RunDetailResponse {
   optionalGates: string[];
 }
 
-type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning';
-
-function phaseBadgeVariant(phase: string): BadgeVariant {
-  switch (phase) {
-    case 'completed':
-      return 'success';
-    case 'planning':
-    case 'executing':
-      return 'default';
-    case 'awaiting_plan_approval':
-    case 'awaiting_review':
-      return 'warning';
-    case 'blocked':
-      return 'destructive';
-    case 'pending':
-    case 'cancelled':
-    default:
-      return 'secondary';
-  }
-}
-
-function gateStatusBadgeVariant(status: string): BadgeVariant {
+function gateStatusBadgeVariant(status: string): 'default' | 'secondary' | 'destructive' | 'success' | 'warning' {
   switch (status) {
     case 'passed':
       return 'success';
@@ -161,13 +142,6 @@ function GateStatusIcon({ status }: { status: string }) {
   }
 }
 
-function formatPhase(phase: string): string {
-  return phase.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-}
-
-function formatTimestamp(dateString: string): string {
-  return new Date(dateString).toLocaleString();
-}
 
 function formatGateId(gateId: string): string {
   return gateId.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -243,9 +217,20 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
         const result = await response.json() as { error?: string };
         throw new Error(result.error ?? `Failed to ${action}`);
       }
+      const labels: Record<string, string> = {
+        approve: 'Plan approved',
+        revise: 'Revision requested',
+        reject: 'Run rejected',
+        cancel: 'Run cancelled',
+        retry: 'Run retried',
+        grant_policy_exception: 'Policy exception granted',
+      };
+      toast.success(labels[action] ?? `Action "${action}" completed`);
       await fetchRunDetail();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      toast.error(msg);
+      setError(msg);
     } finally {
       setActionInProgress(null);
     }
@@ -296,8 +281,8 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
               </Button>
             </Link>
             <h1 className="text-2xl font-semibold">{run.runId}</h1>
-            <Badge variant={phaseBadgeVariant(run.phase)}>
-              {formatPhase(run.phase)}
+            <Badge variant={getPhaseVariant(run.phase)}>
+              {getPhaseLabel(run.phase)}
             </Badge>
           </div>
           <p className="text-sm text-muted-foreground mt-1 ml-12">
@@ -430,7 +415,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
             </CardHeader>
             <CardContent>
               <div className="space-y-1">
-                <p className="font-medium">{formatPhase(run.phase)} &middot; {formatPhase(run.step)}</p>
+                <p className="font-medium">{getPhaseLabel(run.phase)} &middot; {getPhaseLabel(run.step)}</p>
                 {run.result !== undefined && (
                   <p className="text-sm text-muted-foreground">
                     Result: {run.result}
@@ -563,7 +548,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     <div className="w-2 h-2 mt-2 rounded-full bg-blue-500 flex-shrink-0" />
                     <div>
                       <div className="flex items-center gap-2">
-                        <Badge variant="secondary">{formatPhase(oa.action)}</Badge>
+                        <Badge variant="secondary">{getPhaseLabel(oa.action)}</Badge>
                         <span className="text-xs text-muted-foreground">by {oa.operator}</span>
                       </div>
                       {oa.comment !== undefined && (
@@ -596,8 +581,8 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
                     <div className="w-2 h-2 mt-2 rounded-full bg-primary flex-shrink-0" />
                     <div>
                       <div className="flex items-center gap-2">
-                        <Badge variant={phaseBadgeVariant(payload.to ?? '')}>
-                          {formatPhase(payload.from ?? '')} &rarr; {formatPhase(payload.to ?? '')}
+                        <Badge variant={getPhaseVariant(payload.to ?? '')}>
+                          {getPhaseLabel(payload.from ?? '')} &rarr; {getPhaseLabel(payload.to ?? '')}
                         </Badge>
                         <span className="text-xs text-muted-foreground">
                           seq {event.sequence}
@@ -795,7 +780,7 @@ export default function RunDetailPage({ params }: { params: Promise<{ id: string
           <div className="flex items-center gap-2">
             {actionInProgress !== null && (
               <span className="text-sm text-muted-foreground">
-                {formatPhase(actionInProgress)}...
+                {getPhaseLabel(actionInProgress)}...
               </span>
             )}
             <Button

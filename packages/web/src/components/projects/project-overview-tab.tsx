@@ -11,7 +11,8 @@ import {
   Play, AlertTriangle, ThumbsUp, CheckCircle,
   FileText, Eye, GitPullRequest, ArrowRight, XCircle, ExternalLink, RotateCcw,
 } from 'lucide-react';
-import { getPhaseLabel, getPhaseVariant } from '@/lib/phase-config';
+import { toast } from 'sonner';
+import { getPhaseLabel, getPhaseVariant, timeAgo } from '@/lib/phase-config';
 
 interface RunSummary {
   runId: string;
@@ -38,16 +39,6 @@ interface OverviewData {
   lastShippedPr: RunSummary | null;
 }
 
-function timeAgo(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
-}
 
 function StatCard({ title, value, icon }: {
   title: string;
@@ -150,7 +141,12 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
       });
-      if (!response.ok) return;
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({})) as { error?: string };
+        toast.error(data.error ?? `Failed to ${action} run`);
+        return;
+      }
+      toast.success(action === 'retry' ? 'Run retried' : 'Run cancelled');
       await fetchData();
     } finally {
       setActionBusy(null);

@@ -11,5 +11,4 @@ export * from './scroll-area';
 export * from './tooltip';
 export * from './table';
 export * from './loading';
-export * from './error-state';
 export * from './empty-state';

@@ -18,7 +18,7 @@ import {
 import {
   Play, Clock, AlertTriangle, CheckCircle, ThumbsUp, Eye, ExternalLink,
 } from 'lucide-react';
-import { getPhaseLabel, getPhaseVariant } from '@/lib/phase-config';
+import { getPhaseLabel, getPhaseVariant, timeAgo, formatWaitDuration } from '@/lib/phase-config';
 
 interface RunSummary {
   runId: string;
@@ -56,24 +56,6 @@ interface ApprovalsResponse {
   total: number;
 }
 
-function timeAgo(dateString: string): string {
-  const date = new Date(dateString);
-  const now = new Date();
-  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
-
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
-}
-
-function formatWaitDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-}
 
 interface DashboardData {
   activeRuns: RunSummary[];

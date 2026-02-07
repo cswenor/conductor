@@ -30,6 +30,8 @@ import {
   CheckCircle, AlertTriangle, ShieldAlert, Clock, ExternalLink,
   ThumbsUp, ThumbsDown, Pencil, RefreshCw, XCircle, Filter,
 } from 'lucide-react';
+import { toast } from 'sonner';
+import { formatWaitDuration } from '@/lib/phase-config';
 
 interface ApprovalItem {
   runId: string;
@@ -63,13 +65,6 @@ interface ApprovalsResponse {
   projects: ProjectOption[];
 }
 
-function formatWaitDuration(ms: number): string {
-  const seconds = Math.floor(ms / 1000);
-  if (seconds < 60) return 'just now';
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
-}
 
 interface CommentDialogConfig {
   action: string;
@@ -346,9 +341,19 @@ export default function ApprovalsPage() {
         const result = await response.json() as { error?: string };
         throw new Error(result.error ?? `Failed to ${action}`);
       }
+      const labels: Record<string, string> = {
+        approve: 'Plan approved',
+        revise: 'Revision requested',
+        reject: 'Run rejected',
+        cancel: 'Run cancelled',
+        retry: 'Run retried',
+      };
+      toast.success(labels[action] ?? `Action "${action}" completed`);
       await fetchApprovals();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      toast.error(msg);
+      setError(msg);
     } finally {
       setActionInProgress(null);
     }

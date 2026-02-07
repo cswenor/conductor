@@ -83,6 +83,38 @@ export const workTabPhases: Record<WorkTab, readonly RunPhase[]> = {
 };
 
 /**
+ * Formats an ISO date string as a relative time ago (e.g. "5m ago", "2h ago").
+ */
+export function timeAgo(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+/**
+ * Formats a wait duration in milliseconds to a short string (e.g. "5m", "2h").
+ */
+export function formatWaitDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
+/**
+ * Formats an ISO date string to a locale-aware timestamp string.
+ */
+export function formatTimestamp(dateString: string): string {
+  return new Date(dateString).toLocaleString();
+}
+
+/**
  * Formats a duration in milliseconds to a human-readable string.
  *
  *   formatDuration(30_000)       → "30s"
