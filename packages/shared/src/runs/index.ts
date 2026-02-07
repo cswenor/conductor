@@ -61,6 +61,7 @@ export interface RunSummary {
   step: RunStep;
   status: RunStatus;
   taskTitle: string;
+  projectName: string;
   repoFullName: string;
   branch: string;
   startedAt: string;
@@ -82,6 +83,7 @@ export interface ListRunsOptions {
   projectId?: string;
   userId?: string;
   phase?: RunPhase;
+  phases?: readonly RunPhase[];
   limit?: number;
   offset?: number;
 }
@@ -188,6 +190,10 @@ export function listRuns(db: Database, options?: ListRunsOptions): RunSummary[] 
   if (options?.phase !== undefined) {
     conditions.push('r.phase = ?');
     params.push(options.phase);
+  } else if (options?.phases !== undefined && options.phases.length > 0) {
+    const placeholders = options.phases.map(() => '?').join(', ');
+    conditions.push(`r.phase IN (${placeholders})`);
+    params.push(...options.phases);
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -198,6 +204,7 @@ export function listRuns(db: Database, options?: ListRunsOptions): RunSummary[] 
       r.phase, r.step, r.paused_at, r.branch,
       r.started_at, r.updated_at, r.completed_at, r.result,
       t.github_title AS task_title,
+      p.name AS project_name,
       repos.github_full_name AS repo_full_name
     FROM runs r
     JOIN projects p ON r.project_id = p.project_id
@@ -224,6 +231,7 @@ export function listRuns(db: Database, options?: ListRunsOptions): RunSummary[] 
       (row['paused_at'] as string | null) ?? undefined
     ),
     taskTitle: row['task_title'] as string,
+    projectName: row['project_name'] as string,
     repoFullName: row['repo_full_name'] as string,
     branch: row['branch'] as string,
     startedAt: row['started_at'] as string,

@@ -29,12 +29,21 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
 
     const url = new URL(request.url);
     const phase = url.searchParams.get('phase') as RunPhase | null;
+    const phasesParam = url.searchParams.get('phases');
+    const projectId = url.searchParams.get('projectId');
     const limit = Number.parseInt(url.searchParams.get('limit') ?? '50', 10);
     const offset = Number.parseInt(url.searchParams.get('offset') ?? '0', 10);
 
+    // Support multi-phase filtering via comma-separated `phases` param
+    const phases = phasesParam !== null
+      ? phasesParam.split(',').filter(Boolean) as RunPhase[]
+      : undefined;
+
     const runs = listRuns(db, {
       userId: request.user.userId,
+      projectId: projectId ?? undefined,
       phase: phase ?? undefined,
+      phases,
       limit: Math.min(limit, 100),
       offset: Math.max(offset, 0),
     });

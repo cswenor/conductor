@@ -84,3 +84,6 @@ export * from './overrides/index.js';
 
 // Re-export agent runtime module
 export * from './agent-runtime/index.js';
+
+// Re-export analytics module
+export * from './analytics/index';
