@@ -175,5 +175,51 @@ describe('OAuth Login Callback Security', () => {
       const setCookie = response.headers.get('set-cookie');
       expect(setCookie).toContain('conductor_session');
     });
+
+    it('forwards to install handler with userId-bearing state when installation_id is present', async () => {
+      const { createSignedState, verifySignedState } = await import('@/lib/auth/oauth-state');
+      // Original OAuth state has no userId (created before login)
+      const oauthState = createSignedState('/projects');
+
+      // Mock successful GitHub API responses
+      (global.fetch as ReturnType<typeof vi.fn>)
+        .mockResolvedValueOnce({
+          json: () => Promise.resolve({ access_token: 'test-token', token_type: 'bearer' }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              id: 12345,
+              node_id: 'node_12345',
+              login: 'testuser',
+              name: 'Test User',
+              email: 'test@example.com',
+              avatar_url: 'https://github.com/avatar.png',
+            }),
+        });
+
+      const request = createRequest({
+        code: 'valid-code',
+        state: oauthState,
+        installation_id: '99999',
+        setup_action: 'install',
+      });
+      const response = await GET(request);
+
+      expect(response.status).toBe(307);
+      const location = response.headers.get('location');
+      expect(location).toContain('/api/github/callback');
+      expect(location).toContain('installation_id=99999');
+      expect(location).toContain('setup_action=install');
+
+      // The forwarded state should include userId
+      const locationUrl = new URL(location ?? '', 'http://localhost:3000');
+      const forwardedState = locationUrl.searchParams.get('state');
+      expect(forwardedState).not.toBeNull();
+      const verified = verifySignedState(forwardedState ?? '');
+      expect(verified).not.toBeNull();
+      expect(verified?.userId).toBe('user_test123');
+    });
   });
 });

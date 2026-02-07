@@ -14,7 +14,7 @@ import {
   createSession,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
-import { verifySignedState } from '@/lib/auth/oauth-state';
+import { verifySignedState, createSignedState } from '@/lib/auth/oauth-state';
 import { SESSION_COOKIE_NAME } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:auth:github:callback' });
@@ -171,9 +171,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       if (setupAction !== null) {
         installCallbackUrl.searchParams.set('setup_action', setupAction);
       }
-      if (state !== null) {
-        installCallbackUrl.searchParams.set('state', state);
-      }
+      // Create a new signed state WITH userId so the install handler can
+      // verify user binding. The original OAuth state was created without
+      // userId (it didn't exist yet), so forwarding it as-is would cause
+      // the install handler to reject with missing_user.
+      const installState = createSignedState(redirectTo, user.userId);
+      installCallbackUrl.searchParams.set('state', installState);
       finalRedirect = installCallbackUrl.pathname + installCallbackUrl.search;
       log.info({ installationId, userId: user.userId }, 'OAuth callback includes installation_id — forwarding to installation handler');
     } else {
