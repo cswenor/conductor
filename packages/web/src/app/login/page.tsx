@@ -25,7 +25,7 @@ function LoginContent() {
   const [error, setError] = useState<string | null>(null);
 
   const errorCode = searchParams.get('error');
-  const redirectTo = searchParams.get('redirect') ?? '/projects';
+  const redirectTo = searchParams.get('redirect') ?? '/dashboard';
 
   useEffect(() => {
     // Check if already logged in
