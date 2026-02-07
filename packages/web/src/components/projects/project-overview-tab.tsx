@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui';
 import {
   Play, AlertTriangle, ThumbsUp, CheckCircle,
-  FileText, Eye, GitPullRequest, ArrowRight, XCircle, ExternalLink,
+  FileText, Eye, GitPullRequest, ArrowRight, XCircle, ExternalLink, RotateCcw,
 } from 'lucide-react';
 import { getPhaseLabel, getPhaseVariant } from '@/lib/phase-config';
 
@@ -75,7 +75,7 @@ function StatCard({ title, value, icon }: {
 export function ProjectOverviewTab({ projectId }: { projectId: string }) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -142,18 +142,18 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
     void fetchData();
   }, [fetchData]);
 
-  async function handleCancel(runId: string) {
-    setCancellingId(runId);
+  async function handleAction(runId: string, action: string) {
+    setActionBusy(runId);
     try {
       const response = await fetch(`/api/runs/${runId}/actions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cancel' }),
+        body: JSON.stringify({ action }),
       });
       if (!response.ok) return;
       await fetchData();
     } finally {
-      setCancellingId(null);
+      setActionBusy(null);
     }
   }
 
@@ -239,10 +239,19 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
                     </Button>
                   </Link>
                   <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={actionBusy !== null}
+                    onClick={() => void handleAction(run.runId, 'retry')}
+                    title="Retry run"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                  </Button>
+                  <Button
                     variant="ghost"
                     size="sm"
-                    disabled={cancellingId !== null}
-                    onClick={() => void handleCancel(run.runId)}
+                    disabled={actionBusy !== null}
+                    onClick={() => void handleAction(run.runId, 'cancel')}
                     title="Cancel run"
                   >
                     <XCircle className="h-3 w-3 text-muted-foreground" />
@@ -314,7 +323,7 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
                       rel="noopener noreferrer"
                       className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 shrink-0"
                     >
-                      #{data.lastShippedPr.prNumber}
+                      {data.lastShippedPr.prNumber !== undefined ? `#${data.lastShippedPr.prNumber}` : 'PR'}
                       <ExternalLink className="h-3 w-3" />
                     </a>
                   )}
