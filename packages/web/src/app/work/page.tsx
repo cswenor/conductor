@@ -28,7 +28,6 @@ import {
   workTabPhases,
   getPhaseLabel,
   getPhaseVariant,
-  getWorkTab,
 } from '@/lib/phase-config';
 
 interface RunSummary {
@@ -84,7 +83,11 @@ function buildRunsUrl(tab: WorkTab, projectId?: string, countOnly?: boolean): st
   const params = new URLSearchParams();
   params.set('phases', phases);
   if (tab === 'blocked') {
+    // Blocked tab includes paused runs from any phase
     params.set('includePaused', '1');
+  } else if (tab === 'active') {
+    // Active tab excludes paused runs (they appear in blocked)
+    params.set('excludePaused', '1');
   }
   if (projectId !== undefined) {
     params.set('projectId', projectId);
@@ -245,16 +248,8 @@ export default function WorkPage() {
         throw new Error('Failed to fetch runs');
       }
       const data = await response.json() as RunsResponse;
-
-      // For active tab, filter out paused runs client-side (they show in blocked)
-      if (tab === 'active') {
-        setRuns(data.runs.filter(r => {
-          const workTab = getWorkTab(r.phase, r.status as 'active' | 'paused' | 'blocked' | 'finished' | undefined);
-          return workTab === tab;
-        }));
-      } else {
-        setRuns(data.runs);
-      }
+      // Paused filtering is now handled server-side via excludePaused/includePaused
+      setRuns(data.runs);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {

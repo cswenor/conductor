@@ -204,14 +204,15 @@ export default function DashboardPage() {
       const completedAfter = todayStart.toISOString();
 
       // Fetch display data + accurate counts in parallel
+      // excludePaused=1 ensures paused runs don't appear in active sections
       const [
         activeRes, completedRes,
         activeCountRes, pendingCountRes, completedTodayRes,
         approvalsRes,
       ] = await Promise.all([
-        fetch('/api/runs?phases=planning,executing,awaiting_review&limit=10'),
+        fetch('/api/runs?phases=planning,executing,awaiting_review&excludePaused=1&limit=10'),
         fetch('/api/runs?phases=completed,cancelled&limit=5'),
-        fetch('/api/runs?phases=planning,executing,awaiting_review&countOnly=1'),
+        fetch('/api/runs?phases=planning,executing,awaiting_review&excludePaused=1&countOnly=1'),
         fetch('/api/runs?phases=pending&countOnly=1'),
         fetch(`/api/runs?phases=completed,cancelled&countOnly=1&completedAfter=${completedAfter}`),
         fetch('/api/approvals'),
@@ -231,8 +232,10 @@ export default function DashboardPage() {
 
       // Merge all approval types into a single list, sorted by wait time
       let approvals: ApprovalItem[] = [];
+      let needsYouTotal = 0;
       if (approvalsRes.ok) {
         const approvalsData = await approvalsRes.json() as ApprovalsResponse;
+        needsYouTotal = approvalsData.total;
         approvals = [
           ...approvalsData.planApprovals,
           ...approvalsData.escalations,
@@ -247,7 +250,7 @@ export default function DashboardPage() {
         stats: {
           active: activeCount.total,
           queued: pendingCount.total,
-          needsYou: approvals.length,
+          needsYou: needsYouTotal,
           completedToday: completedTodayCount.total,
         },
       });

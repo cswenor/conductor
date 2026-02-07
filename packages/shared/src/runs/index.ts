@@ -86,6 +86,8 @@ export interface ListRunsOptions {
   phases?: readonly RunPhase[];
   /** When true, also include runs with paused_at IS NOT NULL (OR'd with phase filter). */
   includePaused?: boolean;
+  /** When true, exclude runs with paused_at IS NOT NULL. */
+  excludePaused?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -97,6 +99,8 @@ export interface CountRunsOptions {
   phases?: readonly RunPhase[];
   /** When true, also include runs with paused_at IS NOT NULL (OR'd with phase filter). */
   includePaused?: boolean;
+  /** When true, exclude runs with paused_at IS NOT NULL. */
+  excludePaused?: boolean;
   completedAfter?: string;
 }
 
@@ -218,6 +222,10 @@ export function listRuns(db: Database, options?: ListRunsOptions): RunSummary[] 
     conditions.push('r.paused_at IS NOT NULL');
   }
 
+  if (options?.excludePaused === true) {
+    conditions.push('r.paused_at IS NULL');
+  }
+
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const sql = `
@@ -297,6 +305,10 @@ export function countRuns(db: Database, options?: CountRunsOptions): number {
     params.push(...options.phases);
   } else if (options?.includePaused === true) {
     conditions.push('r.paused_at IS NOT NULL');
+  }
+
+  if (options?.excludePaused === true) {
+    conditions.push('r.paused_at IS NULL');
   }
 
   if (options?.completedAfter !== undefined) {

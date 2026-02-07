@@ -57,14 +57,11 @@ export function getAnalyticsMetrics(db: Database, options: GetAnalyticsOptions):
     ${whereClause} AND r.phase = 'completed'
   `).get(...params) as { count: number };
 
-  // Failed runs (completed non-success + cancelled)
-  const failedRow = db.prepare(`
+  // Cancelled runs (separate from completed to avoid double-counting)
+  const cancelledRow = db.prepare(`
     SELECT COUNT(*) AS count FROM runs r
     JOIN projects p ON r.project_id = p.project_id
-    ${whereClause} AND (
-      (r.phase = 'completed' AND (r.result != 'success' OR r.result IS NULL))
-      OR r.phase = 'cancelled'
-    )
+    ${whereClause} AND r.phase = 'cancelled'
   `).get(...params) as { count: number };
 
   // Average duration for completed runs
@@ -107,7 +104,8 @@ export function getAnalyticsMetrics(db: Database, options: GetAnalyticsOptions):
     count: row.run_count,
   }));
 
-  const terminalCount = completedTotalRow.count + failedRow.count;
+  // Non-overlapping buckets: completed (all) + cancelled
+  const terminalCount = completedTotalRow.count + cancelledRow.count;
   const successRate = terminalCount > 0
     ? Math.round((completedRow.count / terminalCount) * 100)
     : 0;

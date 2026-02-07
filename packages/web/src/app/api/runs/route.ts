@@ -34,6 +34,7 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
     const projectId = url.searchParams.get('projectId');
     const countOnly = url.searchParams.get('countOnly') === '1';
     const includePaused = url.searchParams.get('includePaused') === '1';
+    const excludePaused = url.searchParams.get('excludePaused') === '1';
     const completedAfter = url.searchParams.get('completedAfter');
     const limit = Number.parseInt(url.searchParams.get('limit') ?? '50', 10);
     const offset = Number.parseInt(url.searchParams.get('offset') ?? '0', 10);
@@ -63,6 +64,7 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
       phase: phase ?? undefined,
       phases,
       includePaused: includePaused || undefined,
+      excludePaused: excludePaused || undefined,
       completedAfter: completedAfter ?? undefined,
     });
 
@@ -76,6 +78,7 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
       phase: phase ?? undefined,
       phases,
       includePaused: includePaused || undefined,
+      excludePaused: excludePaused || undefined,
       limit: Math.min(limit, 100),
       offset: Math.max(offset, 0),
     });
