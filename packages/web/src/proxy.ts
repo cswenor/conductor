@@ -12,8 +12,9 @@ const SESSION_COOKIE_NAME = 'conductor_session';
 // Pages that don't require authentication
 const PUBLIC_PATHS = [
   '/login',
-  '/api/auth',
-  '/api/webhooks',
+  '/api/auth/',
+  '/api/github/callback',
+  '/api/github/webhooks',
   '/_next',
   '/favicon.ico',
   '/sw.js',
@@ -46,7 +47,10 @@ export function proxy(request: NextRequest) {
   // No session - redirect to login
   if (sessionToken === undefined) {
     const loginUrl = new URL('/login', request.url);
-    loginUrl.searchParams.set('redirect', pathname);
+    // Don't set redirect for root/dashboard — login default handles it
+    if (pathname !== '/' && pathname !== '/dashboard') {
+      loginUrl.searchParams.set('redirect', pathname);
+    }
     return NextResponse.redirect(loginUrl);
   }
 
