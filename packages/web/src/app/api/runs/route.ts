@@ -37,6 +37,12 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
     // excludePaused wins if both are set
     const includePaused = !excludePaused && url.searchParams.get('includePaused') === '1';
     const completedAfter = url.searchParams.get('completedAfter');
+    const result = url.searchParams.get('result');
+    const hasPrUrl = url.searchParams.get('hasPrUrl') === '1';
+    const sortByParam = url.searchParams.get('sortBy');
+    const sortBy = sortByParam === 'completed_at' ? 'completed_at' as const : undefined;
+    const sortDirParam = url.searchParams.get('sortDir');
+    const sortDir = sortDirParam === 'asc' ? 'asc' as const : undefined;
     const limit = Number.parseInt(url.searchParams.get('limit') ?? '50', 10);
     const offset = Number.parseInt(url.searchParams.get('offset') ?? '0', 10);
 
@@ -80,6 +86,10 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
       phases,
       includePaused: includePaused || undefined,
       excludePaused: excludePaused || undefined,
+      result: result ?? undefined,
+      hasPrUrl: hasPrUrl || undefined,
+      sortBy,
+      sortDir,
       limit: Math.min(limit, 100),
       offset: Math.max(offset, 0),
     });

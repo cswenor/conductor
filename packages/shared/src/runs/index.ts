@@ -64,6 +64,9 @@ export interface RunSummary {
   projectName: string;
   repoFullName: string;
   branch: string;
+  blockedReason?: string;
+  prUrl?: string;
+  prNumber?: number;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -88,6 +91,14 @@ export interface ListRunsOptions {
   includePaused?: boolean;
   /** When true, exclude runs with paused_at IS NOT NULL. */
   excludePaused?: boolean;
+  /** Filter by result value (e.g. 'success'). */
+  result?: string;
+  /** When true, only include runs where pr_url IS NOT NULL. */
+  hasPrUrl?: boolean;
+  /** Sort column. Defaults to 'updated_at'. */
+  sortBy?: 'updated_at' | 'completed_at';
+  /** Sort direction. Defaults to 'desc'. */
+  sortDir?: 'asc' | 'desc';
   limit?: number;
   offset?: number;
 }
@@ -226,12 +237,24 @@ export function listRuns(db: Database, options?: ListRunsOptions): RunSummary[] 
     conditions.push('r.paused_at IS NULL');
   }
 
+  if (options?.result !== undefined) {
+    conditions.push('r.result = ?');
+    params.push(options.result);
+  }
+
+  if (options?.hasPrUrl === true) {
+    conditions.push('r.pr_url IS NOT NULL');
+  }
+
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const sortCol = options?.sortBy === 'completed_at' ? 'r.completed_at' : 'r.updated_at';
+  const sortDirection = options?.sortDir === 'asc' ? 'ASC' : 'DESC';
 
   const sql = `
     SELECT
       r.run_id, r.task_id, r.project_id, r.repo_id, r.run_number,
       r.phase, r.step, r.paused_at, r.branch,
+      r.blocked_reason, r.pr_url, r.pr_number,
       r.started_at, r.updated_at, r.completed_at, r.result,
       t.github_title AS task_title,
       p.name AS project_name,
@@ -241,7 +264,7 @@ export function listRuns(db: Database, options?: ListRunsOptions): RunSummary[] 
     JOIN tasks t ON r.task_id = t.task_id
     JOIN repos ON r.repo_id = repos.repo_id
     ${whereClause}
-    ORDER BY r.updated_at DESC
+    ORDER BY ${sortCol} ${sortDirection}
     LIMIT ? OFFSET ?
   `;
   params.push(limit, offset);
@@ -264,6 +287,9 @@ export function listRuns(db: Database, options?: ListRunsOptions): RunSummary[] 
     projectName: row['project_name'] as string,
     repoFullName: row['repo_full_name'] as string,
     branch: row['branch'] as string,
+    blockedReason: (row['blocked_reason'] as string | null) ?? undefined,
+    prUrl: (row['pr_url'] as string | null) ?? undefined,
+    prNumber: (row['pr_number'] as number | null) ?? undefined,
     startedAt: row['started_at'] as string,
     updatedAt: row['updated_at'] as string,
     completedAt: (row['completed_at'] as string | null) ?? undefined,

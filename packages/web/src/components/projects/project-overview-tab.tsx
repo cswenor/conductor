@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui';
 import {
   Play, AlertTriangle, ThumbsUp, CheckCircle,
-  FileText, Eye, GitPullRequest, ArrowRight,
+  FileText, Eye, GitPullRequest, ArrowRight, XCircle, ExternalLink,
 } from 'lucide-react';
 import { getPhaseLabel, getPhaseVariant } from '@/lib/phase-config';
 
@@ -20,20 +20,12 @@ interface RunSummary {
   status: string;
   taskTitle: string;
   repoFullName: string;
-  updatedAt: string;
-  completedAt?: string;
-  result?: string;
-}
-
-interface RunDetailRow {
-  runId: string;
-  phase: string;
-  taskTitle: string;
-  repoFullName: string;
-  updatedAt: string;
   blockedReason?: string;
   prUrl?: string;
   prNumber?: number;
+  updatedAt: string;
+  completedAt?: string;
+  result?: string;
 }
 
 interface OverviewData {
@@ -41,9 +33,9 @@ interface OverviewData {
   blockedCount: number;
   awaitingApprovalCount: number;
   completedThisWeekCount: number;
-  blockedRuns: RunDetailRow[];
-  awaitingApprovalRuns: RunDetailRow[];
-  lastShippedPr: RunDetailRow | null;
+  blockedRuns: RunSummary[];
+  awaitingApprovalRuns: RunSummary[];
+  lastShippedPr: RunSummary | null;
 }
 
 function timeAgo(dateString: string): string {
@@ -71,7 +63,7 @@ function StatCard({ title, value, icon }: {
       <CardContent>
         <div className="text-2xl font-bold">{value}</div>
         <p className="text-xs text-muted-foreground mt-1">
-          <Link href={`?tab=work` as Route} className="hover:underline">
+          <Link href={'?tab=work' as Route} className="hover:underline">
             View in Work tab
           </Link>
         </p>
@@ -83,6 +75,7 @@ function StatCard({ title, value, icon }: {
 export function ProjectOverviewTab({ projectId }: { projectId: string }) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -100,9 +93,12 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
         fetch(`/api/runs?phases=blocked&countOnly=1&projectId=${projectId}`),
         fetch(`/api/runs?phases=awaiting_plan_approval&countOnly=1&projectId=${projectId}`),
         fetch(`/api/runs?phases=completed&countOnly=1&completedAfter=${completedAfter}&projectId=${projectId}`),
-        fetch(`/api/runs?phases=blocked&limit=5&projectId=${projectId}`),
-        fetch(`/api/runs?phases=awaiting_plan_approval&limit=5&projectId=${projectId}`),
-        fetch(`/api/runs?phases=completed&limit=1&projectId=${projectId}`),
+        // Blocked: sort by oldest first (longest waiting = most urgent)
+        fetch(`/api/runs?phases=blocked&limit=5&sortDir=asc&projectId=${projectId}`),
+        // Awaiting approval: sort by oldest first (longest waiting)
+        fetch(`/api/runs?phases=awaiting_plan_approval&limit=5&sortDir=asc&projectId=${projectId}`),
+        // Last shipped PR: completed + success + has PR, sorted by completed_at DESC
+        fetch(`/api/runs?phases=completed&result=success&hasPrUrl=1&sortBy=completed_at&limit=1&projectId=${projectId}`),
       ]);
 
       const [activeCount, blockedCount, awaitingCount, completedWeekCount] = await Promise.all([
@@ -118,27 +114,16 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
         lastShippedRes.ok ? lastShippedRes.json() as Promise<{ runs: RunSummary[] }> : { runs: [] },
       ]);
 
-      // Map runs to detail rows
-      const toRow = (r: RunSummary): RunDetailRow => ({
-        runId: r.runId,
-        phase: r.phase,
-        taskTitle: r.taskTitle,
-        repoFullName: r.repoFullName,
-        updatedAt: r.updatedAt,
-      });
-
-      const lastCompleted = lastShippedData.runs[0];
       setData({
         activeCount: activeCount.total,
         blockedCount: blockedCount.total,
         awaitingApprovalCount: awaitingCount.total,
         completedThisWeekCount: completedWeekCount.total,
-        blockedRuns: blockedData.runs.map(toRow),
-        awaitingApprovalRuns: awaitingData.runs.map(toRow),
-        lastShippedPr: lastCompleted !== undefined ? toRow(lastCompleted) : null,
+        blockedRuns: blockedData.runs,
+        awaitingApprovalRuns: awaitingData.runs,
+        lastShippedPr: lastShippedData.runs[0] ?? null,
       });
     } catch {
-      // Non-critical, just show empty
       setData({
         activeCount: 0,
         blockedCount: 0,
@@ -156,6 +141,21 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
   useEffect(() => {
     void fetchData();
   }, [fetchData]);
+
+  async function handleCancel(runId: string) {
+    setCancellingId(runId);
+    try {
+      const response = await fetch(`/api/runs/${runId}/actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'cancel' }),
+      });
+      if (!response.ok) return;
+      await fetchData();
+    } finally {
+      setCancellingId(null);
+    }
+  }
 
   if (loading) {
     return (
@@ -203,7 +203,7 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-3">
             <CardTitle className="text-base">Blocked Items</CardTitle>
-            <Link href={`?tab=work` as Route}>
+            <Link href={'?tab=work' as Route}>
               <Button variant="ghost" size="sm">
                 View All <ArrowRight className="h-3 w-3 ml-1" />
               </Button>
@@ -211,7 +211,7 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
           </CardHeader>
           <CardContent className="divide-y">
             {data.blockedRuns.map((run) => (
-              <div key={run.runId} className="flex items-center justify-between py-2">
+              <div key={run.runId} className="flex items-center justify-between gap-3 py-2">
                 <div className="min-w-0 flex-1">
                   <Link href={`/runs/${run.runId}` as Route} className="text-sm font-medium hover:underline truncate block">
                     {run.taskTitle}
@@ -225,13 +225,29 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
                     <span className="text-border">|</span>
                     <span>{timeAgo(run.updatedAt)}</span>
                   </div>
+                  {run.blockedReason !== undefined && (
+                    <p className="text-xs text-destructive mt-1 truncate">
+                      {run.blockedReason}
+                    </p>
+                  )}
                 </div>
-                <Link href={`/runs/${run.runId}` as Route}>
-                  <Button variant="outline" size="sm">
-                    <Eye className="h-3 w-3 mr-1" />
-                    View
+                <div className="flex items-center gap-1 shrink-0">
+                  <Link href={`/runs/${run.runId}` as Route}>
+                    <Button variant="outline" size="sm">
+                      <Eye className="h-3 w-3 mr-1" />
+                      View
+                    </Button>
+                  </Link>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={cancellingId !== null}
+                    onClick={() => void handleCancel(run.runId)}
+                    title="Cancel run"
+                  >
+                    <XCircle className="h-3 w-3 text-muted-foreground" />
                   </Button>
-                </Link>
+                </div>
               </div>
             ))}
           </CardContent>
@@ -284,14 +300,27 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
             <div className="flex items-center gap-3">
               <GitPullRequest className="h-5 w-5 text-green-500 shrink-0" />
               <div className="min-w-0 flex-1">
-                <Link
-                  href={`/runs/${data.lastShippedPr.runId}` as Route}
-                  className="text-sm font-medium hover:underline truncate block"
-                >
-                  {data.lastShippedPr.taskTitle}
-                </Link>
+                <div className="flex items-center gap-2">
+                  <Link
+                    href={`/runs/${data.lastShippedPr.runId}` as Route}
+                    className="text-sm font-medium hover:underline truncate"
+                  >
+                    {data.lastShippedPr.taskTitle}
+                  </Link>
+                  {data.lastShippedPr.prUrl !== undefined && (
+                    <a
+                      href={data.lastShippedPr.prUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-0.5 shrink-0"
+                    >
+                      #{data.lastShippedPr.prNumber}
+                      <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
+                </div>
                 <div className="text-xs text-muted-foreground">
-                  {data.lastShippedPr.repoFullName} — completed {timeAgo(data.lastShippedPr.updatedAt)}
+                  {data.lastShippedPr.repoFullName} — completed {timeAgo(data.lastShippedPr.completedAt ?? data.lastShippedPr.updatedAt)}
                 </div>
               </div>
             </div>
@@ -306,13 +335,13 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-2">
-            <Link href={`?tab=backlog` as Route}>
+            <Link href={'?tab=backlog' as Route}>
               <Button variant="outline" size="sm">
                 <FileText className="h-3 w-3 mr-1" />
                 Go to Backlog
               </Button>
             </Link>
-            <Link href={`?tab=work` as Route}>
+            <Link href={'?tab=work' as Route}>
               <Button variant="outline" size="sm">
                 <Play className="h-3 w-3 mr-1" />
                 View All Work

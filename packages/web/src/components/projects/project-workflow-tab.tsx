@@ -27,6 +27,7 @@ const PIPELINE_STEPS: PipelineStep[] = [
       { label: 'Trigger', value: 'Manual or automatic from backlog' },
       { label: 'Environment', value: 'Isolated git worktree' },
       { label: 'Checkpoint', value: 'environment_ready' },
+      { label: 'Routing', value: 'Always proceeds to Plan' },
     ],
   },
   {
@@ -41,6 +42,8 @@ const PIPELINE_STEPS: PipelineStep[] = [
       { label: 'Output', value: 'Plan artifact (Markdown)' },
       { label: 'Max revisions', value: '3' },
       { label: 'Checkpoint', value: 'planning_complete' },
+      { label: 'Routing', value: 'Always routes to Approval gate' },
+      { label: 'Override', value: 'Plan revisions inherit project policy set' },
     ],
   },
   {
@@ -51,10 +54,13 @@ const PIPELINE_STEPS: PipelineStep[] = [
     icon: <ThumbsUp className="h-5 w-5" />,
     description: 'The plan is presented for human review. The operator can approve, request revisions, or reject.',
     config: [
-      { label: 'Gate type', value: 'Human approval' },
+      { label: 'Gate type', value: 'Human approval (required)' },
       { label: 'Actions', value: 'Approve, Revise, Reject' },
-      { label: 'On revise', value: 'Returns to Plan step' },
+      { label: 'On approve', value: 'Proceeds to Implement' },
+      { label: 'On revise', value: 'Returns to Plan (counts toward max revisions)' },
+      { label: 'On reject', value: 'Run cancelled' },
       { label: 'Checkpoint', value: 'plan_approved' },
+      { label: 'Override', value: 'Cannot be skipped in v0.1' },
     ],
   },
   {
@@ -69,6 +75,8 @@ const PIPELINE_STEPS: PipelineStep[] = [
       { label: 'Tools', value: 'Filesystem, test runner, git' },
       { label: 'Policy', value: 'Worktree boundary enforced' },
       { label: 'Checkpoint', value: 'implementation_complete' },
+      { label: 'Routing', value: 'Proceeds to Tests when implementation committed' },
+      { label: 'Override', value: 'Tool policies from project policy set' },
     ],
   },
   {
@@ -81,7 +89,9 @@ const PIPELINE_STEPS: PipelineStep[] = [
     config: [
       { label: 'Runner', value: 'Project test command' },
       { label: 'Max fix attempts', value: '3' },
-      { label: 'On failure', value: 'Returns to Implement' },
+      { label: 'On pass', value: 'Proceeds to PR' },
+      { label: 'On failure', value: 'Returns to Implement (counts toward max attempts)' },
+      { label: 'On max failures', value: 'Run blocked, escalated to operator' },
       { label: 'Checkpoint', value: 'tests_passed' },
     ],
   },
@@ -93,10 +103,12 @@ const PIPELINE_STEPS: PipelineStep[] = [
     icon: <GitPullRequest className="h-5 w-5" />,
     description: 'A pull request is created on GitHub for human code review. The PR includes the plan and all changes.',
     config: [
-      { label: 'Gate type', value: 'PR review' },
+      { label: 'Gate type', value: 'PR review (GitHub)' },
       { label: 'Target', value: 'Default base branch' },
       { label: 'Auto-merge', value: 'Off (requires approval)' },
       { label: 'Checkpoint', value: 'pr_created' },
+      { label: 'Routing', value: 'On merge -> Complete; on review changes -> Implement' },
+      { label: 'Override', value: 'Review rounds tracked (no max in v0.1)' },
     ],
   },
   {
@@ -110,6 +122,7 @@ const PIPELINE_STEPS: PipelineStep[] = [
       { label: 'Cleanup', value: 'Worktree removed' },
       { label: 'Result', value: 'success or failure' },
       { label: 'Branch', value: 'Deleted after merge' },
+      { label: 'Routing', value: 'Terminal — clears active_run_id on task' },
     ],
   },
 ];
