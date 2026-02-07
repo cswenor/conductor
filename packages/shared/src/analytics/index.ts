@@ -7,29 +7,15 @@
 
 import type { Database } from 'better-sqlite3';
 
-export interface AnalyticsMetrics {
-  /** Total runs across all user projects. */
+export interface AnalyticsResponse {
   totalRuns: number;
-  /** Runs currently in active phases (planning, executing, awaiting_review). */
-  activeRuns: number;
-  /** Runs completed with result = 'success'. */
-  successfulRuns: number;
-  /** Runs in completed phase with non-success result, or cancelled. */
-  failedRuns: number;
-  /** Success rate as a percentage (0–100). */
+  completedRuns: number;
   successRate: number;
-  /** Average run duration in ms for completed runs. */
-  avgDurationMs: number;
-  /** Runs completed in the last 24 hours. */
-  completedLast24h: number;
-  /** Runs completed in the last 7 days. */
-  completedLast7d: number;
-  /** Breakdown of runs by phase. */
-  byPhase: Record<string, number>;
-  /** Breakdown of completed runs by result. */
-  byResult: Record<string, number>;
-  /** Top projects by run count. */
-  topProjects: Array<{ projectId: string; projectName: string; runCount: number }>;
+  avgCycleTimeMs: number;
+  avgApprovalWaitMs: number;
+  runsByPhase: Record<string, number>;
+  runsByProject: Array<{ projectId: string; projectName: string; count: number }>;
+  recentCompletions: Array<{ date: string; count: number }>;
 }
 
 export interface GetAnalyticsOptions {
@@ -40,7 +26,7 @@ export interface GetAnalyticsOptions {
 /**
  * Compute aggregate analytics metrics from the runs table.
  */
-export function getAnalyticsMetrics(db: Database, options: GetAnalyticsOptions): AnalyticsMetrics {
+export function getAnalyticsMetrics(db: Database, options: GetAnalyticsOptions): AnalyticsResponse {
   const conditions: string[] = ['p.user_id = ?'];
   const params: (string | number)[] = [options.userId];
 
@@ -58,18 +44,17 @@ export function getAnalyticsMetrics(db: Database, options: GetAnalyticsOptions):
     ${whereClause}
   `).get(...params) as { count: number };
 
-  // Active runs
-  const activeRow = db.prepare(`
-    SELECT COUNT(*) AS count FROM runs r
-    JOIN projects p ON r.project_id = p.project_id
-    ${whereClause} AND r.phase IN ('planning', 'executing', 'awaiting_review')
-  `).get(...params) as { count: number };
-
-  // Successful runs
-  const successRow = db.prepare(`
+  // Completed runs
+  const completedRow = db.prepare(`
     SELECT COUNT(*) AS count FROM runs r
     JOIN projects p ON r.project_id = p.project_id
     ${whereClause} AND r.phase = 'completed' AND r.result = 'success'
+  `).get(...params) as { count: number };
+
+  const completedTotalRow = db.prepare(`
+    SELECT COUNT(*) AS count FROM runs r
+    JOIN projects p ON r.project_id = p.project_id
+    ${whereClause} AND r.phase = 'completed'
   `).get(...params) as { count: number };
 
   // Failed runs (completed non-success + cancelled)
@@ -92,23 +77,6 @@ export function getAnalyticsMetrics(db: Database, options: GetAnalyticsOptions):
     ${whereClause} AND r.completed_at IS NOT NULL
   `).get(...params) as { avg_ms: number | null };
 
-  // Completed in last 24h
-  const now = new Date();
-  const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-  const last7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
-  const completed24hRow = db.prepare(`
-    SELECT COUNT(*) AS count FROM runs r
-    JOIN projects p ON r.project_id = p.project_id
-    ${whereClause} AND r.phase IN ('completed', 'cancelled') AND r.completed_at >= ?
-  `).get(...params, last24h) as { count: number };
-
-  const completed7dRow = db.prepare(`
-    SELECT COUNT(*) AS count FROM runs r
-    JOIN projects p ON r.project_id = p.project_id
-    ${whereClause} AND r.phase IN ('completed', 'cancelled') AND r.completed_at >= ?
-  `).get(...params, last7d) as { count: number };
-
   // By phase
   const phaseRows = db.prepare(`
     SELECT r.phase, COUNT(*) AS count FROM runs r
@@ -117,25 +85,12 @@ export function getAnalyticsMetrics(db: Database, options: GetAnalyticsOptions):
     GROUP BY r.phase
   `).all(...params) as Array<{ phase: string; count: number }>;
 
-  const byPhase: Record<string, number> = {};
+  const runsByPhase: Record<string, number> = {};
   for (const row of phaseRows) {
-    byPhase[row.phase] = row.count;
+    runsByPhase[row.phase] = row.count;
   }
 
-  // By result (for completed runs)
-  const resultRows = db.prepare(`
-    SELECT COALESCE(r.result, 'unknown') AS result, COUNT(*) AS count FROM runs r
-    JOIN projects p ON r.project_id = p.project_id
-    ${whereClause} AND r.phase IN ('completed', 'cancelled')
-    GROUP BY r.result
-  `).all(...params) as Array<{ result: string; count: number }>;
-
-  const byResult: Record<string, number> = {};
-  for (const row of resultRows) {
-    byResult[row.result] = row.count;
-  }
-
-  // Top projects
+  // Runs by project
   const projectRows = db.prepare(`
     SELECT r.project_id, p.name AS project_name, COUNT(*) AS run_count
     FROM runs r
@@ -146,28 +101,97 @@ export function getAnalyticsMetrics(db: Database, options: GetAnalyticsOptions):
     LIMIT 5
   `).all(...params) as Array<{ project_id: string; project_name: string; run_count: number }>;
 
-  const topProjects = projectRows.map((row) => ({
+  const runsByProject = projectRows.map((row) => ({
     projectId: row.project_id,
     projectName: row.project_name,
-    runCount: row.run_count,
+    count: row.run_count,
   }));
 
-  const terminalCount = successRow.count + failedRow.count;
+  const terminalCount = completedTotalRow.count + failedRow.count;
   const successRate = terminalCount > 0
-    ? Math.round((successRow.count / terminalCount) * 100)
+    ? Math.round((completedRow.count / terminalCount) * 100)
     : 0;
+
+  // Approval wait time: compute time between entering and leaving awaiting_plan_approval
+  const approvalEventRows = db.prepare(`
+    SELECT
+      e.run_id AS run_id,
+      e.sequence AS sequence,
+      e.created_at AS created_at,
+      json_extract(e.payload_json, '$.from') AS from_phase,
+      json_extract(e.payload_json, '$.to') AS to_phase
+    FROM events e
+    JOIN runs r ON e.run_id = r.run_id
+    JOIN projects p ON r.project_id = p.project_id
+    ${whereClause} AND e.type = 'phase.transitioned'
+    ORDER BY e.run_id ASC, e.sequence ASC
+  `).all(...params) as Array<{
+    run_id: string;
+    sequence: number;
+    created_at: string;
+    from_phase: string | null;
+    to_phase: string | null;
+  }>;
+
+  let approvalWaitTotal = 0;
+  let approvalWaitCount = 0;
+  const approvalEntry: Record<string, string | undefined> = {};
+
+  for (const row of approvalEventRows) {
+    const runId = row.run_id;
+    if (row.to_phase === 'awaiting_plan_approval') {
+      approvalEntry[runId] = row.created_at;
+      continue;
+    }
+    const entryTimestamp = approvalEntry[runId];
+    if (row.from_phase === 'awaiting_plan_approval' && entryTimestamp !== undefined) {
+      const enteredAt = new Date(entryTimestamp).getTime();
+      const exitedAt = new Date(row.created_at).getTime();
+      if (!Number.isNaN(enteredAt) && !Number.isNaN(exitedAt) && exitedAt >= enteredAt) {
+        approvalWaitTotal += exitedAt - enteredAt;
+        approvalWaitCount += 1;
+      }
+      approvalEntry[runId] = undefined;
+    }
+  }
+
+  const avgApprovalWaitMs = approvalWaitCount > 0
+    ? Math.round(approvalWaitTotal / approvalWaitCount)
+    : 0;
+
+  // Recent completions (last 7 days)
+  const now = new Date();
+  const last7d = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+  last7d.setHours(0, 0, 0, 0);
+
+  const recentRows = db.prepare(`
+    SELECT date(r.completed_at) AS date, COUNT(*) AS count
+    FROM runs r
+    JOIN projects p ON r.project_id = p.project_id
+    ${whereClause} AND r.completed_at IS NOT NULL AND r.completed_at >= ?
+    GROUP BY date
+  `).all(...params, last7d.toISOString()) as Array<{ date: string; count: number }>;
+
+  const recentMap = new Map<string, number>();
+  for (const row of recentRows) {
+    recentMap.set(row.date, row.count);
+  }
+
+  const recentCompletions: Array<{ date: string; count: number }> = [];
+  for (let i = 6; i >= 0; i -= 1) {
+    const day = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const date = day.toISOString().slice(0, 10);
+    recentCompletions.push({ date, count: recentMap.get(date) ?? 0 });
+  }
 
   return {
     totalRuns: totalRow.count,
-    activeRuns: activeRow.count,
-    successfulRuns: successRow.count,
-    failedRuns: failedRow.count,
+    completedRuns: completedTotalRow.count,
     successRate,
-    avgDurationMs: avgDurRow.avg_ms ?? 0,
-    completedLast24h: completed24hRow.count,
-    completedLast7d: completed7dRow.count,
-    byPhase,
-    byResult,
-    topProjects,
+    avgCycleTimeMs: avgDurRow.avg_ms ?? 0,
+    avgApprovalWaitMs,
+    runsByPhase,
+    runsByProject,
+    recentCompletions,
   };
 }

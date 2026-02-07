@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { PageHeader } from '@/components/layout';
 import { Badge, Skeleton } from '@/components/ui';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import {
   Table,
   TableBody,
@@ -14,7 +15,9 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Play, Clock, AlertTriangle, CheckCircle } from 'lucide-react';
+import {
+  Play, Clock, AlertTriangle, CheckCircle, ThumbsUp, Eye, ExternalLink,
+} from 'lucide-react';
 import { getPhaseLabel, getPhaseVariant } from '@/lib/phase-config';
 
 interface RunSummary {
@@ -36,6 +39,23 @@ interface RunSummary {
   result?: string;
 }
 
+interface ApprovalItem {
+  runId: string;
+  phase: string;
+  taskTitle: string;
+  projectName: string;
+  repoFullName: string;
+  waitDurationMs: number;
+  gateType: 'plan_approval' | 'escalation' | 'policy_exception';
+}
+
+interface ApprovalsResponse {
+  planApprovals: ApprovalItem[];
+  escalations: ApprovalItem[];
+  policyExceptions: ApprovalItem[];
+  total: number;
+}
+
 function timeAgo(dateString: string): string {
   const date = new Date(dateString);
   const now = new Date();
@@ -47,14 +67,22 @@ function timeAgo(dateString: string): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
+function formatWaitDuration(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+
 interface DashboardData {
   activeRuns: RunSummary[];
-  needsAttention: RunSummary[];
   recentlyCompleted: RunSummary[];
+  approvals: ApprovalItem[];
   stats: {
     active: number;
     queued: number;
-    blocked: number;
+    needsYou: number;
     completedToday: number;
   };
 }
@@ -109,60 +137,152 @@ function RunTable({ runs, emptyMessage }: { runs: RunSummary[]; emptyMessage: st
   );
 }
 
+const GATE_LABELS: Record<string, string> = {
+  plan_approval: 'Plan Approval',
+  escalation: 'Escalation',
+  policy_exception: 'Policy Exception',
+};
+
+function ApprovalRow({
+  item,
+  onQuickApprove,
+  busy,
+}: {
+  item: ApprovalItem;
+  onQuickApprove: (runId: string) => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-2">
+      <div className="min-w-0 flex-1">
+        <Link href={`/runs/${item.runId}` as Route} className="text-sm font-medium hover:underline truncate block">
+          {item.taskTitle}
+        </Link>
+        <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+          <span>{item.projectName}</span>
+          <span className="text-border">|</span>
+          <Badge variant="secondary" className="text-xs h-4 px-1">{GATE_LABELS[item.gateType] ?? item.gateType}</Badge>
+          <span className="text-border">|</span>
+          <Clock className="h-3 w-3" />
+          <span>{formatWaitDuration(item.waitDurationMs)}</span>
+        </div>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        {item.gateType === 'plan_approval' && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => onQuickApprove(item.runId)}
+            title="Approve plan"
+          >
+            <ThumbsUp className="h-3 w-3 mr-1" />
+            Approve
+          </Button>
+        )}
+        <Link href={item.gateType === 'plan_approval' ? `/runs/${item.runId}` as Route : '/approvals' as Route}>
+          <Button variant="ghost" size="sm" title="View details">
+            {item.gateType === 'plan_approval' ? <Eye className="h-3 w-3" /> : <ExternalLink className="h-3 w-3" />}
+          </Button>
+        </Link>
+      </div>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+
+  const fetchDashboard = useCallback(async () => {
+    try {
+      // Fetch runs and approvals in parallel
+      const [activeRes, completedRes, pendingRes, approvalsRes] = await Promise.all([
+        fetch('/api/runs?phases=planning,executing,awaiting_review&limit=10'),
+        fetch('/api/runs?phases=completed,cancelled&limit=5'),
+        fetch('/api/runs?phases=pending&countOnly=1'),
+        fetch('/api/approvals'),
+      ]);
+
+      if (!activeRes.ok || !completedRes.ok || !pendingRes.ok) {
+        throw new Error('Failed to fetch dashboard data');
+      }
+
+      const [activeData, completedData, pendingData] = await Promise.all([
+        activeRes.json() as Promise<{ runs: RunSummary[] }>,
+        completedRes.json() as Promise<{ runs: RunSummary[] }>,
+        pendingRes.json() as Promise<{ total: number }>,
+      ]);
+
+      // Merge all approval types into a single list, sorted by wait time
+      let approvals: ApprovalItem[] = [];
+      if (approvalsRes.ok) {
+        const approvalsData = await approvalsRes.json() as ApprovalsResponse;
+        approvals = [
+          ...approvalsData.planApprovals,
+          ...approvalsData.escalations,
+          ...approvalsData.policyExceptions,
+        ].sort((a, b) => b.waitDurationMs - a.waitDurationMs).slice(0, 5);
+      }
+
+      // Count completed today
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const completedToday = completedData.runs.filter(
+        (r) => r.completedAt !== undefined && new Date(r.completedAt) >= todayStart
+      ).length;
+
+      setData({
+        activeRuns: activeData.runs,
+        recentlyCompleted: completedData.runs,
+        approvals,
+        stats: {
+          active: activeData.runs.length,
+          queued: pendingData.total,
+          needsYou: approvals.length,
+          completedToday,
+        },
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    async function fetchDashboard() {
-      try {
-        // Fetch runs in parallel for different sections
-        const [activeRes, blockedRes, completedRes, pendingRes] = await Promise.all([
-          fetch('/api/runs?phases=planning,executing,awaiting_review&limit=10'),
-          fetch('/api/runs?phases=awaiting_plan_approval,blocked&limit=10'),
-          fetch('/api/runs?phases=completed,cancelled&limit=5'),
-          fetch('/api/runs?phases=pending&limit=10'),
-        ]);
-
-        if (!activeRes.ok || !blockedRes.ok || !completedRes.ok || !pendingRes.ok) {
-          throw new Error('Failed to fetch dashboard data');
-        }
-
-        const [activeData, blockedData, completedData, pendingData] = await Promise.all([
-          activeRes.json() as Promise<{ runs: RunSummary[] }>,
-          blockedRes.json() as Promise<{ runs: RunSummary[] }>,
-          completedRes.json() as Promise<{ runs: RunSummary[] }>,
-          pendingRes.json() as Promise<{ runs: RunSummary[] }>,
-        ]);
-
-        // Count completed today
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
-        const completedToday = completedData.runs.filter(
-          (r) => r.completedAt !== undefined && new Date(r.completedAt) >= todayStart
-        ).length;
-
-        setData({
-          activeRuns: activeData.runs,
-          needsAttention: blockedData.runs,
-          recentlyCompleted: completedData.runs,
-          stats: {
-            active: activeData.runs.length,
-            queued: pendingData.runs.length,
-            blocked: blockedData.runs.length,
-            completedToday,
-          },
-        });
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        setLoading(false);
-      }
-    }
-
     void fetchDashboard();
-  }, []);
+
+    // Auto-refresh every 60 seconds
+    const interval = setInterval(() => {
+      void fetchDashboard();
+    }, 60000);
+
+    return () => clearInterval(interval);
+  }, [fetchDashboard]);
+
+  async function handleQuickApprove(runId: string) {
+    setActionBusy(true);
+    try {
+      const response = await fetch(`/api/runs/${runId}/actions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'approve_plan' }),
+      });
+      if (!response.ok) {
+        const result = await response.json() as { error?: string };
+        throw new Error(result.error ?? 'Failed to approve plan');
+      }
+      // Refresh via fetch, not window.location.reload()
+      await fetchDashboard();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setActionBusy(false);
+    }
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -199,8 +319,8 @@ export default function DashboardPage() {
                 icon={<Clock className="h-4 w-4 text-muted-foreground" />}
               />
               <StatCard
-                title="Needs Attention"
-                value={data.stats.blocked}
+                title="Needs You"
+                value={data.stats.needsYou}
                 icon={<AlertTriangle className="h-4 w-4 text-muted-foreground" />}
               />
               <StatCard
@@ -220,14 +340,24 @@ export default function DashboardPage() {
               </CardContent>
             </Card>
 
-            {/* Needs attention */}
-            {data.needsAttention.length > 0 && (
+            {/* Needs attention — from approvals API (all gate types) */}
+            {data.approvals.length > 0 && (
               <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Needs Attention</CardTitle>
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <CardTitle className="text-base">Needs Your Attention</CardTitle>
+                  <Link href={'/approvals' as Route}>
+                    <Button variant="ghost" size="sm">View All</Button>
+                  </Link>
                 </CardHeader>
-                <CardContent>
-                  <RunTable runs={data.needsAttention} emptyMessage="Nothing needs attention." />
+                <CardContent className="divide-y">
+                  {data.approvals.map((item) => (
+                    <ApprovalRow
+                      key={item.runId}
+                      item={item}
+                      onQuickApprove={(runId) => void handleQuickApprove(runId)}
+                      busy={actionBusy}
+                    />
+                  ))}
                 </CardContent>
               </Card>
             )}

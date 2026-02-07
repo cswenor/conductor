@@ -84,8 +84,20 @@ export interface ListRunsOptions {
   userId?: string;
   phase?: RunPhase;
   phases?: readonly RunPhase[];
+  /** When true, also include runs with paused_at IS NOT NULL (OR'd with phase filter). */
+  includePaused?: boolean;
   limit?: number;
   offset?: number;
+}
+
+export interface CountRunsOptions {
+  projectId?: string;
+  userId?: string;
+  phase?: RunPhase;
+  phases?: readonly RunPhase[];
+  /** When true, also include runs with paused_at IS NOT NULL (OR'd with phase filter). */
+  includePaused?: boolean;
+  completedAfter?: string;
 }
 
 // =============================================================================
@@ -188,12 +200,22 @@ export function listRuns(db: Database, options?: ListRunsOptions): RunSummary[] 
   }
 
   if (options?.phase !== undefined) {
-    conditions.push('r.phase = ?');
+    if (options.includePaused === true) {
+      conditions.push('(r.phase = ? OR r.paused_at IS NOT NULL)');
+    } else {
+      conditions.push('r.phase = ?');
+    }
     params.push(options.phase);
   } else if (options?.phases !== undefined && options.phases.length > 0) {
     const placeholders = options.phases.map(() => '?').join(', ');
-    conditions.push(`r.phase IN (${placeholders})`);
+    if (options.includePaused === true) {
+      conditions.push(`(r.phase IN (${placeholders}) OR r.paused_at IS NOT NULL)`);
+    } else {
+      conditions.push(`r.phase IN (${placeholders})`);
+    }
     params.push(...options.phases);
+  } else if (options?.includePaused === true) {
+    conditions.push('r.paused_at IS NOT NULL');
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -239,6 +261,59 @@ export function listRuns(db: Database, options?: ListRunsOptions): RunSummary[] 
     completedAt: (row['completed_at'] as string | null) ?? undefined,
     result: (row['result'] as string | null) ?? undefined,
   }));
+}
+
+/**
+ * Count runs with the same filters as listRuns.
+ */
+export function countRuns(db: Database, options?: CountRunsOptions): number {
+  const conditions: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (options?.projectId !== undefined) {
+    conditions.push('r.project_id = ?');
+    params.push(options.projectId);
+  }
+
+  if (options?.userId !== undefined) {
+    conditions.push('p.user_id = ?');
+    params.push(options.userId);
+  }
+
+  if (options?.phase !== undefined) {
+    if (options.includePaused === true) {
+      conditions.push('(r.phase = ? OR r.paused_at IS NOT NULL)');
+    } else {
+      conditions.push('r.phase = ?');
+    }
+    params.push(options.phase);
+  } else if (options?.phases !== undefined && options.phases.length > 0) {
+    const placeholders = options.phases.map(() => '?').join(', ');
+    if (options.includePaused === true) {
+      conditions.push(`(r.phase IN (${placeholders}) OR r.paused_at IS NOT NULL)`);
+    } else {
+      conditions.push(`r.phase IN (${placeholders})`);
+    }
+    params.push(...options.phases);
+  } else if (options?.includePaused === true) {
+    conditions.push('r.paused_at IS NOT NULL');
+  }
+
+  if (options?.completedAfter !== undefined) {
+    conditions.push('r.completed_at >= ?');
+    params.push(options.completedAfter);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM runs r
+    JOIN projects p ON r.project_id = p.project_id
+    ${whereClause}
+  `).get(...params) as { count: number };
+
+  return row.count;
 }
 
 /**

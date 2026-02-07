@@ -15,7 +15,14 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Play, XCircle } from 'lucide-react';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Play, XCircle, CheckCircle, Eye, Filter } from 'lucide-react';
 import {
   type WorkTab,
   workTabPhases,
@@ -43,6 +50,16 @@ interface RunSummary {
   result?: string;
 }
 
+interface RunsResponse {
+  runs: RunSummary[];
+  total: number;
+}
+
+interface ProjectOption {
+  id: string;
+  name: string;
+}
+
 function timeAgo(dateString: string): string {
   const date = new Date(dateString);
   const now = new Date();
@@ -60,6 +77,82 @@ const TAB_LABELS: Record<WorkTab, string> = {
   blocked: 'Blocked',
   completed: 'Completed',
 };
+
+/** Build the API URL for a given tab, with project filter and optional countOnly. */
+function buildRunsUrl(tab: WorkTab, projectId?: string, countOnly?: boolean): string {
+  const phases = workTabPhases[tab].join(',');
+  const params = new URLSearchParams();
+  params.set('phases', phases);
+  if (tab === 'blocked') {
+    params.set('includePaused', '1');
+  }
+  if (projectId !== undefined) {
+    params.set('projectId', projectId);
+  }
+  if (countOnly === true) {
+    params.set('countOnly', '1');
+  } else {
+    params.set('limit', '100');
+  }
+  return `/api/runs?${params.toString()}`;
+}
+
+/** Context-dependent action button for a run. */
+function RunAction({ run, onCancel, cancellingId }: {
+  run: RunSummary;
+  onCancel: (runId: string) => void;
+  cancellingId: string | null;
+}) {
+  const busy = cancellingId !== null;
+
+  // Awaiting plan approval → Review button
+  if (run.phase === 'awaiting_plan_approval') {
+    return (
+      <Link href={`/runs/${run.runId}` as Route}>
+        <Button variant="outline" size="sm" title="Review plan">
+          <Eye className="h-4 w-4 mr-1" />
+          Review
+        </Button>
+      </Link>
+    );
+  }
+
+  // Awaiting review → Review button
+  if (run.phase === 'awaiting_review') {
+    return (
+      <Link href={`/runs/${run.runId}` as Route}>
+        <Button variant="outline" size="sm" title="Review run">
+          <CheckCircle className="h-4 w-4 mr-1" />
+          Review
+        </Button>
+      </Link>
+    );
+  }
+
+  // Default for non-completed: Cancel button
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      disabled={busy}
+      onClick={() => onCancel(run.runId)}
+      title="Cancel run"
+    >
+      <XCircle className="h-4 w-4 text-muted-foreground" />
+    </Button>
+  );
+}
+
+function StatusBadge({ run }: { run: RunSummary }) {
+  if (run.status === 'paused') {
+    return <Badge variant="warning">Paused</Badge>;
+  }
+  return (
+    <Badge variant={getPhaseVariant(run.phase)}>
+      {getPhaseLabel(run.phase)}
+    </Badge>
+  );
+}
 
 function WorkTable({
   runs,
@@ -97,7 +190,7 @@ function WorkTable({
           <TableHead>Repository</TableHead>
           <TableHead>Phase</TableHead>
           <TableHead>{tab === 'completed' ? 'Completed' : 'Updated'}</TableHead>
-          {tab !== 'completed' && <TableHead className="w-[80px]" />}
+          {tab !== 'completed' && <TableHead className="w-[100px]" />}
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -115,24 +208,14 @@ function WorkTable({
               {run.repoFullName}
             </TableCell>
             <TableCell>
-              <Badge variant={getPhaseVariant(run.phase)}>
-                {getPhaseLabel(run.phase)}
-              </Badge>
+              <StatusBadge run={run} />
             </TableCell>
             <TableCell className="text-muted-foreground">
               {timeAgo(tab === 'completed' && run.completedAt !== undefined ? run.completedAt : run.updatedAt)}
             </TableCell>
             {tab !== 'completed' && (
               <TableCell>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={cancellingId !== null}
-                  onClick={() => onCancel(run.runId)}
-                  title="Cancel run"
-                >
-                  <XCircle className="h-4 w-4 text-muted-foreground" />
-                </Button>
+                <RunAction run={run} onCancel={onCancel} cancellingId={cancellingId} />
               </TableCell>
             )}
           </TableRow>
@@ -149,24 +232,28 @@ export default function WorkPage() {
   const [error, setError] = useState<string | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [counts, setCounts] = useState<Record<WorkTab, number>>({ active: 0, queued: 0, blocked: 0, completed: 0 });
+  const [filterProjectId, setFilterProjectId] = useState<string>('all');
+  const [projects, setProjects] = useState<ProjectOption[]>([]);
 
-  const fetchRuns = useCallback(async (tab: WorkTab) => {
+  const projectFilter = filterProjectId !== 'all' ? filterProjectId : undefined;
+
+  const fetchRuns = useCallback(async (tab: WorkTab, projId?: string) => {
     try {
-      const phases = workTabPhases[tab].join(',');
-      const response = await fetch(`/api/runs?phases=${phases}&limit=100`);
+      const url = buildRunsUrl(tab, projId);
+      const response = await fetch(url);
       if (!response.ok) {
         throw new Error('Failed to fetch runs');
       }
-      const data = await response.json() as { runs: RunSummary[] };
-      // Client-side filter paused runs into blocked tab
-      if (tab === 'blocked') {
-        setRuns(data.runs);
-      } else {
-        // For active tab, filter out paused runs (they show in blocked)
+      const data = await response.json() as RunsResponse;
+
+      // For active tab, filter out paused runs client-side (they show in blocked)
+      if (tab === 'active') {
         setRuns(data.runs.filter(r => {
           const workTab = getWorkTab(r.phase, r.status as 'active' | 'paused' | 'blocked' | 'finished' | undefined);
           return workTab === tab;
         }));
+      } else {
+        setRuns(data.runs);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -175,38 +262,55 @@ export default function WorkPage() {
     }
   }, []);
 
-  // Fetch counts for all tabs on mount
-  useEffect(() => {
-    async function fetchCounts() {
-      const tabs: WorkTab[] = ['active', 'queued', 'blocked', 'completed'];
-      const results = await Promise.all(
-        tabs.map(async (tab) => {
-          try {
-            const phases = workTabPhases[tab].join(',');
-            const res = await fetch(`/api/runs?phases=${phases}&limit=1`);
-            if (!res.ok) return { tab, count: 0 };
-            const data = await res.json() as { runs: RunSummary[] };
-            // Use the runs length as an approximation
-            // (for accurate counts we'd need a count endpoint)
-            return { tab, count: data.runs.length > 0 ? data.runs.length : 0 };
-          } catch {
-            return { tab, count: 0 };
-          }
-        })
-      );
-      const newCounts: Record<WorkTab, number> = { active: 0, queued: 0, blocked: 0, completed: 0 };
-      for (const r of results) {
-        newCounts[r.tab] = r.count;
-      }
-      setCounts(newCounts);
+  // Fetch counts for all tabs using countOnly=1
+  const fetchCounts = useCallback(async (projId?: string) => {
+    const tabs: WorkTab[] = ['active', 'queued', 'blocked', 'completed'];
+    const results = await Promise.all(
+      tabs.map(async (tab) => {
+        try {
+          const url = buildRunsUrl(tab, projId, true);
+          const res = await fetch(url);
+          if (!res.ok) return { tab, count: 0 };
+          const data = await res.json() as { total: number };
+          return { tab, count: data.total };
+        } catch {
+          return { tab, count: 0 };
+        }
+      })
+    );
+    const newCounts: Record<WorkTab, number> = { active: 0, queued: 0, blocked: 0, completed: 0 };
+    for (const r of results) {
+      newCounts[r.tab] = r.count;
     }
-    void fetchCounts();
+    setCounts(newCounts);
   }, []);
 
+  // Fetch projects list on mount (reuse approvals endpoint for project list)
+  useEffect(() => {
+    async function fetchProjects() {
+      try {
+        const res = await fetch('/api/approvals');
+        if (!res.ok) return;
+        const data = await res.json() as { projects: ProjectOption[] };
+        setProjects(data.projects ?? []);
+      } catch {
+        // Non-critical: filter just won't show
+      }
+    }
+    void fetchProjects();
+  }, []);
+
+  // Fetch counts when project filter changes
+  useEffect(() => {
+    void fetchCounts(projectFilter);
+  }, [fetchCounts, projectFilter]);
+
+  // Fetch runs when tab or project filter changes
   useEffect(() => {
     setLoading(true);
-    void fetchRuns(activeTab);
-  }, [activeTab, fetchRuns]);
+    setError(null);
+    void fetchRuns(activeTab, projectFilter);
+  }, [activeTab, fetchRuns, projectFilter]);
 
   async function handleCancel(runId: string) {
     setCancellingId(runId);
@@ -220,7 +324,11 @@ export default function WorkPage() {
         const result = await response.json() as { error?: string };
         throw new Error(result.error ?? 'Failed to cancel run');
       }
-      await fetchRuns(activeTab);
+      // Refresh data
+      await Promise.all([
+        fetchRuns(activeTab, projectFilter),
+        fetchCounts(projectFilter),
+      ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -235,6 +343,24 @@ export default function WorkPage() {
         description="All runs across your projects"
       />
       <div className="flex-1 p-6">
+        {/* Project filter */}
+        {projects.length > 1 && (
+          <div className="flex items-center gap-2 mb-4">
+            <Filter className="h-4 w-4 text-muted-foreground" />
+            <Select value={filterProjectId} onValueChange={setFilterProjectId}>
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="All projects" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All projects</SelectItem>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as WorkTab)}>
           <TabsList>
             {(['active', 'queued', 'blocked', 'completed'] as WorkTab[]).map((tab) => (
