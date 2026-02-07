@@ -198,22 +198,35 @@ export default function DashboardPage() {
 
   const fetchDashboard = useCallback(async () => {
     try {
-      // Fetch runs and approvals in parallel
-      const [activeRes, completedRes, pendingRes, approvalsRes] = await Promise.all([
+      // Compute completedAfter for "today" count
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+      const completedAfter = todayStart.toISOString();
+
+      // Fetch display data + accurate counts in parallel
+      const [
+        activeRes, completedRes,
+        activeCountRes, pendingCountRes, completedTodayRes,
+        approvalsRes,
+      ] = await Promise.all([
         fetch('/api/runs?phases=planning,executing,awaiting_review&limit=10'),
         fetch('/api/runs?phases=completed,cancelled&limit=5'),
+        fetch('/api/runs?phases=planning,executing,awaiting_review&countOnly=1'),
         fetch('/api/runs?phases=pending&countOnly=1'),
+        fetch(`/api/runs?phases=completed,cancelled&countOnly=1&completedAfter=${completedAfter}`),
         fetch('/api/approvals'),
       ]);
 
-      if (!activeRes.ok || !completedRes.ok || !pendingRes.ok) {
+      if (!activeRes.ok || !completedRes.ok) {
         throw new Error('Failed to fetch dashboard data');
       }
 
-      const [activeData, completedData, pendingData] = await Promise.all([
+      const [activeData, completedData, activeCount, pendingCount, completedTodayCount] = await Promise.all([
         activeRes.json() as Promise<{ runs: RunSummary[] }>,
         completedRes.json() as Promise<{ runs: RunSummary[] }>,
-        pendingRes.json() as Promise<{ total: number }>,
+        activeCountRes.ok ? activeCountRes.json() as Promise<{ total: number }> : { total: 0 },
+        pendingCountRes.ok ? pendingCountRes.json() as Promise<{ total: number }> : { total: 0 },
+        completedTodayRes.ok ? completedTodayRes.json() as Promise<{ total: number }> : { total: 0 },
       ]);
 
       // Merge all approval types into a single list, sorted by wait time
@@ -227,22 +240,15 @@ export default function DashboardPage() {
         ].sort((a, b) => b.waitDurationMs - a.waitDurationMs).slice(0, 5);
       }
 
-      // Count completed today
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      const completedToday = completedData.runs.filter(
-        (r) => r.completedAt !== undefined && new Date(r.completedAt) >= todayStart
-      ).length;
-
       setData({
         activeRuns: activeData.runs,
         recentlyCompleted: completedData.runs,
         approvals,
         stats: {
-          active: activeData.runs.length,
-          queued: pendingData.total,
+          active: activeCount.total,
+          queued: pendingCount.total,
           needsYou: approvals.length,
-          completedToday,
+          completedToday: completedTodayCount.total,
         },
       });
     } catch (err) {
@@ -332,8 +338,11 @@ export default function DashboardPage() {
 
             {/* Active runs */}
             <Card>
-              <CardHeader>
+              <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-base">Active Runs</CardTitle>
+                <Link href={'/work' as Route}>
+                  <Button variant="ghost" size="sm">View All</Button>
+                </Link>
               </CardHeader>
               <CardContent>
                 <RunTable runs={data.activeRuns} emptyMessage="No active runs right now." />
