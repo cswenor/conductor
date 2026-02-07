@@ -1,6 +1,6 @@
 # Control Plane UX
 
-> **This document has been superseded by [CONTROL_PLANE_UX_V2.md](CONTROL_PLANE_UX_V2.md).** The V2 spec incorporates a restructured navigation model, new screens (Dashboard, Work, Analytics, Workflow), and detailed per-screen specifications. This document is retained for historical reference.
+> **Deprecated.** This document is superseded by [CONTROL_PLANE_UX_V2.md](CONTROL_PLANE_UX_V2.md) and is kept only for historical reference.
 
 ---
 

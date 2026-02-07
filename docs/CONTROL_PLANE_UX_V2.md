@@ -4,6 +4,20 @@
 
 ---
 
+## Glossary
+
+| Term | Definition |
+|------|-----------|
+| **Work** | Runs grouped by operator intent (Active, Queued, Blocked, Completed). Not "Runs." |
+| **Approvals** | Strict inbox for gates blocking run progress. Grouped by gate type, never by project. |
+| **Workflow** | The expected pipeline contract — what happens when you click Start. Configurable per project. |
+| **Policies** | Enforced constraints and hard stops. Exceptions require justification. |
+| **Dashboard** | Mission control — cross-project "what needs me right now?" landing. |
+| **Phase** | The run's current state in the state machine (e.g., `executing`, `blocked`). |
+| **Gate** | A checkpoint that blocks forward progress until conditions are met (human or automated). |
+
+---
+
 ## Part 1: Mental Model & Principles
 
 ### Conductor is a Control Tower, Not a Chat App
@@ -354,6 +368,8 @@ With project sub-nav:
 | Needs You | Count of pending approvals | `warning` |
 | Completed Today | Count of runs completed today | `success` |
 
+**"Needs You" is a workload indicator, not an error state.** The `warning` variant signals "human attention required," not "something is wrong." A healthy system with pending approvals still shows a yellow Needs You card — that's expected.
+
 #### Data Sources
 
 | Section | API | Notes |
@@ -410,6 +426,8 @@ This replaces the old `/runs` page. The key difference: tabs group runs by **ope
 | Blocked | `awaiting_plan_approval`, `blocked`, `paused` | "What needs me?" |
 | Completed | `completed`, `cancelled`, `failed` | "What finished?" |
 
+**Why `merged` is in Active, not Completed:** `merged` is an intermediate state — GitHub merge observed, but cleanup (worktree removal, branch cleanup, finalization) is still pending. The run is not done until it reaches `completed`. Engineering must not treat `merged` as terminal in the UI.
+
 #### Table Columns
 
 | Column | Content |
@@ -462,6 +480,8 @@ This replaces the old `/runs` page. The key difference: tabs group runs by **ope
 | Blocked | Cancel (no bulk approve — use Approvals) |
 | Completed | — (no actions) |
 
+**Cross-project bulk safety rule:** Bulk actions on `/work` are enabled only when all selected runs share the same `projectId`. If the selection spans multiple projects, bulk action buttons are disabled with tooltip: "Bulk actions require a single project selection." This prevents accidental cross-project mass operations.
+
 #### Relationship to Project Work Tab
 
 The project-scoped Work tab (`/projects/[id]` → Work) uses the **identical component** with an automatic project filter applied. No separate implementation needed.
@@ -478,8 +498,10 @@ The project-scoped Work tab (`/projects/[id]` → Work) uses the **identical com
 Always grouped by gate type — **never** by repo, project, or time:
 
 1. **Plan Approvals** — Plans ready for human review
-2. **Escalations** — Failures that exceeded retry limits
-3. **Policy Exceptions** — Actions blocked by policy
+2. **Escalations** — Runs in `blocked` phase due to exceeded retry limits, timeouts, or agent errors
+3. **Policy Exceptions** — Actions blocked by policy violation
+
+**Escalation source-of-truth:** Escalations appear in Approvals only when a run enters `blocked` due to exceeded retry/timeout policies. Runs in `failed` are **terminal** and never appear in Approvals — they are visible in Work (Completed tab) and Run Detail only. If you're looking at Approvals, every item is actionable.
 
 #### Per-Item Display
 
@@ -899,7 +921,7 @@ This is the visual representation of the run lifecycle. It answers: "What steps 
 │                                                          │
 ├─────────────────────────────────────────────────────────┤
 │                                                          │
-│ Step: Plan Approval                              [Edit]  │
+│ Step: Plan Approval                                      │
 │ ┌────────────────────────────────────────────────────┐   │
 │ │ Required: Yes                                      │   │
 │ │ Timeout: 72 hours                                  │   │
@@ -946,7 +968,9 @@ Clicking a step in the pipeline opens a configuration panel below/to the right s
 
 #### v0.1 Scope
 
-v0.1 shows a **read-only view** of the default pipeline. No editor yet. The pipeline visualization shows the fixed sequence from PROTOCOL.md. Configuration editing is deferred.
+**v0.1: read-only, no Edit button.** The pipeline visualization shows the default fixed sequence from PROTOCOL.md. The config panel displays current values as read-only text. No Edit button appears in the UI. Configuration editing is deferred to v0.2.
+
+**v0.2+:** Edit button appears on each step. Config panel becomes editable. Save persists to project settings.
 
 ---
 
@@ -1279,6 +1303,10 @@ Feedback is:
 | Grant Policy Exception | **Never** | Each exception reviewed individually |
 | Override Gates | **Never** | Each override reviewed individually |
 | Force Cancel | **Never** | Each force cancel requires individual confirmation |
+
+#### Cross-Project Constraint
+
+On `/work` (global view), bulk actions are enabled only when all selected runs share the same `projectId`. Mixed-project selections disable bulk buttons with tooltip: "Bulk actions require a single project selection." On project-scoped Work tabs, this constraint is inherently satisfied.
 
 #### Safety Friction
 
