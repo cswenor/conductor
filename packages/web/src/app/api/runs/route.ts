@@ -33,8 +33,9 @@ export const GET = withAuth(async (request: AuthenticatedRequest): Promise<NextR
     const phasesParam = url.searchParams.get('phases');
     const projectId = url.searchParams.get('projectId');
     const countOnly = url.searchParams.get('countOnly') === '1';
-    const includePaused = url.searchParams.get('includePaused') === '1';
     const excludePaused = url.searchParams.get('excludePaused') === '1';
+    // excludePaused wins if both are set
+    const includePaused = !excludePaused && url.searchParams.get('includePaused') === '1';
     const completedAfter = url.searchParams.get('completedAfter');
     const limit = Number.parseInt(url.searchParams.get('limit') ?? '50', 10);
     const offset = Number.parseInt(url.searchParams.get('offset') ?? '0', 10);
