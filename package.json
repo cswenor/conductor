@@ -23,7 +23,7 @@
     "services:stop": "docker compose down"
   },
   "devDependencies": {
-    "@types/node": "^20.11.0",
+    "@types/node": "^25.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "concurrently": "^9.2.1",
     "eslint": "^9.0.0",
