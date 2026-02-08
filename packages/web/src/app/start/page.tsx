@@ -17,7 +17,7 @@ export default async function StartWorkPage({ searchParams }: PageProps) {
   const repoId = typeof params['repoId'] === 'string' ? params['repoId'] : undefined;
 
   const db = await getDb();
-  const data = fetchStartWorkData(db, user.userId, projectId, repoId);
+  const data = await fetchStartWorkData(db, user.userId, projectId, repoId);
 
   return (
     <StartWorkContent

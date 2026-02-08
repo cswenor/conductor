@@ -7,12 +7,12 @@ import {
   listProjectRepos,
   listRuns,
   countRuns,
-  listStartableTasks,
   type RunPhase,
 } from '@conductor/shared';
 import type { WorkTab } from '@/lib/phase-config';
 import { workTabPhases } from '@/lib/phase-config';
 import { fetchProjectOverviewData } from '@/lib/data/project-overview';
+import { syncAndFetchBacklog } from '@/lib/data/start-work';
 import { ProjectDetailContent } from './project-detail-content';
 
 interface PageProps {
@@ -65,8 +65,10 @@ export default async function ProjectDetailPage({ params, searchParams }: PagePr
     completed: countRuns(db, { projectId: id, phases: workTabPhases.completed as RunPhase[] }),
   };
 
-  // Backlog data
-  const backlogTasks = listStartableTasks(db, user.userId, { projectId: id });
+  // Backlog data (auto-syncs stale repos)
+  const backlogData = defaultTab === 'backlog'
+    ? await syncAndFetchBacklog(db, project, user.userId)
+    : { tasks: [], githubNotConfigured: false };
 
   return (
     <ProjectDetailContent
@@ -77,7 +79,7 @@ export default async function ProjectDetailPage({ params, searchParams }: PagePr
       workRuns={workRuns}
       workCounts={workCounts}
       workTab={workTab}
-      backlogTasks={backlogTasks}
+      backlogData={backlogData}
     />
   );
 }

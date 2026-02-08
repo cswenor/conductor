@@ -223,7 +223,7 @@ export class GitHubClient {
         sort: 'updated',
         direction: 'desc',
       };
-      if (options?.since !== undefined) {
+      if (options?.since !== undefined && options.since !== null) {
         params['since'] = options.since;
       }
 

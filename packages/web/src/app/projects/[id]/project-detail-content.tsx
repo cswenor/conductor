@@ -19,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,18 +45,26 @@ import {
   Trash2,
   Rocket,
   RefreshCw,
+  AlertTriangle,
+  Info,
 } from 'lucide-react';
-import { toast } from 'sonner';
 import { ProjectWorkTab } from '@/components/projects/project-work-tab';
 import { ProjectWorkflowTab } from '@/components/projects/project-workflow-tab';
 import { ProjectOverviewTab } from '@/components/projects/project-overview-tab';
 import { deleteProject } from '@/lib/actions/project-actions';
-import { syncRepoIssues } from '@/lib/actions/start-actions';
 import { timeAgo } from '@/lib/phase-config';
 import type { Project, Repo, StartableTask } from '@conductor/shared';
 import type { RunSummary } from '@/lib/types';
 import type { WorkTab } from '@/lib/phase-config';
 import type { ProjectOverviewData } from '@/lib/data/project-overview';
+
+interface BacklogData {
+  tasks: StartableTask[];
+  lastSyncedAt?: string;
+  syncErrors?: string[];
+  githubNotConfigured: boolean;
+  truncatedRepos?: string[];
+}
 
 function SettingsTab({ project }: { project: Project }) {
   const router = useRouter();
@@ -201,19 +210,13 @@ function SettingsTab({ project }: { project: Project }) {
   );
 }
 
-function BacklogTab({ tasks, projectId }: { tasks: StartableTask[]; projectId: string }) {
+function BacklogTab({ data, projectId }: { data: BacklogData; projectId: string }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
 
-  function handleSync() {
-    startTransition(async () => {
-      const result = await syncRepoIssues(projectId);
-      if (result.success) {
-        toast.success(`Synced ${result.syncedCount} issue(s) from ${result.reposSynced} repo(s)`);
-        router.refresh();
-      } else {
-        toast.error(result.error ?? 'Failed to sync issues');
-      }
+  function handleRefresh() {
+    startTransition(() => {
+      router.refresh();
     });
   }
 
@@ -225,6 +228,8 @@ function BacklogTab({ tasks, projectId }: { tasks: StartableTask[]; projectId: s
     }
   }
 
+  const { tasks, lastSyncedAt, syncErrors, githubNotConfigured, truncatedRepos } = data;
+
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
@@ -232,12 +237,15 @@ function BacklogTab({ tasks, projectId }: { tasks: StartableTask[]; projectId: s
           <CardTitle>Backlog</CardTitle>
           <CardDescription>
             Open issues that can be turned into runs.
+            {lastSyncedAt !== undefined && (
+              <span className="ml-2 text-xs">Synced {timeAgo(lastSyncedAt)}</span>
+            )}
           </CardDescription>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleSync} disabled={isPending}>
+          <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isPending}>
             <RefreshCw className={`h-4 w-4 mr-1 ${isPending ? 'animate-spin' : ''}`} />
-            Sync
+            Refresh
           </Button>
           <Link href={`/start?projectId=${projectId}` as Route}>
             <Button size="sm">
@@ -247,17 +255,45 @@ function BacklogTab({ tasks, projectId }: { tasks: StartableTask[]; projectId: s
           </Link>
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        {/* GitHub not configured */}
+        {githubNotConfigured && (
+          <Alert>
+            <Github className="h-4 w-4" />
+            <AlertDescription>
+              Connect a GitHub App to automatically sync issues.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Sync errors */}
+        {syncErrors && syncErrors.length > 0 && (
+          <Alert variant="warning">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              Could not refresh {syncErrors.length} repo(s) — showing cached data.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Truncation warning */}
+        {truncatedRepos && truncatedRepos.length > 0 && (
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertDescription>
+              Some repos have more than 500 open issues. Only the 500 most recently updated are shown.
+            </AlertDescription>
+          </Alert>
+        )}
+
         {tasks.length === 0 ? (
           <EmptyState
             icon={<FileText className="h-12 w-12 text-muted-foreground" />}
             title="No issues yet"
-            description="Sync repositories to see their open issues here."
-            action={
-              <Button onClick={handleSync} disabled={isPending}>
-                <RefreshCw className={`h-4 w-4 mr-2 ${isPending ? 'animate-spin' : ''}`} />
-                Sync Issues
-              </Button>
+            description={
+              githubNotConfigured
+                ? 'Configure your GitHub App to sync issues.'
+                : 'Issues will appear here automatically when your repos are synced.'
             }
           />
         ) : (
@@ -319,7 +355,7 @@ export function ProjectDetailContent({
   workRuns,
   workCounts,
   workTab,
-  backlogTasks,
+  backlogData,
 }: {
   project: Project;
   repos: Repo[];
@@ -328,7 +364,7 @@ export function ProjectDetailContent({
   workRuns: RunSummary[];
   workCounts: Record<WorkTab, number>;
   workTab: WorkTab;
-  backlogTasks: StartableTask[];
+  backlogData: BacklogData;
 }) {
   return (
     <div className="flex flex-col h-full">
@@ -354,9 +390,9 @@ export function ProjectDetailContent({
             <TabsTrigger value="backlog">
               <FileText className="h-4 w-4 mr-2" />
               Backlog
-              {backlogTasks.length > 0 && (
+              {backlogData.tasks.length > 0 && (
                 <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-xs">
-                  {backlogTasks.length}
+                  {backlogData.tasks.length}
                 </Badge>
               )}
             </TabsTrigger>
@@ -387,7 +423,7 @@ export function ProjectDetailContent({
           </TabsContent>
 
           <TabsContent value="backlog">
-            <BacklogTab tasks={backlogTasks} projectId={project.projectId} />
+            <BacklogTab data={backlogData} projectId={project.projectId} />
           </TabsContent>
 
           <TabsContent value="work">

@@ -24,10 +24,10 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Rocket, RefreshCw, Play, AlertTriangle, Search } from 'lucide-react';
+import { Rocket, RefreshCw, Play, AlertTriangle, Search, Info, Github } from 'lucide-react';
 import { toast } from 'sonner';
 import { timeAgo } from '@/lib/phase-config';
-import { startWork, syncRepoIssues } from '@/lib/actions/start-actions';
+import { startWork } from '@/lib/actions/start-actions';
 import type { StartableTask } from '@conductor/shared';
 
 interface StartWorkContentProps {
@@ -35,7 +35,10 @@ interface StartWorkContentProps {
   projects: { id: string; name: string }[];
   repos: { id: string; fullName: string; projectId: string }[];
   labels: string[];
-  hasStaleRepos: boolean;
+  lastSyncedAt?: string;
+  syncErrors?: string[];
+  githubNotConfigured: boolean;
+  truncatedRepos?: string[];
   initialProjectId: string;
   initialRepoId: string;
 }
@@ -45,7 +48,10 @@ export function StartWorkContent({
   projects,
   repos,
   labels,
-  hasStaleRepos,
+  lastSyncedAt,
+  syncErrors,
+  githubNotConfigured,
+  truncatedRepos,
   initialProjectId,
   initialRepoId,
 }: StartWorkContentProps) {
@@ -169,16 +175,9 @@ export function StartWorkContent({
     });
   }
 
-  function handleSync() {
-    const pid = filterProjectId !== 'all' ? filterProjectId : undefined;
-    startTransition(async () => {
-      const result = await syncRepoIssues(pid);
-      if (result.success) {
-        toast.success(`Synced ${result.syncedCount} issue(s) from ${result.reposSynced} repo(s)`);
-        router.refresh();
-      } else {
-        toast.error(result.error ?? 'Failed to sync issues');
-      }
+  function handleRefresh() {
+    startTransition(() => {
+      router.refresh();
     });
   }
 
@@ -197,13 +196,18 @@ export function StartWorkContent({
         description="Select issues to start working on across your projects"
         action={
           <div className="flex items-center gap-2">
+            {lastSyncedAt !== undefined && (
+              <span className="text-xs text-muted-foreground">
+                Synced {timeAgo(lastSyncedAt)}
+              </span>
+            )}
             <Button
               variant="outline"
-              onClick={handleSync}
+              size="sm"
+              onClick={handleRefresh}
               disabled={isPending}
             >
-              <RefreshCw className={`h-4 w-4 mr-2 ${isPending ? 'animate-spin' : ''}`} />
-              Sync
+              <RefreshCw className={`h-4 w-4 ${isPending ? 'animate-spin' : ''}`} />
             </Button>
             <Button
               onClick={handleStart}
@@ -217,21 +221,32 @@ export function StartWorkContent({
       />
 
       <div className="flex-1 p-6 space-y-4">
-        {/* Stale banner */}
-        {hasStaleRepos && (
+        {/* GitHub not configured */}
+        {githubNotConfigured && (
           <Alert>
+            <Github className="h-4 w-4" />
+            <AlertDescription>
+              Connect a GitHub App to automatically sync issues. Go to Settings to configure your GitHub App credentials.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Sync errors */}
+        {syncErrors && syncErrors.length > 0 && (
+          <Alert variant="warning">
             <AlertTriangle className="h-4 w-4" />
-            <AlertDescription className="flex items-center justify-between">
-              <span>Some repos haven&apos;t been synced recently. Click Sync to refresh.</span>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleSync}
-                disabled={isPending}
-              >
-                <RefreshCw className={`h-3 w-3 mr-1 ${isPending ? 'animate-spin' : ''}`} />
-                Sync Now
-              </Button>
+            <AlertDescription>
+              Could not refresh {syncErrors.length} repo(s) — showing cached data.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Truncation warning */}
+        {truncatedRepos && truncatedRepos.length > 0 && (
+          <Alert>
+            <Info className="h-4 w-4" />
+            <AlertDescription>
+              Some repos have more than 500 open issues. Only the 500 most recently updated are shown.
             </AlertDescription>
           </Alert>
         )}
@@ -311,16 +326,10 @@ export function StartWorkContent({
             title={tasks.length === 0 ? 'No startable issues' : 'No matching issues'}
             description={
               tasks.length === 0
-                ? 'Sync your repos to see open issues, or check that issues exist in your connected repositories.'
+                ? githubNotConfigured
+                  ? 'Configure your GitHub App to sync issues from your repositories.'
+                  : 'Issues will appear here automatically when your repos are synced.'
                 : 'Try adjusting your filters or search query.'
-            }
-            action={
-              tasks.length === 0 ? (
-                <Button onClick={handleSync} disabled={isPending}>
-                  <RefreshCw className={`h-4 w-4 mr-2 ${isPending ? 'animate-spin' : ''}`} />
-                  Sync Repos
-                </Button>
-              ) : undefined
             }
           />
         ) : (
