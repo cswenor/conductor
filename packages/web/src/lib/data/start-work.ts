@@ -47,9 +47,12 @@ async function syncOneRepo(
   installationId: number,
 ): Promise<{ repoId: string; truncated: boolean }> {
   const client = createGitHubClient(installationId);
+  // First sync: fetch open issues only (no since) to bootstrap without pulling all closed issues.
+  // Subsequent syncs: fetch all states with since to catch newly closed issues as deltas.
+  const isFirstSync = repo.lastFetchedAt === undefined;
   const issues = await client.listIssues(repo.githubOwner, repo.githubName, {
-    state: 'all',
-    since: repo.lastFetchedAt,
+    state: isFirstSync ? 'open' : 'all',
+    since: isFirstSync ? undefined : repo.lastFetchedAt,
   });
 
   for (const issue of issues) {
