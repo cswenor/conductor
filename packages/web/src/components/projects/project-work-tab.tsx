@@ -2,7 +2,7 @@
 
 import { useTransition } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { Route } from 'next';
 import { EmptyState, Badge } from '@/components/ui';
 import { Button } from '@/components/ui/button';
@@ -164,10 +164,13 @@ export function ProjectWorkTab({
   projectId: string;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
 
+  const activeTab = (searchParams.get('workTab') as WorkTab) ?? initialTab;
+
   function handleTabChange(newTab: string) {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(searchParams.toString());
     params.set('tab', 'work');
     params.set('workTab', newTab);
     router.push(`?${params.toString()}` as Route);
@@ -186,7 +189,7 @@ export function ProjectWorkTab({
   }
 
   return (
-    <Tabs value={initialTab} onValueChange={handleTabChange}>
+    <Tabs value={activeTab} onValueChange={handleTabChange}>
       <TabsList>
         {(['active', 'queued', 'blocked', 'completed'] as WorkTab[]).map((tab) => (
           <TabsTrigger key={tab} value={tab}>
