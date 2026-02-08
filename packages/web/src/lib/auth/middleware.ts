@@ -31,7 +31,7 @@ export interface AuthenticatedRequest extends NextRequest {
 /**
  * Convert shared User type to AuthUser
  */
-function userToAuthUser(user: User): AuthUser {
+export function userToAuthUser(user: User): AuthUser {
   return {
     id: user.userId,
     userId: user.userId,

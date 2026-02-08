@@ -68,3 +68,15 @@ export interface ProjectOption {
   id: string;
   name: string;
 }
+
+/** Response from GET /api/analytics. */
+export interface AnalyticsResponse {
+  totalRuns: number;
+  completedRuns: number;
+  successRate: number;
+  avgCycleTimeMs: number;
+  avgApprovalWaitMs: number;
+  runsByPhase: Record<string, number>;
+  runsByProject: Array<{ projectId: string; projectName: string; count: number }>;
+  recentCompletions: Array<{ date: string; count: number }>;
+}

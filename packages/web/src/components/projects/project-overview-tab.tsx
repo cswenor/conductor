@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useTransition } from 'react';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,6 +14,7 @@ import {
 import { toast } from 'sonner';
 import { getPhaseLabel, getPhaseVariant, timeAgo } from '@/lib/phase-config';
 import type { RunSummary } from '@/lib/types';
+import { retryRun, cancelRun } from '@/lib/actions/run-actions';
 
 interface OverviewData {
   activeCount: number;
@@ -52,7 +53,7 @@ function StatCard({ title, value, icon }: {
 export function ProjectOverviewTab({ projectId }: { projectId: string }) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState(true);
-  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
 
   const fetchData = useCallback(async () => {
     try {
@@ -120,24 +121,18 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
     void fetchData();
   }, [fetchData]);
 
-  async function handleAction(runId: string, action: string) {
-    setActionBusy(runId);
-    try {
-      const response = await fetch(`/api/runs/${runId}/actions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({})) as { error?: string };
-        toast.error(data.error ?? `Failed to ${action} run`);
-        return;
+  function handleAction(runId: string, action: string) {
+    startTransition(async () => {
+      const result = action === 'retry'
+        ? await retryRun(runId)
+        : await cancelRun(runId);
+      if (result.success) {
+        toast.success(action === 'retry' ? 'Run retried' : 'Run cancelled');
+        await fetchData();
+      } else {
+        toast.error(result.error ?? `Failed to ${action} run`);
       }
-      toast.success(action === 'retry' ? 'Run retried' : 'Run cancelled');
-      await fetchData();
-    } finally {
-      setActionBusy(null);
-    }
+    });
   }
 
   if (loading) {
@@ -224,8 +219,8 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={actionBusy !== null}
-                    onClick={() => void handleAction(run.runId, 'retry')}
+                    disabled={isPending}
+                    onClick={() => handleAction(run.runId, 'retry')}
                     title="Retry run"
                   >
                     <RotateCcw className="h-3 w-3" />
@@ -233,8 +228,8 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
                   <Button
                     variant="ghost"
                     size="sm"
-                    disabled={actionBusy !== null}
-                    onClick={() => void handleAction(run.runId, 'cancel')}
+                    disabled={isPending}
+                    onClick={() => handleAction(run.runId, 'cancel')}
                     title="Cancel run"
                   >
                     <XCircle className="h-3 w-3 text-muted-foreground" />

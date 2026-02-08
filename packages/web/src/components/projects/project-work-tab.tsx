@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useTransition } from 'react';
 import Link from 'next/link';
 import type { Route } from 'next';
 import { EmptyState, Badge, Skeleton } from '@/components/ui';
@@ -23,6 +23,7 @@ import {
   timeAgo,
 } from '@/lib/phase-config';
 import type { RunSummary, RunsResponse } from '@/lib/types';
+import { cancelRun } from '@/lib/actions/run-actions';
 
 
 const TAB_LABELS: Record<WorkTab, string> = {
@@ -50,12 +51,11 @@ function buildRunsUrl(tab: WorkTab, projectId: string, countOnly?: boolean): str
   return `/api/runs?${params.toString()}`;
 }
 
-function RunAction({ run, onCancel, cancellingId }: {
+function RunAction({ run, onCancel, busy }: {
   run: RunSummary;
   onCancel: (runId: string) => void;
-  cancellingId: string | null;
+  busy: boolean;
 }) {
-  const busy = cancellingId !== null;
 
   if (run.phase === 'awaiting_plan_approval') {
     return (
@@ -107,12 +107,12 @@ function ProjectWorkTable({
   runs,
   tab,
   onCancel,
-  cancellingId,
+  busy,
 }: {
   runs: RunSummary[];
   tab: WorkTab;
   onCancel: (runId: string) => void;
-  cancellingId: string | null;
+  busy: boolean;
 }) {
   if (runs.length === 0) {
     const messages: Record<WorkTab, { title: string; description: string }> = {
@@ -160,7 +160,7 @@ function ProjectWorkTable({
             </TableCell>
             {tab !== 'completed' && (
               <TableCell>
-                <RunAction run={run} onCancel={onCancel} cancellingId={cancellingId} />
+                <RunAction run={run} onCancel={onCancel} busy={busy} />
               </TableCell>
             )}
           </TableRow>
@@ -175,7 +175,7 @@ export function ProjectWorkTab({ projectId }: { projectId: string }) {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [isPending, startTransition] = useTransition();
   const [counts, setCounts] = useState<Record<WorkTab, number>>({ active: 0, queued: 0, blocked: 0, completed: 0 });
 
   const fetchRuns = useCallback(async (tab: WorkTab) => {
@@ -226,27 +226,18 @@ export function ProjectWorkTab({ projectId }: { projectId: string }) {
     void fetchRuns(activeTab);
   }, [activeTab, fetchRuns]);
 
-  async function handleCancel(runId: string) {
-    setCancellingId(runId);
-    try {
-      const response = await fetch(`/api/runs/${runId}/actions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'cancel' }),
-      });
-      if (!response.ok) {
-        const result = await response.json() as { error?: string };
-        throw new Error(result.error ?? 'Failed to cancel run');
+  function handleCancel(runId: string) {
+    startTransition(async () => {
+      const result = await cancelRun(runId);
+      if (result.success) {
+        await Promise.all([
+          fetchRuns(activeTab),
+          fetchCounts(),
+        ]);
+      } else {
+        setError(result.error ?? 'Failed to cancel run');
       }
-      await Promise.all([
-        fetchRuns(activeTab),
-        fetchCounts(),
-      ]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setCancellingId(null);
-    }
+    });
   }
 
   return (
@@ -285,8 +276,8 @@ export function ProjectWorkTab({ projectId }: { projectId: string }) {
             <ProjectWorkTable
               runs={runs}
               tab={tab}
-              onCancel={(runId) => void handleCancel(runId)}
-              cancellingId={cancellingId}
+              onCancel={(runId) => handleCancel(runId)}
+              busy={isPending}
             />
           )}
         </TabsContent>

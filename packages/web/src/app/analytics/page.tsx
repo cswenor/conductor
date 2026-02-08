@@ -1,22 +1,12 @@
-'use client';
-
-import { useState, useEffect } from 'react';
+import { redirect } from 'next/navigation';
 import { PageHeader } from '@/components/layout';
-import { Skeleton } from '@/components/ui';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { BarChart3, Clock, TrendingUp } from 'lucide-react';
 import { formatDuration, getPhaseVariant } from '@/lib/phase-config';
-
-interface AnalyticsResponse {
-  totalRuns: number;
-  completedRuns: number;
-  successRate: number;
-  avgCycleTimeMs: number;
-  avgApprovalWaitMs: number;
-  runsByPhase: Record<string, number>;
-  runsByProject: Array<{ projectId: string; projectName: string; count: number }>;
-  recentCompletions: Array<{ date: string; count: number }>;
-}
+import { getServerUser } from '@/lib/auth/session';
+import { getDb } from '@/lib/bootstrap';
+import { getAnalyticsMetrics } from '@conductor/shared';
+import type { AnalyticsResponse } from '@/lib/types';
 
 function StatCard({ title, value, subtitle, icon }: {
   title: string;
@@ -57,7 +47,6 @@ function barClass(variant?: BarVariant): string {
   }
 }
 
-/** Simple text-based horizontal bar for breakdowns. */
 function BarRow({
   label,
   count,
@@ -120,29 +109,14 @@ function BreakdownCard({
   );
 }
 
-export default function AnalyticsPage() {
-  const [metrics, setMetrics] = useState<AnalyticsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export default async function AnalyticsPage() {
+  const user = await getServerUser();
+  if (!user) redirect('/login');
 
-  useEffect(() => {
-    async function fetchAnalytics() {
-      try {
-        const response = await fetch('/api/analytics');
-        if (!response.ok) {
-          throw new Error('Failed to fetch analytics');
-        }
-        const data = await response.json() as AnalyticsResponse;
-        setMetrics(data);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    void fetchAnalytics();
-  }, []);
+  const db = await getDb();
+  const metrics = getAnalyticsMetrics(db, {
+    userId: user.userId,
+  }) as AnalyticsResponse;
 
   return (
     <div className="flex flex-col h-full">
@@ -151,96 +125,81 @@ export default function AnalyticsPage() {
         description="Aggregate metrics across your projects"
       />
       <div className="flex-1 p-6 space-y-6">
-        {loading ? (
-          <div className="space-y-6">
-            <div className="grid grid-cols-3 gap-4">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <Skeleton key={i} className="h-24" />
-              ))}
-            </div>
-            <Skeleton className="h-48" />
-          </div>
-        ) : error !== null ? (
+        {metrics.totalRuns === 0 ? (
           <div className="flex items-center justify-center h-64">
-            <p className="text-destructive">{error}</p>
+            <p className="text-muted-foreground">No run data yet. Analytics will populate as runs complete.</p>
           </div>
-        ) : metrics !== null ? (
-          metrics.totalRuns === 0 ? (
-            <div className="flex items-center justify-center h-64">
-              <p className="text-muted-foreground">No run data yet. Analytics will populate as runs complete.</p>
+        ) : (
+          <>
+            {/* Summary cards */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard
+                title="Total Runs"
+                value={metrics.totalRuns}
+                icon={<BarChart3 className="h-4 w-4 text-muted-foreground" />}
+              />
+              <StatCard
+                title="Success Rate"
+                value={`${metrics.successRate}%`}
+                subtitle={`${metrics.completedRuns} completed`}
+                icon={<TrendingUp className="h-4 w-4 text-muted-foreground" />}
+              />
+              <StatCard
+                title="Avg Cycle Time"
+                value={metrics.avgCycleTimeMs > 0 ? formatDuration(metrics.avgCycleTimeMs) : 'N/A'}
+                subtitle="Completed runs"
+                icon={<Clock className="h-4 w-4 text-muted-foreground" />}
+              />
+              <StatCard
+                title="Avg Approval Wait"
+                value={metrics.avgApprovalWaitMs > 0 ? formatDuration(metrics.avgApprovalWaitMs) : 'N/A'}
+                subtitle="Plan approval"
+                icon={<Clock className="h-4 w-4 text-muted-foreground" />}
+              />
             </div>
-          ) : (
-            <>
-              {/* Summary cards */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <StatCard
-                  title="Total Runs"
-                  value={metrics.totalRuns}
-                  icon={<BarChart3 className="h-4 w-4 text-muted-foreground" />}
-                />
-                <StatCard
-                  title="Success Rate"
-                  value={`${metrics.successRate}%`}
-                  subtitle={`${metrics.completedRuns} completed`}
-                  icon={<TrendingUp className="h-4 w-4 text-muted-foreground" />}
-                />
-                <StatCard
-                  title="Avg Cycle Time"
-                  value={metrics.avgCycleTimeMs > 0 ? formatDuration(metrics.avgCycleTimeMs) : 'N/A'}
-                  subtitle="Completed runs"
-                  icon={<Clock className="h-4 w-4 text-muted-foreground" />}
-                />
-                <StatCard
-                  title="Avg Approval Wait"
-                  value={metrics.avgApprovalWaitMs > 0 ? formatDuration(metrics.avgApprovalWaitMs) : 'N/A'}
-                  subtitle="Plan approval"
-                  icon={<Clock className="h-4 w-4 text-muted-foreground" />}
-                />
-              </div>
 
-              {/* Breakdowns */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <BreakdownCard
-                  title="Runs by Phase"
-                  data={metrics.runsByPhase}
-                  variantByKey={(phase) => getPhaseVariant(phase) as BarVariant}
-                />
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Runs by Project</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-2">
-                    {metrics.runsByProject.map((p) => (
-                      <BarRow
-                        key={p.projectId}
-                        label={p.projectName}
-                        count={p.count}
-                        maxCount={metrics.runsByProject[0]?.count ?? 0}
-                      />
-                    ))}
-                  </CardContent>
-                </Card>
-              </div>
-
-              {/* Recent completions */}
+            {/* Breakdowns */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <BreakdownCard
+                title="Runs by Phase"
+                data={metrics.runsByPhase}
+                variantByKey={(phase) => getPhaseVariant(phase) as BarVariant}
+              />
               <Card>
                 <CardHeader>
-                  <CardTitle className="text-base">Completions (Last 7 Days)</CardTitle>
+                  <CardTitle className="text-base">Runs by Project</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2">
-                  {metrics.recentCompletions.map((row) => (
+                  {metrics.runsByProject.map((p) => (
                     <BarRow
-                      key={row.date}
-                      label={row.date}
-                      count={row.count}
-                      maxCount={Math.max(...metrics.recentCompletions.map((d) => d.count), 1)}
+                      key={p.projectId}
+                      label={p.projectName}
+                      count={p.count}
+                      maxCount={metrics.runsByProject[0]?.count ?? 0}
                     />
                   ))}
                 </CardContent>
               </Card>
-            </>
-          )
-        ) : null}
+            </div>
+
+            {/* Recent completions */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Completions (Last 7 Days)</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {metrics.recentCompletions.map((row) => (
+                  <BarRow
+                    key={row.date}
+                    label={row.date}
+                    count={row.count}
+                    maxCount={Math.max(...metrics.recentCompletions.map((d) => d.count), 1)}
+                  />
+                ))}
+              </CardContent>
+            </Card>
+          </>
+        )}
       </div>
     </div>
   );
