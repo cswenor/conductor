@@ -6,7 +6,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { ToolExecutionContext } from './types.js';
+import type { ToolExecutionContext } from './types.ts';
 import {
   worktreeBoundaryRule,
   dotGitProtectionRule,
@@ -14,7 +14,7 @@ import {
   shellInjectionRule,
   evaluatePolicy,
   DEFAULT_POLICY_RULES,
-} from './policy.js';
+} from './policy.ts';
 
 function makeContext(worktreePath = '/tmp/worktree'): ToolExecutionContext {
   return {

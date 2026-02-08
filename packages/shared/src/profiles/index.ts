@@ -5,7 +5,7 @@
  * Profiles define the tech stack, test commands, and build configuration.
  */
 
-import { createLogger } from '../logger/index';
+import { createLogger } from '../logger/index.ts';
 
 const log = createLogger({ name: 'conductor:profiles' });
 

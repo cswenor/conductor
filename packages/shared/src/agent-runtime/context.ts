@@ -10,12 +10,12 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index.js';
-import { getRun } from '../runs/index.js';
-import { getTask } from '../tasks/index.js';
-import { getRepo } from '../repos/index.js';
-import { getProject } from '../projects/index.js';
-import { getLatestArtifact } from './artifacts.js';
+import { createLogger } from '../logger/index.ts';
+import { getRun } from '../runs/index.ts';
+import { getTask } from '../tasks/index.ts';
+import { getRepo } from '../repos/index.ts';
+import { getProject } from '../projects/index.ts';
+import { getLatestArtifact } from './artifacts.ts';
 
 const log = createLogger({ name: 'conductor:context' });
 

@@ -7,14 +7,14 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index';
-import { redact } from '../redact/index';
+import { createLogger } from '../logger/index.ts';
+import { redact } from '../redact/index.ts';
 import type {
   GitHubWriteKind,
   GitHubWriteStatus,
   GitHubWriteTargetType,
-} from '../types/index';
-import type { QueueManager } from '../queue/index';
+} from '../types/index.ts';
+import type { QueueManager } from '../queue/index.ts';
 
 const log = createLogger({ name: 'conductor:outbox' });
 
@@ -708,4 +708,4 @@ function rowToWriteRecord(row: Record<string, unknown>): GitHubWriteRecord {
 }
 
 // Re-export processor
-export * from './processor';
+export * from './processor.ts';

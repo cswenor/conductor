@@ -6,10 +6,10 @@
  */
 
 import { resolve, relative, isAbsolute } from 'node:path';
-import { isValidFilePath } from '../agents/implementer.js';
-import { isSensitiveFile } from '../context.js';
-import { checkSymlinkEscape } from './path-safety.js';
-import type { ToolExecutionContext } from './types.js';
+import { isValidFilePath } from '../agents/implementer.ts';
+import { isSensitiveFile } from '../context.ts';
+import { checkSymlinkEscape } from './path-safety.ts';
+import type { ToolExecutionContext } from './types.ts';
 
 // =============================================================================
 // Types

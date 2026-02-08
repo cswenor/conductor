@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { redact, containsSecrets, detectSecrets } from './index';
+import { redact, containsSecrets, detectSecrets } from './index.ts';
 
 describe('redact', () => {
   describe('field name redaction', () => {

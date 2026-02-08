@@ -5,7 +5,7 @@
  * type safety, format validation, and helpful error messages.
  */
 
-import { createLogger } from '../logger/index';
+import { createLogger } from '../logger/index.ts';
 
 const log = createLogger({ name: 'conductor:config' });
 

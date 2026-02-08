@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { initDatabase, closeDatabase } from '../db/index';
+import { initDatabase, closeDatabase } from '../db/index.ts';
 import {
   generateTaskId,
   createTask,
@@ -13,7 +13,7 @@ import {
   listTasks,
   upsertTaskFromIssue,
   updateTaskActiveRun,
-} from './index';
+} from './index.ts';
 
 let db: DatabaseType;
 

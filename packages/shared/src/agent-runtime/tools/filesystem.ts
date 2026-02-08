@@ -8,11 +8,11 @@
 import { readFileSync, writeFileSync, unlinkSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { resolve, relative, dirname, isAbsolute } from 'node:path';
-import { isValidFilePath } from '../agents/implementer.js';
-import { isSensitiveFile } from '../context.js';
-import { checkSymlinkEscape } from './path-safety.js';
-import type { ToolDefinition, ToolResult } from './types.js';
-import type { ToolRegistry } from './registry.js';
+import { isValidFilePath } from '../agents/implementer.ts';
+import { isSensitiveFile } from '../context.ts';
+import { checkSymlinkEscape } from './path-safety.ts';
+import type { ToolDefinition, ToolResult } from './types.ts';
+import type { ToolRegistry } from './registry.ts';
 
 // =============================================================================
 // Constants

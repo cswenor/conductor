@@ -13,7 +13,7 @@ import {
   parseFileOperations,
   applyFileOperations,
   type FileOperation,
-} from './implementer.js';
+} from './implementer.ts';
 
 let testDir: string;
 

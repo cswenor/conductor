@@ -6,15 +6,15 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { initDatabase, closeDatabase } from '../db/index.js';
-import { createRun } from '../runs/index.js';
-import { createEvent } from '../events/index.js';
+import { initDatabase, closeDatabase } from '../db/index.ts';
+import { createRun } from '../runs/index.ts';
+import { createEvent } from '../events/index.ts';
 import {
   ensureBuiltInGateDefinitions,
   BUILT_IN_GATES,
   getGateDefinition,
   listGateDefinitions,
-} from './gate-definitions.js';
+} from './gate-definitions.ts';
 import {
   generateGateEvaluationId,
   createGateEvaluation,
@@ -22,7 +22,7 @@ import {
   listGateEvaluations,
   deriveGateState,
   getRunsAwaitingGates,
-} from './gate-evaluations.js';
+} from './gate-evaluations.ts';
 
 let db: DatabaseType;
 

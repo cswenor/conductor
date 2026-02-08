@@ -10,11 +10,11 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { Run } from '../../runs/index.js';
-import { getValidArtifact } from '../../agent-runtime/artifacts.js';
-import { getToolInvocation } from '../../agent-runtime/tool-invocations.js';
-import { getGateDefinition } from '../gate-definitions.js';
-import type { GateResult } from './index.js';
+import type { Run } from '../../runs/index.ts';
+import { getValidArtifact } from '../../agent-runtime/artifacts.ts';
+import { getToolInvocation } from '../../agent-runtime/tool-invocations.ts';
+import { getGateDefinition } from '../gate-definitions.ts';
+import type { GateResult } from './index.ts';
 
 // =============================================================================
 // Types

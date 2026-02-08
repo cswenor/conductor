@@ -8,8 +8,8 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index';
-import { encrypt, decrypt, isEncryptionInitialized } from '../crypto/index';
+import { createLogger } from '../logger/index.ts';
+import { encrypt, decrypt, isEncryptionInitialized } from '../crypto/index.ts';
 
 const log = createLogger({ name: 'conductor:api-keys' });
 

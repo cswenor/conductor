@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
-import { initDatabase, closeDatabase, getSchemaVersion, getAppliedMigrations } from './index';
+import { initDatabase, closeDatabase, getSchemaVersion, getAppliedMigrations } from './index.ts';
 
 const TEST_DB_PATH = './test-conductor.db';
 

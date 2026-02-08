@@ -6,7 +6,7 @@
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
-import type { ToolDefinition } from './types.js';
+import type { ToolDefinition } from './types.ts';
 
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolDefinition>();

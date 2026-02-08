@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 
 // We import the module to verify exports exist and types are correct.
 // Actual invocation is tested via integration tests.
-import type { PlannerInput, PlannerResult } from './planner.js';
+import type { PlannerInput, PlannerResult } from './planner.ts';
 
 describe('PlannerInput type', () => {
   it('requires runId', () => {

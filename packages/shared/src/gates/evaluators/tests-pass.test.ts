@@ -4,14 +4,14 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { initDatabase, closeDatabase } from '../../db/index.js';
-import { createRun, getRun, type Run } from '../../runs/index.js';
-import { createArtifact, updateValidationStatus } from '../../agent-runtime/artifacts.js';
-import { createAgentInvocation } from '../../agent-runtime/invocations.js';
-import { createToolInvocation, completeToolInvocation, failToolInvocation } from '../../agent-runtime/tool-invocations.js';
-import { ensureBuiltInPolicyDefinitions } from '../../agent-runtime/policy-definitions.js';
-import { ensureBuiltInGateDefinitions } from '../gate-definitions.js';
-import { evaluateTestsPass, getTestExecutionTruth } from './tests-pass.js';
+import { initDatabase, closeDatabase } from '../../db/index.ts';
+import { createRun, getRun, type Run } from '../../runs/index.ts';
+import { createArtifact, updateValidationStatus } from '../../agent-runtime/artifacts.ts';
+import { createAgentInvocation } from '../../agent-runtime/invocations.ts';
+import { createToolInvocation, completeToolInvocation, failToolInvocation } from '../../agent-runtime/tool-invocations.ts';
+import { ensureBuiltInPolicyDefinitions } from '../../agent-runtime/policy-definitions.ts';
+import { ensureBuiltInGateDefinitions } from '../gate-definitions.ts';
+import { evaluateTestsPass, getTestExecutionTruth } from './tests-pass.ts';
 
 let db: DatabaseType;
 

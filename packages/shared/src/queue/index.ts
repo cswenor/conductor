@@ -9,7 +9,7 @@ import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import type { ConnectionOptions, WorkerOptions, QueueOptions } from 'bullmq';
 import { Redis } from 'ioredis';
 import type { RedisOptions } from 'ioredis';
-import type { JobQueue } from '../types/index';
+import type { JobQueue } from '../types/index.ts';
 
 /**
  * Queue configuration

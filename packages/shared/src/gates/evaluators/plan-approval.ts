@@ -9,11 +9,11 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { Run } from '../../runs/index.js';
-import { getValidArtifact } from '../../agent-runtime/artifacts.js';
-import { getToolInvocation } from '../../agent-runtime/tool-invocations.js';
-import { getOperatorAction } from '../../operator-actions/index.js';
-import type { GateResult } from './index.js';
+import type { Run } from '../../runs/index.ts';
+import { getValidArtifact } from '../../agent-runtime/artifacts.ts';
+import { getToolInvocation } from '../../agent-runtime/tool-invocations.ts';
+import { getOperatorAction } from '../../operator-actions/index.ts';
+import type { GateResult } from './index.ts';
 
 /**
  * Evaluate the plan_approval gate for a run.

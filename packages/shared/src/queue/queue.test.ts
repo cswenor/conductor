@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getConnectionOptions } from './index';
+import { getConnectionOptions } from './index.ts';
 
 describe('Queue', () => {
   describe('getConnectionOptions', () => {

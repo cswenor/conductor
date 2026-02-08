@@ -7,7 +7,7 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { GateKind, GateStatus } from '../types/index.js';
+import type { GateKind, GateStatus } from '../types/index.ts';
 
 // =============================================================================
 // Types

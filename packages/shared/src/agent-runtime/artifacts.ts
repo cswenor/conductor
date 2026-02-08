@@ -8,7 +8,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Database } from 'better-sqlite3';
-import type { ArtifactType, ValidationStatus } from '../types/index.js';
+import type { ArtifactType, ValidationStatus } from '../types/index.ts';
 
 // =============================================================================
 // Types

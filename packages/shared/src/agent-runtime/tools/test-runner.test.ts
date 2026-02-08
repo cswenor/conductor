@@ -6,14 +6,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createToolRegistry } from './registry.js';
-import type { ToolExecutionContext } from './types.js';
+import { createToolRegistry } from './registry.ts';
+import type { ToolExecutionContext } from './types.ts';
 import {
   isAllowedTestCommand,
   detectTestCommand,
   ALLOWED_TEST_COMMANDS,
   registerTestRunnerTool,
-} from './test-runner.js';
+} from './test-runner.ts';
 
 let worktreePath: string;
 let context: ToolExecutionContext;

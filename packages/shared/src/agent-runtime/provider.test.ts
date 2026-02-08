@@ -16,7 +16,7 @@ import {
   AgentTimeoutError,
   AnthropicProvider,
   getDefaultTimeout,
-} from './provider.js';
+} from './provider.ts';
 
 describe('createProvider', () => {
   it('creates AnthropicProvider for anthropic', () => {

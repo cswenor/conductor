@@ -8,8 +8,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { ToolDefinition, ToolResult } from './types.js';
-import type { ToolRegistry } from './registry.js';
+import type { ToolDefinition, ToolResult } from './types.ts';
+import type { ToolRegistry } from './registry.ts';
 
 // =============================================================================
 // Constants

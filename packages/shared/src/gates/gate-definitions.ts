@@ -9,7 +9,7 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { GateKind } from '../types/index.js';
+import type { GateKind } from '../types/index.ts';
 
 // =============================================================================
 // Types

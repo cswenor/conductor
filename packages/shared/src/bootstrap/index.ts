@@ -6,10 +6,10 @@
  */
 
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { initDatabase, closeDatabase, getSchemaVersion } from '../db/index';
-import { initQueueManager, closeQueueManager, type QueueManager } from '../queue/index';
-import { createLogger } from '../logger/index';
-import { initEncryption } from '../crypto/index';
+import { initDatabase, closeDatabase, getSchemaVersion } from '../db/index.ts';
+import { initQueueManager, closeQueueManager, type QueueManager } from '../queue/index.ts';
+import { createLogger } from '../logger/index.ts';
+import { initEncryption } from '../crypto/index.ts';
 
 const log = createLogger({ name: 'conductor:bootstrap' });
 

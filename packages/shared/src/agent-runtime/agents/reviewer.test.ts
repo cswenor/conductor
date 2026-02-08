@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseVerdict } from './reviewer.js';
+import { parseVerdict } from './reviewer.ts';
 
 describe('parseVerdict', () => {
   it('parses APPROVED on first line', () => {

@@ -7,16 +7,16 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index.js';
-import type { ApiKeyProvider } from '../api-keys/index.js';
-import type { RunStep } from '../types/index.js';
-import { resolveCredentials } from './resolver.js';
+import { createLogger } from '../logger/index.ts';
+import type { ApiKeyProvider } from '../api-keys/index.ts';
+import type { RunStep } from '../types/index.ts';
+import { resolveCredentials } from './resolver.ts';
 import {
   createAgentInvocation,
   markAgentRunning,
   completeAgentInvocation,
   failAgentInvocation,
-} from './invocations.js';
+} from './invocations.ts';
 
 const log = createLogger({ name: 'conductor:agent-runtime' });
 

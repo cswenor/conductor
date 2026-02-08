@@ -11,7 +11,7 @@ import { mkdirSync, rmSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execFileSync } from 'child_process';
-import { initDatabase, closeDatabase } from '../db/index';
+import { initDatabase, closeDatabase } from '../db/index.ts';
 import {
   getDataDir,
   getReposDir,
@@ -31,7 +31,7 @@ import {
   createWorktree,
   cleanupWorktree,
   runJanitor,
-} from './index';
+} from './index.ts';
 
 // =============================================================================
 // Test Helpers

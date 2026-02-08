@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
-import { initDatabase, closeDatabase } from '../db/index';
+import { initDatabase, closeDatabase } from '../db/index.ts';
 import {
   enqueueWrite,
   getWrite,
@@ -10,8 +10,8 @@ import {
   markWriteFailed,
   generateIdempotencyKey,
   computeWritePayloadHash,
-} from './index';
-import type { CommentWritePayload } from './index';
+} from './index.ts';
+import type { CommentWritePayload } from './index.ts';
 
 const TEST_DB_PATH = './test-outbox.db';
 

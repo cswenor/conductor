@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { getStepCredentialRequirement } from './credentials.js';
-import type { RunStep } from '../types/index.js';
+import { getStepCredentialRequirement } from './credentials.ts';
+import type { RunStep } from '../types/index.ts';
 
 describe('getStepCredentialRequirement', () => {
   it('returns ai_provider mode with anthropic for planner step', () => {

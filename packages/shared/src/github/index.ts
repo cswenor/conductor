@@ -9,7 +9,7 @@ import { App } from '@octokit/app';
 import { Octokit as OctokitRest } from '@octokit/rest';
 import { Webhooks, createNodeMiddleware } from '@octokit/webhooks';
 import type { EmitterWebhookEvent } from '@octokit/webhooks';
-import { createLogger } from '../logger/index';
+import { createLogger } from '../logger/index.ts';
 
 /** Octokit instance type from App.getInstallationOctokit */
 type InstallationOctokit = Awaited<ReturnType<App['getInstallationOctokit']>>;
@@ -240,4 +240,4 @@ export type {
 } from '@octokit/webhooks-types';
 
 // Re-export client
-export * from './client';
+export * from './client.ts';

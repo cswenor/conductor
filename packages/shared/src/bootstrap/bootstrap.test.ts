@@ -4,7 +4,7 @@ import {
   getDatabase,
   getBootstrap,
   healthCheck,
-} from './index';
+} from './index.ts';
 
 /**
  * Bootstrap tests that don't require Redis

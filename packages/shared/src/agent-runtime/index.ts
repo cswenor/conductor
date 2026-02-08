@@ -9,14 +9,14 @@ export {
   type CredentialMode,
   type StepCredentialRequirement,
   getStepCredentialRequirement,
-} from './credentials.js';
+} from './credentials.ts';
 
 // Credential resolution
 export {
   type ResolvedCredentials,
   type ResolveCredentialsInput,
   resolveCredentials,
-} from './resolver.js';
+} from './resolver.ts';
 
 // Agent invocations CRUD
 export {
@@ -32,7 +32,7 @@ export {
   markAgentRunning,
   completeAgentInvocation,
   failAgentInvocation,
-} from './invocations.js';
+} from './invocations.ts';
 
 // Artifact storage
 export {
@@ -45,7 +45,7 @@ export {
   getValidArtifact,
   listArtifacts,
   updateValidationStatus,
-} from './artifacts.js';
+} from './artifacts.ts';
 
 // Provider abstraction, factory, and executor
 export {
@@ -64,7 +64,7 @@ export {
   createProvider,
   executeAgent,
   getDefaultTimeout,
-} from './provider.js';
+} from './provider.ts';
 
 // Context assembly
 export {
@@ -77,14 +77,14 @@ export {
   readRelevantFiles,
   assembleContext,
   formatContextForPrompt,
-} from './context.js';
+} from './context.ts';
 
 // Planner agent
 export {
   type PlannerInput,
   type PlannerResult,
   runPlanner,
-} from './agents/planner.js';
+} from './agents/planner.ts';
 
 // Reviewer agent
 export {
@@ -93,7 +93,7 @@ export {
   parseVerdict,
   runPlanReviewer,
   runCodeReviewer,
-} from './agents/reviewer.js';
+} from './agents/reviewer.ts';
 
 // Implementer agent
 export {
@@ -105,10 +105,10 @@ export {
   applyFileOperations,
   runImplementer,
   runImplementerWithTools,
-} from './agents/implementer.js';
+} from './agents/implementer.ts';
 
 // Tool system (WP7)
-export * from './tools/index.js';
+export * from './tools/index.ts';
 
 // Tool invocations CRUD
 export {
@@ -123,14 +123,14 @@ export {
   getToolInvocation,
   listToolInvocations,
   listToolInvocationsByRun,
-} from './tool-invocations.js';
+} from './tool-invocations.ts';
 
 // Policy definitions seeder
 export {
   type BuiltInPolicy,
   BUILT_IN_POLICIES,
   ensureBuiltInPolicyDefinitions,
-} from './policy-definitions.js';
+} from './policy-definitions.ts';
 
 // Executor (tool-use loop)
 export {
@@ -138,4 +138,4 @@ export {
   runToolLoop,
   type ExecutorInput,
   type ExecutorResult,
-} from './executor.js';
+} from './executor.ts';

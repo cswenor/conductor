@@ -7,13 +7,13 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { RunStep } from '../types/index.js';
-import type { ApiKeyProvider } from '../api-keys/index.js';
-import { getApiKeyForRun } from '../api-keys/index.js';
-import { getRun } from '../runs/index.js';
-import { getProject } from '../projects/index.js';
-import { getInstallationToken } from '../github/index.js';
-import { getStepCredentialRequirement } from './credentials.js';
+import type { RunStep } from '../types/index.ts';
+import type { ApiKeyProvider } from '../api-keys/index.ts';
+import { getApiKeyForRun } from '../api-keys/index.ts';
+import { getRun } from '../runs/index.ts';
+import { getProject } from '../projects/index.ts';
+import { getInstallationToken } from '../github/index.ts';
+import { getStepCredentialRequirement } from './credentials.ts';
 
 // =============================================================================
 // Types

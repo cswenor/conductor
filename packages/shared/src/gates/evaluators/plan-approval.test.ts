@@ -4,14 +4,14 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { initDatabase, closeDatabase } from '../../db/index.js';
-import { createRun, getRun, type Run } from '../../runs/index.js';
-import { createArtifact, updateValidationStatus } from '../../agent-runtime/artifacts.js';
-import { createToolInvocation, completeToolInvocation } from '../../agent-runtime/tool-invocations.js';
-import { ensureBuiltInPolicyDefinitions } from '../../agent-runtime/policy-definitions.js';
-import { ensureBuiltInGateDefinitions } from '../gate-definitions.js';
-import { recordOperatorAction } from '../../operator-actions/index.js';
-import { evaluatePlanApproval } from './plan-approval.js';
+import { initDatabase, closeDatabase } from '../../db/index.ts';
+import { createRun, getRun, type Run } from '../../runs/index.ts';
+import { createArtifact, updateValidationStatus } from '../../agent-runtime/artifacts.ts';
+import { createToolInvocation, completeToolInvocation } from '../../agent-runtime/tool-invocations.ts';
+import { ensureBuiltInPolicyDefinitions } from '../../agent-runtime/policy-definitions.ts';
+import { ensureBuiltInGateDefinitions } from '../gate-definitions.ts';
+import { recordOperatorAction } from '../../operator-actions/index.ts';
+import { evaluatePlanApproval } from './plan-approval.ts';
 
 let db: DatabaseType;
 

@@ -13,10 +13,10 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { GateStatus } from '../../types/index.js';
-import type { Run } from '../../runs/index.js';
-import { evaluatePlanApproval } from './plan-approval.js';
-import { evaluateTestsPass } from './tests-pass.js';
+import type { GateStatus } from '../../types/index.ts';
+import type { Run } from '../../runs/index.ts';
+import { evaluatePlanApproval } from './plan-approval.ts';
+import { evaluateTestsPass } from './tests-pass.ts';
 
 // =============================================================================
 // Types

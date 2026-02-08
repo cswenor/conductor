@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { createLogger, getLogger, setLogger, childLogger } from './index';
+import { createLogger, getLogger, setLogger, childLogger } from './index.ts';
 
 describe('createLogger', () => {
   const originalEnv = process.env;

@@ -4,10 +4,10 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { initDatabase, closeDatabase } from '../db/index';
-import { createRun } from '../runs/index';
-import { updateTaskActiveRun } from '../tasks/index';
-import { createEvent, listRunEvents } from '../events/index';
+import { initDatabase, closeDatabase } from '../db/index.ts';
+import { createRun } from '../runs/index.ts';
+import { updateTaskActiveRun } from '../tasks/index.ts';
+import { createEvent, listRunEvents } from '../events/index.ts';
 import {
   transitionPhase,
   isValidTransition,
@@ -16,10 +16,10 @@ import {
   getRunGateConfig,
   evaluateGatesForPhase,
   areGatesPassed,
-} from './index';
-import { ensureBuiltInGateDefinitions } from '../gates/gate-definitions';
-import { createGateEvaluation } from '../gates/gate-evaluations';
-import { getRun } from '../runs/index';
+} from './index.ts';
+import { ensureBuiltInGateDefinitions } from '../gates/gate-definitions.ts';
+import { createGateEvaluation } from '../gates/gate-evaluations.ts';
+import { getRun } from '../runs/index.ts';
 
 let db: DatabaseType;
 

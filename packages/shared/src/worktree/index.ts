@@ -10,7 +10,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, rmSync, readdirSync, rmdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { randomBytes } from 'crypto';
-import { createLogger } from '../logger/index';
+import { createLogger } from '../logger/index.ts';
 
 const log = createLogger({ name: 'conductor:worktree' });
 

@@ -6,7 +6,7 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { JobQueue, JobStatus } from '../types/index';
+import type { JobQueue, JobStatus } from '../types/index.ts';
 
 /**
  * Job record from database

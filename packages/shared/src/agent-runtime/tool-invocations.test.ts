@@ -4,9 +4,9 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { initDatabase, closeDatabase } from '../db/index.js';
-import { createRun } from '../runs/index.js';
-import { createAgentInvocation } from './invocations.js';
+import { initDatabase, closeDatabase } from '../db/index.ts';
+import { createRun } from '../runs/index.ts';
+import { createAgentInvocation } from './invocations.ts';
 import {
   generateToolInvocationId,
   createToolInvocation,
@@ -16,8 +16,8 @@ import {
   getToolInvocation,
   listToolInvocations,
   listToolInvocationsByRun,
-} from './tool-invocations.js';
-import { ensureBuiltInPolicyDefinitions } from './policy-definitions.js';
+} from './tool-invocations.ts';
+import { ensureBuiltInPolicyDefinitions } from './policy-definitions.ts';
 
 let db: DatabaseType;
 let runId: string;

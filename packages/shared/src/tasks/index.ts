@@ -5,7 +5,7 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index';
+import { createLogger } from '../logger/index.ts';
 
 const log = createLogger({ name: 'conductor:tasks' });
 

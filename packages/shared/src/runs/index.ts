@@ -5,10 +5,10 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index';
-import type { RunPhase, RunStep, RunStatus } from '../types/index';
-import { deriveRunStatus } from '../types/index';
-import { ensureDefaultPolicySet } from '../policy-sets/index';
+import { createLogger } from '../logger/index.ts';
+import type { RunPhase, RunStep, RunStatus } from '../types/index.ts';
+import { deriveRunStatus } from '../types/index.ts';
+import { ensureDefaultPolicySet } from '../policy-sets/index.ts';
 
 const log = createLogger({ name: 'conductor:runs' });
 

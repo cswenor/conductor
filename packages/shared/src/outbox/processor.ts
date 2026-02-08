@@ -6,8 +6,8 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index';
-import { GitHubClient } from '../github/client';
+import { createLogger } from '../logger/index.ts';
+import { GitHubClient } from '../github/client.ts';
 import {
   getWrite,
   listPendingWrites,
@@ -21,7 +21,7 @@ import {
   type CheckRunWritePayload,
   type BranchWritePayload,
   type LabelWritePayload,
-} from './index';
+} from './index.ts';
 
 const log = createLogger({ name: 'conductor:outbox-processor' });
 
@@ -77,7 +77,7 @@ export interface EnqueueCheckRunInput {
 }
 
 // Import enqueueWrite from the main outbox module
-import { enqueueWrite, type EnqueueWriteResult } from './index';
+import { enqueueWrite, type EnqueueWriteResult } from './index.ts';
 
 /**
  * Enqueue a comment to be posted to an issue or PR

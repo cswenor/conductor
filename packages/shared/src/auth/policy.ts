@@ -5,7 +5,7 @@
  * Currently implements owner-only access; designed for extension to team roles in v0.3.
  */
 
-import type { Project } from '../projects/index';
+import type { Project } from '../projects/index.ts';
 
 // =============================================================================
 // Types

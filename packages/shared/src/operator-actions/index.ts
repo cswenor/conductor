@@ -17,7 +17,7 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { OperatorActionType, ActorType, RunPhase } from '../types/index.js';
+import type { OperatorActionType, ActorType, RunPhase } from '../types/index.ts';
 
 // =============================================================================
 // Types

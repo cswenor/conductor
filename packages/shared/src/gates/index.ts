@@ -12,7 +12,7 @@ export {
   ensureBuiltInGateDefinitions,
   getGateDefinition,
   listGateDefinitions,
-} from './gate-definitions.js';
+} from './gate-definitions.ts';
 
 // Gate evaluations CRUD and derived state
 export {
@@ -24,13 +24,13 @@ export {
   listGateEvaluations,
   deriveGateState,
   getRunsAwaitingGates,
-} from './gate-evaluations.js';
+} from './gate-evaluations.ts';
 
 // Gate evaluators
 export {
   type GateResult,
   type GateEvaluatorFn,
   evaluateGatePure,
-} from './evaluators/index.js';
-export { evaluatePlanApproval } from './evaluators/plan-approval.js';
-export { evaluateTestsPass, getTestExecutionTruth } from './evaluators/tests-pass.js';
+} from './evaluators/index.ts';
+export { evaluatePlanApproval } from './evaluators/plan-approval.ts';
+export { evaluateTestsPass, getTestExecutionTruth } from './evaluators/tests-pass.ts';

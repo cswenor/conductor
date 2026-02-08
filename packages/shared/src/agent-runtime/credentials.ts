@@ -4,8 +4,8 @@
  * Maps each run step to an execution mode and required credentials.
  */
 
-import type { RunStep } from '../types/index.js';
-import type { ApiKeyProvider } from '../api-keys/index.js';
+import type { RunStep } from '../types/index.ts';
+import type { ApiKeyProvider } from '../api-keys/index.ts';
 
 // =============================================================================
 // Types

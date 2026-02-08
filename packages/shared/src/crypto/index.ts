@@ -5,7 +5,7 @@
  */
 
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
-import { createLogger } from '../logger/index';
+import { createLogger } from '../logger/index.ts';
 
 const log = createLogger({ name: 'conductor:crypto' });
 

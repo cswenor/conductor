@@ -5,8 +5,8 @@
  * Includes rate limiting, error handling, and typed responses.
  */
 
-import { getInstallationOctokit, getRateLimitStatus, type Octokit } from './index';
-import { createLogger } from '../logger/index';
+import { getInstallationOctokit, getRateLimitStatus, type Octokit } from './index.ts';
+import { createLogger } from '../logger/index.ts';
 
 const log = createLogger({ name: 'conductor:github-client' });
 

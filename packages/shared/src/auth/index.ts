@@ -7,8 +7,8 @@
 
 import type { Database } from 'better-sqlite3';
 import { createHash, randomBytes } from 'crypto';
-import { createLogger } from '../logger/index';
-import { encrypt, decrypt, isEncryptionInitialized } from '../crypto/index';
+import { createLogger } from '../logger/index.ts';
+import { encrypt, decrypt, isEncryptionInitialized } from '../crypto/index.ts';
 
 const log = createLogger({ name: 'conductor:auth' });
 
@@ -531,5 +531,5 @@ function rowToUser(row: Record<string, unknown>): User {
 // Re-exports
 // =============================================================================
 
-export { canAccessProject, assertProjectAccess, AuthorizationError, type AuthUser } from './policy';
+export { canAccessProject, assertProjectAccess, AuthorizationError, type AuthUser } from './policy.ts';
 

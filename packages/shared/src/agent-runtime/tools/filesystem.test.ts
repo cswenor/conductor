@@ -8,9 +8,9 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { createToolRegistry } from './registry.js';
-import { registerFilesystemTools, matchesGlob } from './filesystem.js';
-import type { ToolExecutionContext } from './types.js';
+import { createToolRegistry } from './registry.ts';
+import { registerFilesystemTools, matchesGlob } from './filesystem.ts';
+import type { ToolExecutionContext } from './types.ts';
 
 let worktreePath: string;
 let context: ToolExecutionContext;

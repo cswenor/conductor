@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, unlinkSync } from 'node:fs';
-import { initDatabase, closeDatabase } from '../db/index';
-import { normalizeWebhook, createEvent, getEvent } from './index';
+import { initDatabase, closeDatabase } from '../db/index.ts';
+import { normalizeWebhook, createEvent, getEvent } from './index.ts';
 
 const TEST_DB_PATH = './test-events.db';
 

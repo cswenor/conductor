@@ -5,9 +5,9 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { executeAgent } from '../provider.js';
-import { assembleContext, formatContextForPrompt } from '../context.js';
-import { createArtifact } from '../artifacts.js';
+import { executeAgent } from '../provider.ts';
+import { assembleContext, formatContextForPrompt } from '../context.ts';
+import { createArtifact } from '../artifacts.ts';
 
 // =============================================================================
 // Types

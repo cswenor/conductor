@@ -10,7 +10,7 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import type { Migration } from './index';
+import type { Migration } from './index.ts';
 
 export const migration010: Migration = {
   version: 10,

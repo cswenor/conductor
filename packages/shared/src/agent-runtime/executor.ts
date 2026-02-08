@@ -8,22 +8,22 @@
 import { createHash } from 'node:crypto';
 import type { Database } from 'better-sqlite3';
 import type Anthropic from '@anthropic-ai/sdk';
-import { createLogger } from '../logger/index.js';
-import { redact } from '../redact/index.js';
-import { createEvent } from '../events/index.js';
-import type { AgentProvider } from './provider.js';
-import { AgentError } from './provider.js';
-import type { ToolRegistry } from './tools/registry.js';
-import type { PolicyRule } from './tools/policy.js';
-import { evaluatePolicy } from './tools/policy.js';
-import type { ToolExecutionContext, ToolCall } from './tools/types.js';
+import { createLogger } from '../logger/index.ts';
+import { redact } from '../redact/index.ts';
+import { createEvent } from '../events/index.ts';
+import type { AgentProvider } from './provider.ts';
+import { AgentError } from './provider.ts';
+import type { ToolRegistry } from './tools/registry.ts';
+import type { PolicyRule } from './tools/policy.ts';
+import { evaluatePolicy } from './tools/policy.ts';
+import type { ToolExecutionContext, ToolCall } from './tools/types.ts';
 import {
   createToolInvocation,
   completeToolInvocation,
   failToolInvocation,
   blockToolInvocation,
-} from './tool-invocations.js';
-import { ensureBuiltInPolicyDefinitions } from './policy-definitions.js';
+} from './tool-invocations.ts';
+import { ensureBuiltInPolicyDefinitions } from './policy-definitions.ts';
 
 const log = createLogger({ name: 'conductor:executor' });
 

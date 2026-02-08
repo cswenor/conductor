@@ -6,9 +6,9 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index';
-import { redact } from '../redact/index';
-import type { WebhookStatus } from '../types/index';
+import { createLogger } from '../logger/index.ts';
+import { redact } from '../redact/index.ts';
+import type { WebhookStatus } from '../types/index.ts';
 
 const log = createLogger({ name: 'conductor:webhooks' });
 

@@ -8,9 +8,9 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { initDatabase, closeDatabase } from '../db/index.js';
-import { createRun } from '../runs/index.js';
-import { createArtifact } from './artifacts.js';
+import { initDatabase, closeDatabase } from '../db/index.ts';
+import { createRun } from '../runs/index.ts';
+import { createArtifact } from './artifacts.ts';
 import {
   isSensitiveFile,
   redactSecretPatterns,
@@ -18,7 +18,7 @@ import {
   readRelevantFiles,
   assembleContext,
   formatContextForPrompt,
-} from './context.js';
+} from './context.ts';
 
 let db: DatabaseType;
 

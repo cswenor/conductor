@@ -3,8 +3,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { ToolDefinition } from './types.js';
-import { ToolRegistry, createToolRegistry } from './registry.js';
+import type { ToolDefinition } from './types.ts';
+import { ToolRegistry, createToolRegistry } from './registry.ts';
 
 function makeTool(name: string): ToolDefinition {
   return {

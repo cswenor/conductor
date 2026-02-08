@@ -4,8 +4,8 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Database as DatabaseType } from 'better-sqlite3';
-import { initDatabase, closeDatabase } from '../db/index.js';
-import { createRun } from '../runs/index.js';
+import { initDatabase, closeDatabase } from '../db/index.ts';
+import { createRun } from '../runs/index.ts';
 import {
   generateOverrideId,
   createOverride,
@@ -13,7 +13,7 @@ import {
   listOverrides,
   findMatchingOverride,
   isValidOverrideScope,
-} from './index.js';
+} from './index.ts';
 
 let db: DatabaseType;
 

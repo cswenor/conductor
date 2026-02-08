@@ -6,8 +6,8 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index';
-import type { EventClass, EventSource } from '../types/index';
+import { createLogger } from '../logger/index.ts';
+import type { EventClass, EventSource } from '../types/index.ts';
 
 const log = createLogger({ name: 'conductor:events' });
 

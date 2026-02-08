@@ -7,15 +7,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { Database as DatabaseType } from 'better-sqlite3';
 import type Anthropic from '@anthropic-ai/sdk';
-import { initDatabase, closeDatabase } from '../db/index.js';
-import { createRun } from '../runs/index.js';
-import { createAgentInvocation, markAgentRunning } from './invocations.js';
-import type { AgentInput, AgentOutput, AgentProvider } from './provider.js';
-import { createToolRegistry } from './tools/registry.js';
-import type { ToolDefinition, ToolExecutionContext } from './tools/types.js';
-import { DEFAULT_POLICY_RULES } from './tools/policy.js';
-import { runToolLoop, MAX_TOOL_ITERATIONS } from './executor.js';
-import { listToolInvocations } from './tool-invocations.js';
+import { initDatabase, closeDatabase } from '../db/index.ts';
+import { createRun } from '../runs/index.ts';
+import { createAgentInvocation, markAgentRunning } from './invocations.ts';
+import type { AgentInput, AgentOutput, AgentProvider } from './provider.ts';
+import { createToolRegistry } from './tools/registry.ts';
+import type { ToolDefinition, ToolExecutionContext } from './tools/types.ts';
+import { DEFAULT_POLICY_RULES } from './tools/policy.ts';
+import { runToolLoop, MAX_TOOL_ITERATIONS } from './executor.ts';
+import { listToolInvocations } from './tool-invocations.ts';
 
 // =============================================================================
 // Test Helpers

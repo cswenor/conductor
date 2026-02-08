@@ -6,7 +6,7 @@ import {
   validateBoolean,
   validatePath,
   parseBoolean,
-} from './index';
+} from './index.ts';
 
 describe('validateRedisUrl', () => {
   it('should accept valid redis:// URLs', () => {

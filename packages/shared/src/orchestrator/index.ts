@@ -6,13 +6,13 @@
  */
 
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../logger/index';
-import type { RunPhase, RunStep, GateStatus } from '../types/index';
-import { getRun, clearActiveRunIfTerminal, type Run } from '../runs/index';
-import { createEvent, type EventRecord } from '../events/index';
-import { createGateEvaluation, deriveGateState } from '../gates/gate-evaluations';
-import { getGateDefinition } from '../gates/gate-definitions';
-import { evaluateGatePure, type GateResult } from '../gates/evaluators/index';
+import { createLogger } from '../logger/index.ts';
+import type { RunPhase, RunStep, GateStatus } from '../types/index.ts';
+import { getRun, clearActiveRunIfTerminal, type Run } from '../runs/index.ts';
+import { createEvent, type EventRecord } from '../events/index.ts';
+import { createGateEvaluation, deriveGateState } from '../gates/gate-evaluations.ts';
+import { getGateDefinition } from '../gates/gate-definitions.ts';
+import { evaluateGatePure, type GateResult } from '../gates/evaluators/index.ts';
 
 const log = createLogger({ name: 'conductor:orchestrator' });
 
