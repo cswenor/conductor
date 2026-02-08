@@ -125,9 +125,7 @@ export class GitHubClient {
    * Get the Octokit instance (lazy initialization)
    */
   private async getOctokit(): Promise<Octokit> {
-    if (this.octokit === null) {
-      this.octokit = await getInstallationOctokit(this.installationId);
-    }
+    this.octokit ??= await getInstallationOctokit(this.installationId);
     return this.octokit;
   }
 

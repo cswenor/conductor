@@ -195,7 +195,7 @@ export function normalizeWebhook(
           comment,
           action,
         },
-        idempotencyKey: `${baseKey}:comment:${String(comment?.['id'] ?? 'unknown')}`,
+        idempotencyKey: `${baseKey}:comment:${String(comment?.['id'] as string | number | undefined ?? 'unknown')}`,
         repoNodeId,
         issueNodeId,
       };
@@ -239,7 +239,7 @@ export function normalizeWebhook(
           review,
           action,
         },
-        idempotencyKey: `${baseKey}:review:${String(review?.['id'] ?? 'unknown')}`,
+        idempotencyKey: `${baseKey}:review:${String(review?.['id'] as string | number | undefined ?? 'unknown')}`,
         repoNodeId,
         prNodeId,
       };
@@ -255,7 +255,7 @@ export function normalizeWebhook(
           after: payloadSummary['after'],
           commits_count: payloadSummary['commits_count'],
         },
-        idempotencyKey: `${baseKey}:push:${String(payloadSummary['after'] ?? 'unknown')}`,
+        idempotencyKey: `${baseKey}:push:${String(payloadSummary['after'] as string | undefined ?? 'unknown')}`,
         repoNodeId,
       };
     }
@@ -271,7 +271,7 @@ export function normalizeWebhook(
           check_suite: checkSuite,
           action,
         },
-        idempotencyKey: `${baseKey}:check_suite:${String(checkSuite?.['id'] ?? 'unknown')}`,
+        idempotencyKey: `${baseKey}:check_suite:${String(checkSuite?.['id'] as string | number | undefined ?? 'unknown')}`,
         repoNodeId,
       };
     }
@@ -287,7 +287,7 @@ export function normalizeWebhook(
           check_run: checkRun,
           action,
         },
-        idempotencyKey: `${baseKey}:check_run:${String(checkRun?.['id'] ?? 'unknown')}`,
+        idempotencyKey: `${baseKey}:check_run:${String(checkRun?.['id'] as string | number | undefined ?? 'unknown')}`,
         repoNodeId,
       };
     }

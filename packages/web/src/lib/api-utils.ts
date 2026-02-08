@@ -94,7 +94,7 @@ export function withErrorHandling<T>(
       return await handler(request);
     } catch (err) {
       // Log error for debugging
-      // eslint-disable-next-line no-console
+       
       console.error('API error:', err);
 
       // Return generic error to client

@@ -331,9 +331,7 @@ export function evaluateGatesForPhase(
       results[gateId] = result;
       if (result.status !== 'passed') {
         allPassed = false;
-        if (blockedBy === undefined) {
-          blockedBy = gateId;
-        }
+        blockedBy ??= gateId;
       }
     }
   }
@@ -408,9 +406,7 @@ export function evaluateGatesAndTransition(
       results[gateId] = result;
       if (result.status !== 'passed') {
         allPassed = false;
-        if (blockedBy === undefined) {
-          blockedBy = gateId;
-        }
+        blockedBy ??= gateId;
       }
     }
   }

@@ -135,9 +135,7 @@ let cachedConfig: AppConfig | null = null;
  * Get the application configuration (cached)
  */
 export function getConfig(): AppConfig {
-  if (cachedConfig === null) {
-    cachedConfig = loadConfig();
-  }
+  cachedConfig ??= loadConfig();
   return cachedConfig;
 }
 

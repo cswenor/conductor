@@ -99,9 +99,7 @@ let defaultLogger: pino.Logger | null = null;
  * Get or create the default shared logger
  */
 export function getLogger(): pino.Logger {
-  if (defaultLogger === null) {
-    defaultLogger = createLogger({ name: 'conductor' });
-  }
+  defaultLogger ??= createLogger({ name: 'conductor' });
   return defaultLogger;
 }
 

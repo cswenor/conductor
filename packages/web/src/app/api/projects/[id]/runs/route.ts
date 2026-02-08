@@ -131,7 +131,7 @@ export const POST = withAuth(async (
     if (body.taskId !== undefined) {
       // Verify task exists and belongs to this project
       const task = getTask(db, body.taskId);
-      if (task === null || task.projectId !== projectId) {
+      if (task?.projectId !== projectId) {
         return NextResponse.json(
           { error: 'Task not found' },
           { status: 404 }

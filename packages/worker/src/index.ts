@@ -579,7 +579,7 @@ async function handleRunResume(
       return;
     }
 
-    if (txnResult === undefined || txnResult.success !== true) {
+    if (txnResult?.success !== true) {
       log.error({ runId, error: txnResult?.error }, 'Failed to transition to executing');
       return;
     }

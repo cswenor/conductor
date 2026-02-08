@@ -48,6 +48,8 @@ export function Nav() {
   }, []);
 
   useEffect(() => {
+    // Initial fetch + polling — legitimate data subscription pattern
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void fetchCount();
     const interval = setInterval(() => { void fetchCount(); }, 30000);
     return () => clearInterval(interval);

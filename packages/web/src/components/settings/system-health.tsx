@@ -100,6 +100,8 @@ export function SystemHealth() {
   };
 
   useEffect(() => {
+    // Initial fetch + polling — legitimate data subscription pattern
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void checkHealth();
 
     // Refresh every 30 seconds

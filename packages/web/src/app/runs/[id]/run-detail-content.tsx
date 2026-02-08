@@ -246,7 +246,7 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
             <CardContent>
               <div className="space-y-2">
                 <p className="text-sm font-medium">{run.blockedReason}</p>
-                {blockedContext !== null && blockedContext['gate_id'] !== undefined && (
+                {blockedContext?.['gate_id'] !== undefined && (
                   <p className="text-xs text-muted-foreground">
                     Failed gate: {formatGateId(blockedContext['gate_id'] as string)}
                   </p>

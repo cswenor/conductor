@@ -216,7 +216,7 @@ function retryWithBackoff<T>(
     }
   }
 
-  throw lastError;
+  throw lastError ?? new Error(`${description} failed after ${maxRetries + 1} attempts`);
 }
 
 // =============================================================================
@@ -601,7 +601,7 @@ export function isValidBranchName(name: string): boolean {
   if (name.endsWith('.') || name.endsWith('.lock')) return false;
   if (name.includes('..') || name.includes('//') || name.includes('@{')) return false;
   // Check for control chars, DEL, and other invalid characters
-  // eslint-disable-next-line no-control-regex
+   
   if (/[\u0000-\u001f\u007f~^:?*[\]\\]/.test(name)) return false;
   return true;
 }
