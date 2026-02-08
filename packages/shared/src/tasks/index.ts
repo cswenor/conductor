@@ -62,6 +62,29 @@ export interface ListTasksOptions {
   offset?: number;
 }
 
+export interface StartableTask {
+  taskId: string;
+  projectId: string;
+  projectName: string;
+  repoId: string;
+  repoFullName: string;
+  githubIssueNumber: number;
+  githubType: string;
+  githubTitle: string;
+  githubLabelsJson: string;
+  githubState: string;
+  githubSyncedAt: string;
+  lastActivityAt: string;
+  createdAt: string;
+}
+
+export interface ListStartableTasksOptions {
+  projectId?: string;
+  repoId?: string;
+  search?: string;
+  limit?: number;
+}
+
 // =============================================================================
 // ID Generation
 // =============================================================================
@@ -210,6 +233,124 @@ export function updateTaskActiveRun(db: Database, taskId: string, runId: string 
   ).run(runId, now, now, taskId);
 
   log.info({ taskId, runId }, runId !== null ? 'Task active run set' : 'Task active run cleared');
+}
+
+// =============================================================================
+// Cross-Project Queries
+// =============================================================================
+
+/**
+ * List open issues without active runs across user's projects.
+ * Used by the global "Start Work" page.
+ */
+export function listStartableTasks(
+  db: Database,
+  userId: string,
+  options?: ListStartableTasksOptions
+): StartableTask[] {
+  const limit = options?.limit ?? 100;
+  const conditions: string[] = [
+    'p.user_id = ?',
+    "t.github_state = 'open'",
+    't.active_run_id IS NULL',
+    "t.github_type = 'issue'",
+  ];
+  const params: (string | number)[] = [userId];
+
+  if (options?.projectId !== undefined) {
+    conditions.push('t.project_id = ?');
+    params.push(options.projectId);
+  }
+
+  if (options?.repoId !== undefined) {
+    conditions.push('t.repo_id = ?');
+    params.push(options.repoId);
+  }
+
+  if (options?.search !== undefined && options.search.trim() !== '') {
+    conditions.push('t.github_title LIKE ?');
+    params.push(`%${options.search.trim()}%`);
+  }
+
+  const whereClause = conditions.join(' AND ');
+  params.push(limit);
+
+  const sql = `
+    SELECT
+      t.task_id, t.project_id, t.repo_id,
+      t.github_issue_number, t.github_type, t.github_title,
+      t.github_labels_json, t.github_state, t.github_synced_at,
+      t.last_activity_at, t.created_at,
+      p.name AS project_name,
+      repos.github_full_name AS repo_full_name
+    FROM tasks t
+    JOIN projects p ON t.project_id = p.project_id
+    JOIN repos ON t.repo_id = repos.repo_id
+    WHERE ${whereClause}
+    ORDER BY t.last_activity_at DESC
+    LIMIT ?
+  `;
+
+  const rows = db.prepare(sql).all(...params) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    taskId: row['task_id'] as string,
+    projectId: row['project_id'] as string,
+    projectName: row['project_name'] as string,
+    repoId: row['repo_id'] as string,
+    repoFullName: row['repo_full_name'] as string,
+    githubIssueNumber: row['github_issue_number'] as number,
+    githubType: row['github_type'] as string,
+    githubTitle: row['github_title'] as string,
+    githubLabelsJson: row['github_labels_json'] as string,
+    githubState: row['github_state'] as string,
+    githubSyncedAt: row['github_synced_at'] as string,
+    lastActivityAt: row['last_activity_at'] as string,
+    createdAt: row['created_at'] as string,
+  }));
+}
+
+/**
+ * Count open issues without active runs across user's projects.
+ */
+export function countStartableTasks(
+  db: Database,
+  userId: string,
+  options?: ListStartableTasksOptions
+): number {
+  const conditions: string[] = [
+    'p.user_id = ?',
+    "t.github_state = 'open'",
+    't.active_run_id IS NULL',
+    "t.github_type = 'issue'",
+  ];
+  const params: (string | number)[] = [userId];
+
+  if (options?.projectId !== undefined) {
+    conditions.push('t.project_id = ?');
+    params.push(options.projectId);
+  }
+
+  if (options?.repoId !== undefined) {
+    conditions.push('t.repo_id = ?');
+    params.push(options.repoId);
+  }
+
+  if (options?.search !== undefined && options.search.trim() !== '') {
+    conditions.push('t.github_title LIKE ?');
+    params.push(`%${options.search.trim()}%`);
+  }
+
+  const whereClause = conditions.join(' AND ');
+
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM tasks t
+    JOIN projects p ON t.project_id = p.project_id
+    JOIN repos ON t.repo_id = repos.repo_id
+    WHERE ${whereClause}
+  `).get(...params) as { count: number };
+
+  return row.count;
 }
 
 // =============================================================================

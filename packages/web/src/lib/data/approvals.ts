@@ -9,17 +9,7 @@ import {
   type Database,
 } from '@conductor/shared';
 import type { ApprovalItem, ApprovalsResponse, ProjectOption } from '@/lib/types';
-
-function excerptMarkdown(md: string, maxLen = 200): string {
-  const lines = md.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('---')) continue;
-    if (trimmed.length > maxLen) return `${trimmed.slice(0, maxLen)}...`;
-    return trimmed;
-  }
-  return md.slice(0, maxLen);
-}
+import { excerptMarkdown } from '@/lib/utils';
 
 export function fetchApprovalsData(
   db: Database,

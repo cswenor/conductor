@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback, useTransition } from 'react';
+import { useTransition } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { Route } from 'next';
-import { EmptyState, Badge, Skeleton } from '@/components/ui';
+import { EmptyState, Badge } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import {
@@ -15,14 +16,14 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Play, XCircle, CheckCircle, Eye } from 'lucide-react';
+import { toast } from 'sonner';
 import {
   type WorkTab,
-  workTabPhases,
   getPhaseLabel,
   getPhaseVariant,
   timeAgo,
 } from '@/lib/phase-config';
-import type { RunSummary, RunsResponse } from '@/lib/types';
+import type { RunSummary } from '@/lib/types';
 import { cancelRun } from '@/lib/actions/run-actions';
 
 
@@ -32,24 +33,6 @@ const TAB_LABELS: Record<WorkTab, string> = {
   blocked: 'Blocked',
   completed: 'Completed',
 };
-
-function buildRunsUrl(tab: WorkTab, projectId: string, countOnly?: boolean): string {
-  const phases = workTabPhases[tab].join(',');
-  const params = new URLSearchParams();
-  params.set('phases', phases);
-  params.set('projectId', projectId);
-  if (tab === 'blocked') {
-    params.set('includePaused', '1');
-  } else if (tab === 'active') {
-    params.set('excludePaused', '1');
-  }
-  if (countOnly === true) {
-    params.set('countOnly', '1');
-  } else {
-    params.set('limit', '100');
-  }
-  return `/api/runs?${params.toString()}`;
-}
 
 function RunAction({ run, onCancel, busy }: {
   run: RunSummary;
@@ -170,78 +153,40 @@ function ProjectWorkTable({
   );
 }
 
-export function ProjectWorkTab({ projectId }: { projectId: string }) {
-  const [activeTab, setActiveTab] = useState<WorkTab>('active');
-  const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export function ProjectWorkTab({
+  runs,
+  counts,
+  initialTab,
+}: {
+  runs: RunSummary[];
+  counts: Record<WorkTab, number>;
+  initialTab: WorkTab;
+  projectId: string;
+}) {
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const [counts, setCounts] = useState<Record<WorkTab, number>>({ active: 0, queued: 0, blocked: 0, completed: 0 });
 
-  const fetchRuns = useCallback(async (tab: WorkTab) => {
-    try {
-      const url = buildRunsUrl(tab, projectId);
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error('Failed to fetch runs');
-      }
-      const data = await response.json() as RunsResponse;
-      setRuns(data.runs);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId]);
-
-  const fetchCounts = useCallback(async () => {
-    const tabs: WorkTab[] = ['active', 'queued', 'blocked', 'completed'];
-    const results = await Promise.all(
-      tabs.map(async (tab) => {
-        try {
-          const url = buildRunsUrl(tab, projectId, true);
-          const res = await fetch(url);
-          if (!res.ok) return { tab, count: 0 };
-          const data = await res.json() as { total: number };
-          return { tab, count: data.total };
-        } catch {
-          return { tab, count: 0 };
-        }
-      })
-    );
-    const newCounts: Record<WorkTab, number> = { active: 0, queued: 0, blocked: 0, completed: 0 };
-    for (const r of results) {
-      newCounts[r.tab] = r.count;
-    }
-    setCounts(newCounts);
-  }, [projectId]);
-
-  useEffect(() => {
-    void fetchCounts();
-  }, [fetchCounts]);
-
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    void fetchRuns(activeTab);
-  }, [activeTab, fetchRuns]);
+  function handleTabChange(newTab: string) {
+    const params = new URLSearchParams(window.location.search);
+    params.set('tab', 'work');
+    params.set('workTab', newTab);
+    router.push(`?${params.toString()}` as Route);
+  }
 
   function handleCancel(runId: string) {
     startTransition(async () => {
       const result = await cancelRun(runId);
       if (result.success) {
-        await Promise.all([
-          fetchRuns(activeTab),
-          fetchCounts(),
-        ]);
+        toast.success('Run cancelled');
+        router.refresh();
       } else {
-        setError(result.error ?? 'Failed to cancel run');
+        toast.error(result.error ?? 'Failed to cancel run');
       }
     });
   }
 
   return (
-    <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as WorkTab)}>
+    <Tabs value={initialTab} onValueChange={handleTabChange}>
       <TabsList>
         {(['active', 'queued', 'blocked', 'completed'] as WorkTab[]).map((tab) => (
           <TabsTrigger key={tab} value={tab}>
@@ -257,29 +202,12 @@ export function ProjectWorkTab({ projectId }: { projectId: string }) {
 
       {(['active', 'queued', 'blocked', 'completed'] as WorkTab[]).map((tab) => (
         <TabsContent key={tab} value={tab}>
-          {loading && activeTab === tab ? (
-            <div className="space-y-4 mt-4">
-              {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className="flex items-center gap-4">
-                  <Skeleton className="h-6 w-40" />
-                  <Skeleton className="h-6 w-32" />
-                  <Skeleton className="h-6 w-20" />
-                  <Skeleton className="h-6 w-16" />
-                </div>
-              ))}
-            </div>
-          ) : error !== null && activeTab === tab ? (
-            <div className="flex items-center justify-center h-64">
-              <p className="text-destructive">{error}</p>
-            </div>
-          ) : (
-            <ProjectWorkTable
-              runs={runs}
-              tab={tab}
-              onCancel={(runId) => handleCancel(runId)}
-              busy={isPending}
-            />
-          )}
+          <ProjectWorkTable
+            runs={initialTab === tab ? runs : []}
+            tab={tab}
+            onCancel={(runId) => handleCancel(runId)}
+            busy={isPending}
+          />
         </TabsContent>
       ))}
     </Tabs>

@@ -195,6 +195,83 @@ export class GitHubClient {
   // ===========================================================================
 
   /**
+   * List issues for a repository (excludes PRs).
+   * Supports incremental fetching via `since` and pagination (up to 5 pages).
+   */
+  async listIssues(
+    owner: string,
+    repo: string,
+    options?: {
+      state?: 'open' | 'closed' | 'all';
+      perPage?: number;
+      since?: string;
+    }
+  ): Promise<GitHubIssue[]> {
+    const octokit = await this.getOctokit();
+    const perPage = options?.perPage ?? 100;
+    const state = options?.state ?? 'open';
+    const maxPages = 5;
+    const allIssues: GitHubIssue[] = [];
+
+    for (let page = 1; page <= maxPages; page++) {
+      const params: Record<string, unknown> = {
+        owner,
+        repo,
+        state,
+        per_page: perPage,
+        page,
+        sort: 'updated',
+        direction: 'desc',
+      };
+      if (options?.since !== undefined) {
+        params['since'] = options.since;
+      }
+
+      const { data } = await octokit.request('GET /repos/{owner}/{repo}/issues', params as {
+        owner: string;
+        repo: string;
+        state?: 'open' | 'closed' | 'all';
+        per_page?: number;
+        page?: number;
+        sort?: 'created' | 'updated' | 'comments';
+        direction?: 'asc' | 'desc';
+        since?: string;
+      });
+
+      for (const item of data) {
+        // GitHub issues API includes PRs — filter them out
+        if ('pull_request' in item && item.pull_request) continue;
+
+        allIssues.push({
+          nodeId: item.node_id,
+          id: item.id,
+          number: item.number,
+          title: item.title,
+          body: item.body ?? null,
+          state: item.state as 'open' | 'closed',
+          htmlUrl: item.html_url,
+          user: {
+            id: item.user?.id ?? 0,
+            login: item.user?.login ?? 'unknown',
+          },
+          labels: item.labels
+            .filter((l): l is { name: string } => typeof l === 'object' && l !== null && 'name' in l)
+            .map((l) => ({ name: l.name })),
+          assignees: (item.assignees ?? []).map((a) => ({ login: a.login })),
+          createdAt: item.created_at,
+          updatedAt: item.updated_at,
+        });
+      }
+
+      // If we got fewer items than perPage, no more pages
+      if (data.length < perPage) break;
+    }
+
+    log.info({ owner, repo, count: allIssues.length }, 'Listed issues');
+    return allIssues;
+  }
+
+  /**
    * Get an issue by number
    */
   async getIssue(owner: string, repo: string, issueNumber: number): Promise<GitHubIssue> {

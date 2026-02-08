@@ -12,6 +12,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -34,12 +42,20 @@ import {
   Settings,
   Workflow,
   Trash2,
+  Rocket,
+  RefreshCw,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { ProjectWorkTab } from '@/components/projects/project-work-tab';
 import { ProjectWorkflowTab } from '@/components/projects/project-workflow-tab';
 import { ProjectOverviewTab } from '@/components/projects/project-overview-tab';
 import { deleteProject } from '@/lib/actions/project-actions';
-import type { Project, Repo } from '@conductor/shared';
+import { syncRepoIssues } from '@/lib/actions/start-actions';
+import { timeAgo } from '@/lib/phase-config';
+import type { Project, Repo, StartableTask } from '@conductor/shared';
+import type { RunSummary } from '@/lib/types';
+import type { WorkTab } from '@/lib/phase-config';
+import type { ProjectOverviewData } from '@/lib/data/project-overview';
 
 function SettingsTab({ project }: { project: Project }) {
   const router = useRouter();
@@ -185,14 +201,134 @@ function SettingsTab({ project }: { project: Project }) {
   );
 }
 
+function BacklogTab({ tasks, projectId }: { tasks: StartableTask[]; projectId: string }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
+
+  function handleSync() {
+    startTransition(async () => {
+      const result = await syncRepoIssues(projectId);
+      if (result.success) {
+        toast.success(`Synced ${result.syncedCount} issue(s) from ${result.reposSynced} repo(s)`);
+        router.refresh();
+      } else {
+        toast.error(result.error ?? 'Failed to sync issues');
+      }
+    });
+  }
+
+  function parseLabels(json: string): string[] {
+    try {
+      return JSON.parse(json) as string[];
+    } catch {
+      return [];
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between">
+        <div>
+          <CardTitle>Backlog</CardTitle>
+          <CardDescription>
+            Open issues that can be turned into runs.
+          </CardDescription>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleSync} disabled={isPending}>
+            <RefreshCw className={`h-4 w-4 mr-1 ${isPending ? 'animate-spin' : ''}`} />
+            Sync
+          </Button>
+          <Link href={`/start?projectId=${projectId}` as Route}>
+            <Button size="sm">
+              <Rocket className="h-4 w-4 mr-1" />
+              Open in Start Work
+            </Button>
+          </Link>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {tasks.length === 0 ? (
+          <EmptyState
+            icon={<FileText className="h-12 w-12 text-muted-foreground" />}
+            title="No issues yet"
+            description="Sync repositories to see their open issues here."
+            action={
+              <Button onClick={handleSync} disabled={isPending}>
+                <RefreshCw className={`h-4 w-4 mr-2 ${isPending ? 'animate-spin' : ''}`} />
+                Sync Issues
+              </Button>
+            }
+          />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-20">Issue</TableHead>
+                <TableHead>Title</TableHead>
+                <TableHead>Repo</TableHead>
+                <TableHead>Labels</TableHead>
+                <TableHead className="w-24">Age</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {tasks.map((task) => {
+                const taskLabels = parseLabels(task.githubLabelsJson);
+                return (
+                  <TableRow key={task.taskId}>
+                    <TableCell className="font-mono text-muted-foreground">
+                      #{task.githubIssueNumber}
+                    </TableCell>
+                    <TableCell className="font-medium">{task.githubTitle}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {task.repoFullName.split('/').pop()}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex flex-wrap gap-1">
+                        {taskLabels.slice(0, 3).map((label) => (
+                          <Badge key={label} variant="secondary" className="text-xs">
+                            {label}
+                          </Badge>
+                        ))}
+                        {taskLabels.length > 3 && (
+                          <Badge variant="secondary" className="text-xs">
+                            +{taskLabels.length - 3}
+                          </Badge>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-sm">
+                      {timeAgo(task.lastActivityAt)}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function ProjectDetailContent({
   project,
   repos,
   defaultTab,
+  overviewData,
+  workRuns,
+  workCounts,
+  workTab,
+  backlogTasks,
 }: {
   project: Project;
   repos: Repo[];
   defaultTab: string;
+  overviewData: ProjectOverviewData;
+  workRuns: RunSummary[];
+  workCounts: Record<WorkTab, number>;
+  workTab: WorkTab;
+  backlogTasks: StartableTask[];
 }) {
   return (
     <div className="flex flex-col h-full">
@@ -218,6 +354,11 @@ export function ProjectDetailContent({
             <TabsTrigger value="backlog">
               <FileText className="h-4 w-4 mr-2" />
               Backlog
+              {backlogTasks.length > 0 && (
+                <Badge variant="secondary" className="ml-2 h-5 px-1.5 text-xs">
+                  {backlogTasks.length}
+                </Badge>
+              )}
             </TabsTrigger>
             <TabsTrigger value="work">
               <Play className="h-4 w-4 mr-2" />
@@ -242,29 +383,20 @@ export function ProjectDetailContent({
           </TabsList>
 
           <TabsContent value="overview">
-            <ProjectOverviewTab projectId={project.projectId} />
+            <ProjectOverviewTab data={overviewData} />
           </TabsContent>
 
           <TabsContent value="backlog">
-            <Card>
-              <CardHeader>
-                <CardTitle>Backlog</CardTitle>
-                <CardDescription>
-                  Issues from connected repositories that can be turned into runs.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <EmptyState
-                  icon={<FileText className="h-12 w-12 text-muted-foreground" />}
-                  title="No issues yet"
-                  description="Connect repositories to see their issues here."
-                />
-              </CardContent>
-            </Card>
+            <BacklogTab tasks={backlogTasks} projectId={project.projectId} />
           </TabsContent>
 
           <TabsContent value="work">
-            <ProjectWorkTab projectId={project.projectId} />
+            <ProjectWorkTab
+              runs={workRuns}
+              counts={workCounts}
+              initialTab={workTab}
+              projectId={project.projectId}
+            />
           </TabsContent>
 
           <TabsContent value="workflow">

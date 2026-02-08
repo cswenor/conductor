@@ -7,6 +7,7 @@ import type { Route } from 'next';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
+  Rocket,
   Play,
   CheckCircle,
   FolderKanban,
@@ -19,6 +20,7 @@ import { Badge, Separator } from '@/components/ui';
 
 const mainNavigation = [
   { name: 'Dashboard', href: '/dashboard' as Route, icon: LayoutDashboard },
+  { name: 'Start Work', href: '/start' as Route, icon: Rocket },
   { name: 'Work', href: '/work' as Route, icon: Play },
   { name: 'Approvals', href: '/approvals' as Route, icon: CheckCircle },
   { name: 'Projects', href: '/projects' as Route, icon: FolderKanban },

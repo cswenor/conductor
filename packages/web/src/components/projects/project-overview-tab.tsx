@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, useEffect, useCallback, useTransition } from 'react';
+import { useTransition } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import type { Route } from 'next';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Skeleton } from '@/components/ui';
 import {
   Play, AlertTriangle, ThumbsUp, CheckCircle,
   FileText, Eye, GitPullRequest, ArrowRight, XCircle, ExternalLink, RotateCcw,
@@ -15,17 +15,7 @@ import { toast } from 'sonner';
 import { getPhaseLabel, getPhaseVariant, timeAgo } from '@/lib/phase-config';
 import type { RunSummary } from '@/lib/types';
 import { retryRun, cancelRun } from '@/lib/actions/run-actions';
-
-interface OverviewData {
-  activeCount: number;
-  blockedCount: number;
-  awaitingApprovalCount: number;
-  completedThisWeekCount: number;
-  blockedRuns: RunSummary[];
-  awaitingApprovalRuns: RunSummary[];
-  lastShippedPr: RunSummary | null;
-}
-
+import type { ProjectOverviewData } from '@/lib/data/project-overview';
 
 function StatCard({ title, value, icon }: {
   title: string;
@@ -50,76 +40,9 @@ function StatCard({ title, value, icon }: {
   );
 }
 
-export function ProjectOverviewTab({ projectId }: { projectId: string }) {
-  const [data, setData] = useState<OverviewData | null>(null);
-  const [loading, setLoading] = useState(true);
+export function ProjectOverviewTab({ data }: { data: ProjectOverviewData }) {
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
-
-  const fetchData = useCallback(async () => {
-    try {
-      // Compute completedAfter for "this week" count
-      const weekStart = new Date();
-      weekStart.setDate(weekStart.getDate() - 7);
-      weekStart.setHours(0, 0, 0, 0);
-      const completedAfter = weekStart.toISOString();
-
-      const [
-        activeCountRes, blockedCountRes, awaitingCountRes, completedWeekRes,
-        blockedRes, awaitingRes, lastShippedRes,
-      ] = await Promise.all([
-        fetch(`/api/runs?phases=planning,executing,awaiting_review&excludePaused=1&countOnly=1&projectId=${projectId}`),
-        fetch(`/api/runs?phases=blocked&countOnly=1&projectId=${projectId}`),
-        fetch(`/api/runs?phases=awaiting_plan_approval&countOnly=1&projectId=${projectId}`),
-        fetch(`/api/runs?phases=completed&countOnly=1&completedAfter=${completedAfter}&projectId=${projectId}`),
-        // Blocked: sort by oldest first (longest waiting = most urgent)
-        fetch(`/api/runs?phases=blocked&limit=5&sortDir=asc&projectId=${projectId}`),
-        // Awaiting approval: sort by oldest first (longest waiting)
-        fetch(`/api/runs?phases=awaiting_plan_approval&limit=5&sortDir=asc&projectId=${projectId}`),
-        // Last shipped PR: completed + success + has PR, sorted by completed_at DESC
-        fetch(`/api/runs?phases=completed&result=success&hasPrUrl=1&sortBy=completed_at&limit=1&projectId=${projectId}`),
-      ]);
-
-      const [activeCount, blockedCount, awaitingCount, completedWeekCount] = await Promise.all([
-        activeCountRes.ok ? activeCountRes.json() as Promise<{ total: number }> : { total: 0 },
-        blockedCountRes.ok ? blockedCountRes.json() as Promise<{ total: number }> : { total: 0 },
-        awaitingCountRes.ok ? awaitingCountRes.json() as Promise<{ total: number }> : { total: 0 },
-        completedWeekRes.ok ? completedWeekRes.json() as Promise<{ total: number }> : { total: 0 },
-      ]);
-
-      const [blockedData, awaitingData, lastShippedData] = await Promise.all([
-        blockedRes.ok ? blockedRes.json() as Promise<{ runs: RunSummary[] }> : { runs: [] },
-        awaitingRes.ok ? awaitingRes.json() as Promise<{ runs: RunSummary[] }> : { runs: [] },
-        lastShippedRes.ok ? lastShippedRes.json() as Promise<{ runs: RunSummary[] }> : { runs: [] },
-      ]);
-
-      setData({
-        activeCount: activeCount.total,
-        blockedCount: blockedCount.total,
-        awaitingApprovalCount: awaitingCount.total,
-        completedThisWeekCount: completedWeekCount.total,
-        blockedRuns: blockedData.runs,
-        awaitingApprovalRuns: awaitingData.runs,
-        lastShippedPr: lastShippedData.runs[0] ?? null,
-      });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to load overview data');
-      setData({
-        activeCount: 0,
-        blockedCount: 0,
-        awaitingApprovalCount: 0,
-        completedThisWeekCount: 0,
-        blockedRuns: [],
-        awaitingApprovalRuns: [],
-        lastShippedPr: null,
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [projectId]);
-
-  useEffect(() => {
-    void fetchData();
-  }, [fetchData]);
 
   function handleAction(runId: string, action: string) {
     startTransition(async () => {
@@ -128,27 +51,12 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
         : await cancelRun(runId);
       if (result.success) {
         toast.success(action === 'retry' ? 'Run retried' : 'Run cancelled');
-        await fetchData();
+        router.refresh();
       } else {
         toast.error(result.error ?? `Failed to ${action} run`);
       }
     });
   }
-
-  if (loading) {
-    return (
-      <div className="space-y-6">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-24" />
-          ))}
-        </div>
-        <Skeleton className="h-48" />
-      </div>
-    );
-  }
-
-  if (data === null) return null;
 
   return (
     <div className="space-y-6">
@@ -188,7 +96,7 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
             </Link>
           </CardHeader>
           <CardContent className="divide-y">
-            {data.blockedRuns.map((run) => (
+            {data.blockedRuns.map((run: RunSummary) => (
               <div key={run.runId} className="flex items-center justify-between gap-3 py-2">
                 <div className="min-w-0 flex-1">
                   <Link href={`/runs/${run.runId}` as Route} className="text-sm font-medium hover:underline truncate block">
@@ -253,7 +161,7 @@ export function ProjectOverviewTab({ projectId }: { projectId: string }) {
             </Link>
           </CardHeader>
           <CardContent className="divide-y">
-            {data.awaitingApprovalRuns.map((run) => (
+            {data.awaitingApprovalRuns.map((run: RunSummary) => (
               <div key={run.runId} className="flex items-center justify-between py-2">
                 <div className="min-w-0 flex-1">
                   <Link href={`/runs/${run.runId}` as Route} className="text-sm font-medium hover:underline truncate block">

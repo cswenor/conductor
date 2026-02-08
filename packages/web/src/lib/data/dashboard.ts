@@ -12,6 +12,7 @@ import {
   type RunPhase,
 } from '@conductor/shared';
 import type { RunSummary, ApprovalItem } from '@/lib/types';
+import { excerptMarkdown } from '@/lib/utils';
 
 export interface DashboardData {
   activeRuns: RunSummary[];
@@ -23,17 +24,6 @@ export interface DashboardData {
     needsYou: number;
     completedToday: number;
   };
-}
-
-function excerptMarkdown(md: string, maxLen = 200): string {
-  const lines = md.split('\n');
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith('---')) continue;
-    if (trimmed.length > maxLen) return `${trimmed.slice(0, maxLen)}...`;
-    return trimmed;
-  }
-  return md.slice(0, maxLen);
 }
 
 export function fetchDashboardData(db: Database, userId: string): DashboardData {
