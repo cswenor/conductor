@@ -46,8 +46,13 @@ export async function ensureBootstrap(): Promise<void> {
   const config = getConfig();
   log.info('Starting lazy bootstrap');
 
+  const databasePath = config.databasePath === '' ? './conductor.db' : config.databasePath;
+  if (config.databasePath === '') {
+    log.warn('DATABASE_PATH is empty. Falling back to ./conductor.db');
+  }
+
   bootstrapPromise = bootstrap({
-    databasePath: config.databasePath,
+    databasePath,
     redisUrl: config.redisUrl,
   });
 

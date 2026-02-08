@@ -28,6 +28,12 @@ export interface DatabaseConfig {
  * Initialize database with migrations
  */
 export function initDatabase(config: DatabaseConfig): DatabaseType {
+  if (config.path === undefined || config.path === '') {
+    throw new Error(
+      'Database path is missing. Set DATABASE_PATH (for web) or pass a valid path in bootstrap config.'
+    );
+  }
+
   const db = new Database(config.path, {
     verbose: config.verbose === true ? (msg: unknown) => log.debug({ sql: msg }, 'SQL') : undefined,
   });
