@@ -80,6 +80,8 @@ export interface CreateRunInput {
   baseBranch: string;
   parentRunId?: string;
   supersedesRunId?: string;
+  /** Optional pre-generated run ID. If omitted, one is generated automatically. */
+  runId?: string;
 }
 
 export interface ListRunsOptions {
@@ -134,7 +136,7 @@ export function generateRunId(): string {
  * Ensures a default policy set exists and computes run_number.
  */
 export function createRun(db: Database, input: CreateRunInput): Run {
-  const runId = generateRunId();
+  const runId = input.runId ?? generateRunId();
   const now = new Date().toISOString();
 
   const policySet = ensureDefaultPolicySet(db, input.projectId);

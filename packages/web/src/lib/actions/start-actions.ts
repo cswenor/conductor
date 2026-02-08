@@ -5,8 +5,10 @@ import {
   createLogger,
   getTask,
   getProject,
+  getRepo,
   canAccessProject,
   createRun,
+  generateRunId,
   listProjects,
   listProjectRepos,
   upsertTaskFromIssue,
@@ -48,6 +50,8 @@ export async function startWork(taskIds: string[]): Promise<StartWorkResult> {
     const startedRunIds: string[] = [];
     const skippedTaskIds: string[] = [];
 
+    // Pre-generate all run IDs so we can write the final ID directly
+    // in the guarded UPDATE — no placeholder state, no second UPDATE.
     const txn = db.transaction(() => {
       for (const taskId of taskIds) {
         const task = getTask(db, taskId);
@@ -62,11 +66,18 @@ export async function startWork(taskIds: string[]): Promise<StartWorkResult> {
           continue;
         }
 
-        // Guarded UPDATE: claim the task atomically
+        // Use repo's default branch; fall back to project default
+        const repo = getRepo(db, task.repoId);
+        const baseBranch = repo?.githubDefaultBranch ?? project.defaultBaseBranch;
+
+        // Pre-generate run ID so the guarded UPDATE writes the final value
+        const runId = generateRunId();
         const now = new Date().toISOString();
+
+        // Guarded UPDATE: claim the task atomically with the real run ID
         const result = db.prepare(
           'UPDATE tasks SET active_run_id = ?, updated_at = ?, last_activity_at = ? WHERE task_id = ? AND active_run_id IS NULL'
-        ).run(`pending_${taskId}`, now, now, taskId);
+        ).run(runId, now, now, taskId);
 
         if (result.changes === 0) {
           // Task already has an active run — skip
@@ -74,20 +85,16 @@ export async function startWork(taskIds: string[]): Promise<StartWorkResult> {
           continue;
         }
 
-        // Create the run
-        const run = createRun(db, {
+        // Create the run with the same pre-generated ID
+        createRun(db, {
+          runId,
           taskId,
           projectId: task.projectId,
           repoId: task.repoId,
-          baseBranch: project.defaultBaseBranch,
+          baseBranch,
         });
 
-        // Update the task with the actual run ID
-        db.prepare(
-          'UPDATE tasks SET active_run_id = ?, updated_at = ? WHERE task_id = ?'
-        ).run(run.runId, now, taskId);
-
-        startedRunIds.push(run.runId);
+        startedRunIds.push(runId);
       }
     });
 

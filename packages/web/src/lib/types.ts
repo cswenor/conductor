@@ -34,7 +34,7 @@ export interface RunsResponse {
   total: number;
 }
 
-/** An item requiring operator attention, returned by GET /api/approvals. */
+/** An item requiring operator attention. Used by lib/data/approvals.ts and dashboard.ts. */
 export interface ApprovalItem {
   runId: string;
   phase: string;
@@ -54,7 +54,7 @@ export interface ApprovalItem {
   blockedContext?: Record<string, unknown>;
 }
 
-/** Response from GET /api/approvals. */
+/** Approvals data shape used by lib/data/approvals.ts. */
 export interface ApprovalsResponse {
   planApprovals: ApprovalItem[];
   escalations: ApprovalItem[];
@@ -69,7 +69,7 @@ export interface ProjectOption {
   name: string;
 }
 
-/** Response from GET /api/analytics. */
+/** Analytics metrics shape used by the analytics page. */
 export interface AnalyticsResponse {
   totalRuns: number;
   completedRuns: number;
