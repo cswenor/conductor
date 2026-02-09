@@ -63,6 +63,25 @@ function generateDeferredEventId(): string {
 }
 
 // =============================================================================
+// Helpers
+// =============================================================================
+
+/**
+ * Extract a concise summary from a deferred event.
+ *
+ * Prefers the dedicated `summary` field. For legacy rows created before
+ * migration 015 (where summary is ''), falls back to the first non-empty
+ * line of `formattedBody` to avoid dumping the full formatted comment
+ * into a coalesced list.
+ */
+function extractSummary(d: Pick<DeferredEvent, 'summary' | 'formattedBody'>): string {
+  if (d.summary !== '') return d.summary;
+  // Legacy fallback: first non-empty line, stripped of markdown heading markers
+  const firstLine = d.formattedBody.split('\n').find((l) => l.trim() !== '');
+  return firstLine?.replace(/^#+\s*/, '').trim() ?? d.formattedBody.substring(0, 120);
+}
+
+// =============================================================================
 // Core Logic
 // =============================================================================
 
@@ -138,7 +157,7 @@ export function checkAndMirror(
       // Coalesce deferred events with current event using concise summaries
       if (coalesceCtx !== undefined) {
         const events = [
-          ...deferred.map((d) => ({ timestamp: d.createdAt, body: d.summary })),
+          ...deferred.map((d) => ({ timestamp: d.createdAt, body: extractSummary(d) })),
           { timestamp: new Date().toISOString(), body: event.summary },
         ];
         body = truncateComment(formatCoalescedComment(
@@ -150,7 +169,7 @@ export function checkAndMirror(
       } else {
         // Fallback: concatenate summaries (for tests without full context)
         const allSummaries = [
-          ...deferred.map((d) => d.summary || d.formattedBody),
+          ...deferred.map((d) => extractSummary(d)),
           event.summary || event.formattedBody,
         ];
         body = allSummaries.join('\n\n---\n\n');
@@ -279,7 +298,7 @@ export function flushStaleDeferredEvents(
       continue;
     }
 
-    const body = deferred.map((d) => d.summary || d.formattedBody).join('\n\n---\n\n');
+    const body = deferred.map((d) => extractSummary(d)).join('\n\n---\n\n');
     const idempotencyKey = `${runId}:mirror:flush:${Date.now()}`;
 
     try {
