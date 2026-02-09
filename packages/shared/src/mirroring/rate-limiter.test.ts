@@ -71,6 +71,7 @@ describe('rate-limiter', () => {
     const result = checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'Phase changed',
+      summary: 'Phase changed',
       idempotencySuffix: `${runId}:mirror:phase:1`,
     }, enqueue.fn);
 
@@ -94,6 +95,7 @@ describe('rate-limiter', () => {
     const result = checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'Another phase change',
+      summary: 'Another phase change',
       idempotencySuffix: `${runId}:mirror:phase:2`,
     }, enqueue.fn);
 
@@ -117,6 +119,7 @@ describe('rate-limiter', () => {
     const result = checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'Phase after wait',
+      summary: 'Phase after wait',
       idempotencySuffix: `${runId}:mirror:phase:3`,
     }, enqueue.fn);
 
@@ -130,18 +133,19 @@ describe('rate-limiter', () => {
 
     // Insert deferred events
     db.prepare(`
-      INSERT INTO mirror_deferred_events (deferred_event_id, run_id, event_type, formatted_body, idempotency_suffix, created_at)
-      VALUES ('def_1', ?, 'phase_transition', 'First deferred', 'key_def1', datetime('now', '-10 seconds'))
+      INSERT INTO mirror_deferred_events (deferred_event_id, run_id, event_type, formatted_body, summary, idempotency_suffix, created_at)
+      VALUES ('def_1', ?, 'phase_transition', 'First deferred', 'First deferred', 'key_def1', datetime('now', '-10 seconds'))
     `).run(runId);
     db.prepare(`
-      INSERT INTO mirror_deferred_events (deferred_event_id, run_id, event_type, formatted_body, idempotency_suffix, created_at)
-      VALUES ('def_2', ?, 'phase_transition', 'Second deferred', 'key_def2', datetime('now', '-5 seconds'))
+      INSERT INTO mirror_deferred_events (deferred_event_id, run_id, event_type, formatted_body, summary, idempotency_suffix, created_at)
+      VALUES ('def_2', ?, 'phase_transition', 'Second deferred', 'Second deferred', 'key_def2', datetime('now', '-5 seconds'))
     `).run(runId);
 
     const enqueue = createMockEnqueue();
     const result = checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'Current event',
+      summary: 'Current event',
       idempotencySuffix: `${runId}:mirror:phase:5`,
     }, enqueue.fn);
 
@@ -161,14 +165,15 @@ describe('rate-limiter', () => {
     seedRun(runId);
 
     db.prepare(`
-      INSERT INTO mirror_deferred_events (deferred_event_id, run_id, event_type, formatted_body, idempotency_suffix, created_at)
-      VALUES ('def_3', ?, 'phase_transition', 'Will be flushed', 'key_def3', datetime('now'))
+      INSERT INTO mirror_deferred_events (deferred_event_id, run_id, event_type, formatted_body, summary, idempotency_suffix, created_at)
+      VALUES ('def_3', ?, 'phase_transition', 'Will be flushed', 'Will be flushed', 'key_def3', datetime('now'))
     `).run(runId);
 
     const enqueue = createMockEnqueue();
     checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'Flush trigger',
+      summary: 'Flush trigger',
       idempotencySuffix: `${runId}:mirror:phase:6`,
     }, enqueue.fn);
 
@@ -195,12 +200,14 @@ describe('rate-limiter', () => {
     checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'Event 1',
+      summary: 'Event 1',
       idempotencySuffix: `${runId}:evt1`,
     }, enqueue.fn);
 
     checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'Event 2',
+      summary: 'Event 2',
       idempotencySuffix: `${runId}:evt2`,
     }, enqueue.fn);
 
@@ -228,6 +235,7 @@ describe('rate-limiter', () => {
     const result = checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'After cancelled',
+      summary: 'After cancelled',
       idempotencySuffix: `${runId}:mirror:phase:7`,
     }, enqueue.fn);
 
@@ -252,6 +260,7 @@ describe('rate-limiter', () => {
     const r1 = checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'Duplicate event',
+      summary: 'Duplicate event',
       idempotencySuffix: suffix,
     }, enqueue.fn);
     expect(r1.deferred).toBe(true);
@@ -260,6 +269,7 @@ describe('rate-limiter', () => {
     const r2 = checkAndMirror(db, runId, {
       eventType: 'phase_transition',
       formattedBody: 'Duplicate event',
+      summary: 'Duplicate event',
       idempotencySuffix: suffix,
     }, enqueue.fn);
     expect(r2.deferred).toBe(true);
@@ -269,5 +279,40 @@ describe('rate-limiter', () => {
       'SELECT COUNT(*) as count FROM mirror_deferred_events WHERE run_id = ?'
     ).get(runId) as { count: number };
     expect(count.count).toBe(1);
+  });
+
+  it('preserves deferred events when enqueue returns idempotent duplicate', () => {
+    const runId = 'run_test9';
+    seedRun(runId);
+
+    // Insert a deferred event
+    db.prepare(`
+      INSERT INTO mirror_deferred_events (deferred_event_id, run_id, event_type, formatted_body, summary, idempotency_suffix, created_at)
+      VALUES ('def_dup', ?, 'phase_transition', 'Deferred body', 'Deferred summary', 'key_dup', datetime('now'))
+    `).run(runId);
+
+    // Mock enqueue that returns isNew: false (idempotent duplicate)
+    const calls: Array<{ body: string; idempotencyKey: string }> = [];
+    const duplicateEnqueue = (body: string, idempotencyKey: string): EnqueueWriteResult => {
+      calls.push({ body, idempotencyKey });
+      return { githubWriteId: 'ghw_existing', isNew: false, status: 'queued' };
+    };
+
+    const result = checkAndMirror(db, runId, {
+      eventType: 'phase_transition',
+      formattedBody: 'Current body',
+      summary: 'Current summary',
+      idempotencySuffix: `${runId}:mirror:phase:10`,
+    }, duplicateEnqueue);
+
+    // Enqueue was called but returned duplicate
+    expect(result.enqueued).toBe(false);
+    expect(calls).toHaveLength(1);
+
+    // Deferred events must be preserved (not deleted)
+    const remaining = db.prepare(
+      'SELECT COUNT(*) as count FROM mirror_deferred_events WHERE run_id = ?'
+    ).get(runId) as { count: number };
+    expect(remaining.count).toBe(1);
   });
 });

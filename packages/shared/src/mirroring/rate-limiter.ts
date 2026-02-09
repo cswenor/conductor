@@ -36,6 +36,8 @@ export interface DeferredEvent {
   runId: string;
   eventType: string;
   formattedBody: string;
+  /** Concise one-line description used for coalesced comments */
+  summary: string;
   idempotencySuffix: string;
   createdAt: string;
 }
@@ -45,6 +47,7 @@ interface DeferredRow {
   run_id: string;
   event_type: string;
   formatted_body: string;
+  summary: string;
   idempotency_suffix: string;
   created_at: string;
 }
@@ -90,7 +93,13 @@ export interface CoalesceContext {
 export function checkAndMirror(
   db: Database,
   runId: string,
-  event: { eventType: string; formattedBody: string; idempotencySuffix: string },
+  event: {
+    eventType: string;
+    formattedBody: string;
+    /** Concise one-line description for coalesced comments */
+    summary: string;
+    idempotencySuffix: string;
+  },
   enqueueFn: (body: string, idempotencyKey: string) => EnqueueWriteResult,
   coalesceCtx?: CoalesceContext,
 ): MirrorResult {
@@ -126,11 +135,11 @@ export function checkAndMirror(
     let idempotencyKey: string;
 
     if (deferred.length > 0) {
-      // Coalesce deferred events with current event using structured format
+      // Coalesce deferred events with current event using concise summaries
       if (coalesceCtx !== undefined) {
         const events = [
-          ...deferred.map((d) => ({ timestamp: d.createdAt, body: d.formattedBody })),
-          { timestamp: new Date().toISOString(), body: event.formattedBody },
+          ...deferred.map((d) => ({ timestamp: d.createdAt, body: d.summary })),
+          { timestamp: new Date().toISOString(), body: event.summary },
         ];
         body = truncateComment(formatCoalescedComment(
           coalesceCtx.runNumber,
@@ -139,12 +148,12 @@ export function checkAndMirror(
           coalesceCtx.runId,
         ));
       } else {
-        // Fallback: concatenate bodies (for tests without full context)
-        const allBodies = [
-          ...deferred.map((d) => d.formattedBody),
-          event.formattedBody,
+        // Fallback: concatenate summaries (for tests without full context)
+        const allSummaries = [
+          ...deferred.map((d) => d.summary || d.formattedBody),
+          event.summary || event.formattedBody,
         ];
-        body = allBodies.join('\n\n---\n\n');
+        body = allSummaries.join('\n\n---\n\n');
       }
       // Use current event's idempotency suffix for the coalesced comment
       idempotencyKey = event.idempotencySuffix;
@@ -155,8 +164,10 @@ export function checkAndMirror(
 
     const result = enqueueFn(body, idempotencyKey);
 
-    // Delete deferred events only AFTER successful enqueue to avoid data loss
-    if (deferred.length > 0) {
+    // Delete deferred events only AFTER a new write was created.
+    // If enqueueFn returned an idempotent duplicate (isNew === false), deferred
+    // events are preserved so they can be flushed on the next successful post.
+    if (deferred.length > 0 && result.isNew) {
       deleteDeferredEvents(db, runId);
     }
 
@@ -182,7 +193,7 @@ export function checkAndMirror(
 function deferEvent(
   db: Database,
   runId: string,
-  event: { eventType: string; formattedBody: string; idempotencySuffix: string },
+  event: { eventType: string; formattedBody: string; summary: string; idempotencySuffix: string },
 ): MirrorResult {
   try {
     const id = generateDeferredEventId();
@@ -190,9 +201,9 @@ function deferEvent(
 
     db.prepare(`
       INSERT OR IGNORE INTO mirror_deferred_events (
-        deferred_event_id, run_id, event_type, formatted_body, idempotency_suffix, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `).run(id, runId, event.eventType, event.formattedBody, event.idempotencySuffix, now);
+        deferred_event_id, run_id, event_type, formatted_body, summary, idempotency_suffix, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, runId, event.eventType, event.formattedBody, event.summary, event.idempotencySuffix, now);
 
     log.debug({ runId, eventType: event.eventType }, 'Event deferred due to rate limit');
 
@@ -223,6 +234,7 @@ function getDeferredEvents(db: Database, runId: string): DeferredEvent[] {
     runId: row.run_id,
     eventType: row.event_type,
     formattedBody: row.formatted_body,
+    summary: row.summary,
     idempotencySuffix: row.idempotency_suffix,
     createdAt: row.created_at,
   }));
@@ -267,14 +279,16 @@ export function flushStaleDeferredEvents(
       continue;
     }
 
-    const body = deferred.map((d) => d.formattedBody).join('\n\n---\n\n');
+    const body = deferred.map((d) => d.summary || d.formattedBody).join('\n\n---\n\n');
     const idempotencyKey = `${runId}:mirror:flush:${Date.now()}`;
 
     try {
-      enqueueFn(body, idempotencyKey);
-      deleteDeferredEvents(db, runId);
-      flushedCount++;
-      log.info({ runId, eventCount: deferred.length }, 'Flushed stale deferred events');
+      const flushResult = enqueueFn(body, idempotencyKey);
+      if (flushResult.isNew) {
+        deleteDeferredEvents(db, runId);
+        flushedCount++;
+        log.info({ runId, eventCount: deferred.length }, 'Flushed stale deferred events');
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       log.error({ runId, error: message }, 'Failed to flush stale deferred events');

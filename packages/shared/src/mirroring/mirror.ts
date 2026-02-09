@@ -166,6 +166,7 @@ export function mirrorPhaseTransition(
       {
         eventType: 'phase_transition',
         formattedBody: truncated,
+        summary: body,
         idempotencySuffix: `${input.runId}:mirror:phase:${sequence}`,
       },
       createEnqueueFn(ctx, input.runId, target),
@@ -224,6 +225,7 @@ export function mirrorPlanArtifact(
       {
         eventType: 'plan_ready',
         formattedBody: truncated,
+        summary: 'A plan has been generated and is ready for review.',
         idempotencySuffix: `${runId}:mirror:plan:${version}`,
       },
       createEnqueueFn(ctx, runId, target),
@@ -301,6 +303,7 @@ export function mirrorApprovalDecision(
       {
         eventType: 'approval_decision',
         formattedBody: truncated,
+        summary: body,
         idempotencySuffix: `${input.runId}:mirror:approval:${input.operatorActionId}`,
       },
       createEnqueueFn(ctx, input.runId, target),
@@ -399,6 +402,7 @@ export function mirrorFailure(
       {
         eventType: 'failure',
         formattedBody: truncated,
+        summary: body,
         idempotencySuffix: `${input.runId}:mirror:failure:${sequence}`,
       },
       createEnqueueFn(ctx, input.runId, target),
