@@ -87,3 +87,6 @@ export * from './agent-runtime/index.ts';
 
 // Re-export analytics module
 export * from './analytics/index.ts';
+
+// Re-export mirroring module
+export * from './mirroring/index.ts';

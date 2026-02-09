@@ -68,6 +68,11 @@ import {
   evaluateGatesForPhase,
   evaluateGatesAndTransition,
   persistGateEvaluations,
+  // Mirroring (WP9)
+  mirrorPhaseTransition,
+  mirrorPlanArtifact,
+  mirrorFailure,
+  type MirrorContext,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -109,6 +114,17 @@ function updateRunStep(
 ): void {
   db.prepare('UPDATE runs SET step = ?, updated_at = ? WHERE run_id = ?')
     .run(step, new Date().toISOString(), runId);
+}
+
+/**
+ * Build a MirrorContext for posting comments on linked GitHub issues.
+ */
+function getMirrorCtx(): MirrorContext {
+  return {
+    db: getDatabase(),
+    queueManager: getQueueManager(),
+    conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'],
+  };
 }
 
 /** All queues the worker consumes from */
@@ -345,17 +361,19 @@ async function handleRunStart(
       'UPDATE runs SET branch = ?, head_sha = ?, updated_at = ? WHERE run_id = ?'
     ).run(existingWorktree.branchName, existingWorktree.baseCommit, new Date().toISOString(), runId);
     // Advance phase via orchestrator
-    const result = transitionPhase(db, {
+    const transitionInput = {
       runId,
-      toPhase: 'planning',
-      toStep: 'planner_create_plan',
+      toPhase: 'planning' as const,
+      toStep: 'planner_create_plan' as const,
       triggeredBy: 'system',
       reason: 'Worktree ready (existing)',
-    });
+    };
+    const result = transitionPhase(db, transitionInput);
     if (!result.success) {
       log.warn({ runId, error: result.error }, 'Phase transition failed (idempotency — may already be advanced)');
       return;
     }
+    try { mirrorPhaseTransition(getMirrorCtx(), transitionInput, result); } catch { /* non-fatal */ }
     // Enqueue planner agent
     await enqueueAgentJob(runId, 'planner', 'create_plan');
     return;
@@ -421,18 +439,21 @@ async function handleRunStart(
   ).run(worktree.branchName, worktree.baseCommit, new Date().toISOString(), runId);
 
   // 8. Advance phase via orchestrator
-  const result = transitionPhase(db, {
+  const startTransitionInput = {
     runId,
-    toPhase: 'planning',
-    toStep: 'planner_create_plan',
+    toPhase: 'planning' as const,
+    toStep: 'planner_create_plan' as const,
     triggeredBy: 'system',
     reason: 'Worktree ready',
-  });
+  };
+  const result = transitionPhase(db, startTransitionInput);
 
   if (!result.success) {
     log.error({ runId, error: result.error }, 'Failed to transition to planning');
     return;
   }
+
+  try { mirrorPhaseTransition(getMirrorCtx(), startTransitionInput, result); } catch { /* non-fatal */ }
 
   // 9. Enqueue planner agent
   await enqueueAgentJob(runId, 'planner', 'create_plan');
@@ -455,18 +476,21 @@ function handleRunCancel(
 
   log.info({ runId, triggeredBy }, 'Cancelling run');
 
-  const result = transitionPhase(db, {
+  const cancelInput = {
     runId,
-    toPhase: 'cancelled',
-    toStep: 'cleanup',
+    toPhase: 'cancelled' as const,
+    toStep: 'cleanup' as const,
     triggeredBy: triggeredBy ?? 'system',
     result: 'cancelled',
-  });
+  };
+  const result = transitionPhase(db, cancelInput);
 
   if (!result.success) {
     log.error({ runId, error: result.error }, 'Failed to transition to cancelled');
     return;
   }
+
+  try { mirrorPhaseTransition(getMirrorCtx(), cancelInput, result); } catch { /* non-fatal */ }
 
   // Best-effort worktree cleanup
   try {
@@ -493,19 +517,22 @@ function handleRunTimeout(
 
   log.info({ runId }, 'Timing out run');
 
-  const result = transitionPhase(db, {
+  const timeoutInput = {
     runId,
-    toPhase: 'cancelled',
-    toStep: 'cleanup',
+    toPhase: 'cancelled' as const,
+    toStep: 'cleanup' as const,
     triggeredBy: 'system',
     result: 'failure',
     resultReason: 'Run timed out',
-  });
+  };
+  const result = transitionPhase(db, timeoutInput);
 
   if (!result.success) {
     log.error({ runId, error: result.error }, 'Failed to transition to cancelled (timeout)');
     return;
   }
+
+  try { mirrorPhaseTransition(getMirrorCtx(), timeoutInput, result); } catch { /* non-fatal */ }
 
   // Best-effort worktree cleanup
   try {
@@ -528,18 +555,25 @@ function markRunFailed(
   runId: string,
   reason: string
 ): void {
-  const result = transitionPhase(db, {
+  const failedInput = {
     runId,
-    toPhase: 'blocked',
+    toPhase: 'blocked' as const,
     triggeredBy: 'system',
     blockedReason: reason,
     blockedContext: { error: reason },
-  });
+  };
+  const result = transitionPhase(db, failedInput);
 
   if (!result.success) {
     log.error({ runId, reason, transitionError: result.error }, 'Failed to transition to blocked');
     return;
   }
+
+  try {
+    const ctx = getMirrorCtx();
+    mirrorPhaseTransition(ctx, failedInput, result);
+    mirrorFailure(ctx, { runId, blockedReason: reason, blockedContext: failedInput.blockedContext });
+  } catch { /* non-fatal */ }
 
   log.error({ runId, reason }, 'Run blocked due to failure');
 }
@@ -584,6 +618,16 @@ async function handleRunResume(
       return;
     }
 
+    try {
+      mirrorPhaseTransition(getMirrorCtx(), {
+        runId,
+        toPhase: 'executing',
+        toStep: 'implementer_apply_changes',
+        triggeredBy: triggeredBy ?? 'system',
+        reason: 'Plan approved by operator',
+      }, txnResult);
+    } catch { /* non-fatal */ }
+
     // Enqueue implementer agent
     await enqueueAgentJob(runId, 'implementer', 'apply_changes');
     log.info({ runId }, 'Run resumed — implementer enqueued');
@@ -596,17 +640,20 @@ async function handleRunResume(
 
     log.info({ runId, triggeredBy, priorPhase }, 'Retrying from blocked state');
 
-    const result = transitionPhase(db, {
+    const retryInput = {
       runId,
       toPhase: priorPhase as RunPhase,
       triggeredBy: triggeredBy ?? 'system',
       reason: 'Operator retry from blocked state',
-    });
+    };
+    const result = transitionPhase(db, retryInput);
 
     if (!result.success) {
       log.error({ runId, error: result.error, targetPhase: priorPhase }, 'Failed to transition from blocked');
       return;
     }
+
+    try { mirrorPhaseTransition(getMirrorCtx(), retryInput, result); } catch { /* non-fatal */ }
 
     log.info({ runId, toPhase: priorPhase }, 'Run retried from blocked');
   } else {
@@ -661,16 +708,23 @@ async function handlePlanReviewerAgent(
 
   if (reviewResult.approved) {
     // Transition to awaiting_plan_approval (human gate)
-    const result = transitionPhase(db, {
+    const planApprovalInput = {
       runId,
-      toPhase: 'awaiting_plan_approval',
-      toStep: 'wait_plan_approval',
+      toPhase: 'awaiting_plan_approval' as const,
+      toStep: 'wait_plan_approval' as const,
       triggeredBy: 'system',
       reason: 'Plan approved by AI reviewer',
-    });
+    };
+    const result = transitionPhase(db, planApprovalInput);
 
     if (!result.success) {
       log.error({ runId, error: result.error }, 'Failed to transition to awaiting_plan_approval');
+    } else {
+      try {
+        const ctx = getMirrorCtx();
+        mirrorPhaseTransition(ctx, planApprovalInput, result);
+        mirrorPlanArtifact(ctx, runId);
+      } catch { /* non-fatal */ }
     }
   } else {
     // Re-read run to get current plan_revisions
@@ -792,10 +846,10 @@ async function handleImplementerAgent(
       }
 
       // Gate failed with escalation (retries exhausted) — block for operator
-      const blockResult = transitionPhase(db, {
+      const blockInput = {
         runId,
-        toPhase: 'blocked',
-        triggeredBy: 'system',
+        toPhase: 'blocked' as const,
+        triggeredBy: 'system' as const,
         blockedReason: 'gate_failed',
         blockedContext: {
           prior_phase: 'executing',
@@ -803,30 +857,42 @@ async function handleImplementerAgent(
           gate_status: gateResult?.status ?? 'failed',
           escalate: gateResult?.escalate ?? false,
         },
-      });
+      };
+      const blockResult = transitionPhase(db, blockInput);
       if (blockResult.success) {
         log.info(
           { runId, gate: failedGate, status: gateResult?.status, escalate: gateResult?.escalate },
           'Run blocked — gate failed with escalation'
         );
+        try {
+          const ctx = getMirrorCtx();
+          mirrorPhaseTransition(ctx, blockInput, blockResult);
+          mirrorFailure(ctx, {
+            runId,
+            blockedReason: 'gate_failed',
+            blockedContext: blockInput.blockedContext,
+          });
+        } catch { /* non-fatal */ }
       }
       return;
     }
   }
 
   // Transition to awaiting_review
-  const result = transitionPhase(db, {
+  const reviewTransitionInput = {
     runId,
-    toPhase: 'awaiting_review',
-    toStep: 'reviewer_review_code',
-    triggeredBy: 'system',
+    toPhase: 'awaiting_review' as const,
+    toStep: 'reviewer_review_code' as const,
+    triggeredBy: 'system' as const,
     reason: 'Implementation complete',
-  });
+  };
+  const result = transitionPhase(db, reviewTransitionInput);
 
   if (!result.success) {
     log.error({ runId, error: result.error }, 'Failed to transition to awaiting_review');
     return;
   }
+  try { mirrorPhaseTransition(getMirrorCtx(), reviewTransitionInput, result); } catch { /* non-fatal */ }
 
   // Enqueue code reviewer
   await enqueueAgentJob(runId, 'reviewer', 'review_code');
@@ -851,17 +917,20 @@ async function handleCodeReviewerAgent(
 
   if (reviewResult.approved) {
     // Transition to completed
-    const result = transitionPhase(db, {
+    const completedInput = {
       runId,
-      toPhase: 'completed',
-      toStep: 'create_pr',
-      triggeredBy: 'system',
-      result: 'success',
+      toPhase: 'completed' as const,
+      toStep: 'create_pr' as const,
+      triggeredBy: 'system' as const,
+      result: 'success' as const,
       reason: 'Code approved by AI reviewer',
-    });
+    };
+    const result = transitionPhase(db, completedInput);
 
     if (!result.success) {
       log.error({ runId, error: result.error }, 'Failed to transition to completed');
+    } else {
+      try { mirrorPhaseTransition(getMirrorCtx(), completedInput, result); } catch { /* non-fatal */ }
     }
   } else {
     // Re-read run to get current review_rounds
@@ -874,18 +943,20 @@ async function handleCodeReviewerAgent(
     // Re-run implementer (back to executing)
     log.info({ runId, reviewRounds: currentRun?.reviewRounds }, 'Code rejected, re-running implementer');
 
-    const result = transitionPhase(db, {
+    const rejectInput = {
       runId,
-      toPhase: 'executing',
-      toStep: 'implementer_apply_changes',
-      triggeredBy: 'system',
+      toPhase: 'executing' as const,
+      toStep: 'implementer_apply_changes' as const,
+      triggeredBy: 'system' as const,
       reason: 'Code changes requested by reviewer',
-    });
+    };
+    const result = transitionPhase(db, rejectInput);
 
     if (!result.success) {
       log.error({ runId, error: result.error }, 'Failed to transition back to executing');
       return;
     }
+    try { mirrorPhaseTransition(getMirrorCtx(), rejectInput, result); } catch { /* non-fatal */ }
 
     await enqueueAgentJob(runId, 'implementer', 'apply_changes');
   }

@@ -26,8 +26,9 @@ import { migration010 } from './010_strict_ownership.ts';
 import { migration011 } from './011_user_api_keys.ts';
 import { migration012 } from './012_repo_clone_tracking.ts';
 import { migration013 } from './013_worktree_metadata.ts';
+import { migration014 } from './014_mirroring_rate_limits.ts';
 
 /**
  * All migrations in order
  */
-export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013];
+export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014];

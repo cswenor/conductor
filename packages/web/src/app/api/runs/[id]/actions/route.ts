@@ -18,6 +18,7 @@ import {
   evaluateGatesAndTransition,
   createOverride,
   isValidOverrideScope,
+  mirrorApprovalDecision,
 } from '@conductor/shared';
 import type { OverrideScope } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
@@ -125,7 +126,7 @@ export const POST = withAuth(async (
         }
 
         // Record operator action only after successful gate check + transition
-        recordOperatorAction(db, {
+        const approveAction = recordOperatorAction(db, {
           runId,
           action: 'approve_plan',
           actorId: userId,
@@ -134,6 +135,13 @@ export const POST = withAuth(async (
           fromPhase: run.phase,
           toPhase: 'executing',
         });
+
+        try {
+          mirrorApprovalDecision(
+            { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
+            { runId, operatorActionId: approveAction.operatorActionId, action: 'approve_plan', actorId: userId, fromPhase: run.phase, toPhase: 'executing', comment: body.comment },
+          );
+        } catch { /* non-fatal */ }
 
         log.info({ runId, userId }, 'Plan approved by operator');
         return NextResponse.json({ success: true, run: txnResult.run });
@@ -157,7 +165,7 @@ export const POST = withAuth(async (
           );
         }
 
-        recordOperatorAction(db, {
+        const reviseAction = recordOperatorAction(db, {
           runId,
           action: 'revise_plan',
           actorId: userId,
@@ -166,6 +174,13 @@ export const POST = withAuth(async (
           fromPhase: run.phase,
           toPhase: 'planning',
         });
+
+        try {
+          mirrorApprovalDecision(
+            { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
+            { runId, operatorActionId: reviseAction.operatorActionId, action: 'revise_plan', actorId: userId, fromPhase: run.phase, toPhase: 'planning', comment: body.comment },
+          );
+        } catch { /* non-fatal */ }
 
         // Increment plan revisions
         db.prepare(
@@ -227,7 +242,7 @@ export const POST = withAuth(async (
           );
         }
 
-        recordOperatorAction(db, {
+        const rejectAction = recordOperatorAction(db, {
           runId,
           action: 'reject_run',
           actorId: userId,
@@ -236,6 +251,13 @@ export const POST = withAuth(async (
           fromPhase: run.phase,
           toPhase: 'cancelled',
         });
+
+        try {
+          mirrorApprovalDecision(
+            { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
+            { runId, operatorActionId: rejectAction.operatorActionId, action: 'reject_run', actorId: userId, fromPhase: run.phase, toPhase: 'cancelled', comment: body.comment },
+          );
+        } catch { /* non-fatal */ }
 
         // No gate evaluation needed — rejection goes straight to cancelled.
         // The operator action record above is the audit trail for this decision.
@@ -344,7 +366,7 @@ export const POST = withAuth(async (
           );
         }
 
-        recordOperatorAction(db, {
+        const grantAction = recordOperatorAction(db, {
           runId,
           action: 'grant_policy_exception',
           actorId: userId,
@@ -352,6 +374,13 @@ export const POST = withAuth(async (
           comment: body.justification,
           fromPhase: run.phase,
         });
+
+        try {
+          mirrorApprovalDecision(
+            { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
+            { runId, operatorActionId: grantAction.operatorActionId, action: 'grant_policy_exception', actorId: userId, fromPhase: run.phase, comment: body.justification },
+          );
+        } catch { /* non-fatal */ }
 
         // Finding 12: Validate scope against allowed enum
         const rawScope = body.scope ?? 'this_run';
@@ -465,7 +494,7 @@ export const POST = withAuth(async (
           );
         }
 
-        recordOperatorAction(db, {
+        const denyAction = recordOperatorAction(db, {
           runId,
           action: 'deny_policy_exception',
           actorId: userId,
@@ -474,6 +503,13 @@ export const POST = withAuth(async (
           fromPhase: run.phase,
           toPhase: 'cancelled',
         });
+
+        try {
+          mirrorApprovalDecision(
+            { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
+            { runId, operatorActionId: denyAction.operatorActionId, action: 'deny_policy_exception', actorId: userId, fromPhase: run.phase, toPhase: 'cancelled', comment: body.comment },
+          );
+        } catch { /* non-fatal */ }
 
         const result = transitionPhase(db, {
           runId,
@@ -512,7 +548,7 @@ export const POST = withAuth(async (
           );
         }
 
-        recordOperatorAction(db, {
+        const cancelAction = recordOperatorAction(db, {
           runId,
           action: 'cancel',
           actorId: userId,
@@ -521,6 +557,13 @@ export const POST = withAuth(async (
           fromPhase: run.phase,
           toPhase: 'cancelled',
         });
+
+        try {
+          mirrorApprovalDecision(
+            { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
+            { runId, operatorActionId: cancelAction.operatorActionId, action: 'cancel', actorId: userId, fromPhase: run.phase, toPhase: 'cancelled', comment: body.comment },
+          );
+        } catch { /* non-fatal */ }
 
         const result = transitionPhase(db, {
           runId,
