@@ -9,6 +9,7 @@
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../logger/index.ts';
 import type { EnqueueWriteResult } from '../outbox/index.ts';
+import { formatCoalescedComment, truncateComment } from './formatter.ts';
 
 const log = createLogger({ name: 'conductor:mirroring:rate-limiter' });
 
@@ -63,6 +64,16 @@ function generateDeferredEventId(): string {
 // =============================================================================
 
 /**
+ * Context for structured coalesced comment formatting.
+ * When provided, coalesced comments use the structured format from formatCoalescedComment.
+ */
+export interface CoalesceContext {
+  runNumber: number;
+  runId: string;
+  conductorBaseUrl?: string;
+}
+
+/**
  * Check rate limit and either post immediately or defer the event.
  *
  * Algorithm:
@@ -74,15 +85,20 @@ function generateDeferredEventId(): string {
  * @param runId - Run to check rate limit for
  * @param event - Event to post or defer
  * @param enqueueFn - Function that enqueues the write and returns result
+ * @param coalesceCtx - Optional context for structured coalesced formatting
  */
 export function checkAndMirror(
   db: Database,
   runId: string,
   event: { eventType: string; formattedBody: string; idempotencySuffix: string },
   enqueueFn: (body: string, idempotencyKey: string) => EnqueueWriteResult,
+  coalesceCtx?: CoalesceContext,
 ): MirrorResult {
   try {
-    // Check last comment timestamp for this run
+    // Check last comment timestamp for this run.
+    // Intentionally includes queued/pending/failed writes (not just completed).
+    // This prevents comment floods even when writes are still in-flight or retrying.
+    // Only cancelled writes are excluded since they'll never be posted.
     const lastComment = db.prepare(`
       SELECT MAX(created_at) as last_at
       FROM github_writes
@@ -103,19 +119,33 @@ export function checkAndMirror(
       return deferEvent(db, runId, event);
     }
 
-    // Allowed — flush deferred events and coalesce with current
-    const deferred = flushDeferredEvents(db, runId);
+    // Allowed — read deferred events and coalesce with current
+    const deferred = getDeferredEvents(db, runId);
 
     let body: string;
     let idempotencyKey: string;
 
     if (deferred.length > 0) {
-      // Coalesce deferred events with current event
-      const allBodies = [
-        ...deferred.map((d) => d.formattedBody),
-        event.formattedBody,
-      ];
-      body = allBodies.join('\n\n---\n\n');
+      // Coalesce deferred events with current event using structured format
+      if (coalesceCtx !== undefined) {
+        const events = [
+          ...deferred.map((d) => ({ timestamp: d.createdAt, body: d.formattedBody })),
+          { timestamp: new Date().toISOString(), body: event.formattedBody },
+        ];
+        body = truncateComment(formatCoalescedComment(
+          coalesceCtx.runNumber,
+          events,
+          coalesceCtx.conductorBaseUrl,
+          coalesceCtx.runId,
+        ));
+      } else {
+        // Fallback: concatenate bodies (for tests without full context)
+        const allBodies = [
+          ...deferred.map((d) => d.formattedBody),
+          event.formattedBody,
+        ];
+        body = allBodies.join('\n\n---\n\n');
+      }
       // Use current event's idempotency suffix for the coalesced comment
       idempotencyKey = event.idempotencySuffix;
     } else {
@@ -124,6 +154,11 @@ export function checkAndMirror(
     }
 
     const result = enqueueFn(body, idempotencyKey);
+
+    // Delete deferred events only AFTER successful enqueue to avoid data loss
+    if (deferred.length > 0) {
+      deleteDeferredEvents(db, runId);
+    }
 
     return {
       enqueued: result.isNew,
@@ -170,9 +205,9 @@ function deferEvent(
 }
 
 /**
- * Flush and delete deferred events for a run, returning them in chronological order.
+ * Read deferred events for a run in chronological order (does NOT delete them).
  */
-function flushDeferredEvents(db: Database, runId: string): DeferredEvent[] {
+function getDeferredEvents(db: Database, runId: string): DeferredEvent[] {
   const rows = db.prepare(`
     SELECT * FROM mirror_deferred_events
     WHERE run_id = ?
@@ -183,11 +218,6 @@ function flushDeferredEvents(db: Database, runId: string): DeferredEvent[] {
     return [];
   }
 
-  // Delete flushed events
-  db.prepare('DELETE FROM mirror_deferred_events WHERE run_id = ?').run(runId);
-
-  log.debug({ runId, count: rows.length }, 'Flushed deferred events');
-
   return rows.map((row) => ({
     deferredEventId: row.deferred_event_id,
     runId: row.run_id,
@@ -196,4 +226,60 @@ function flushDeferredEvents(db: Database, runId: string): DeferredEvent[] {
     idempotencySuffix: row.idempotency_suffix,
     createdAt: row.created_at,
   }));
+}
+
+/**
+ * Delete all deferred events for a run. Called after successful enqueue.
+ */
+function deleteDeferredEvents(db: Database, runId: string): void {
+  db.prepare('DELETE FROM mirror_deferred_events WHERE run_id = ?').run(runId);
+  log.debug({ runId }, 'Deleted deferred events after successful enqueue');
+}
+
+/**
+ * Flush stale deferred events for runs that haven't had a mirror call recently.
+ * Used by the periodic orphan-flush job to prevent deferred events from being
+ * stranded indefinitely.
+ *
+ * Returns the number of runs flushed.
+ */
+export function flushStaleDeferredEvents(
+  db: Database,
+  enqueueFnForRun: (runId: string) => ((body: string, idempotencyKey: string) => EnqueueWriteResult) | null,
+  staleThresholdSeconds: number = 60,
+): number {
+  // Find runs with deferred events older than the threshold
+  const staleRuns = db.prepare(`
+    SELECT DISTINCT run_id FROM mirror_deferred_events
+    WHERE created_at <= datetime('now', '-' || ? || ' seconds')
+  `).all(staleThresholdSeconds) as Array<{ run_id: string }>;
+
+  let flushedCount = 0;
+
+  for (const row of staleRuns) {
+    const runId = row.run_id;
+    const deferred = getDeferredEvents(db, runId);
+    if (deferred.length === 0) continue;
+
+    const enqueueFn = enqueueFnForRun(runId);
+    if (enqueueFn === null) {
+      log.debug({ runId }, 'No enqueue function for stale run — skipping flush');
+      continue;
+    }
+
+    const body = deferred.map((d) => d.formattedBody).join('\n\n---\n\n');
+    const idempotencyKey = `${runId}:mirror:flush:${Date.now()}`;
+
+    try {
+      enqueueFn(body, idempotencyKey);
+      deleteDeferredEvents(db, runId);
+      flushedCount++;
+      log.info({ runId, eventCount: deferred.length }, 'Flushed stale deferred events');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      log.error({ runId, error: message }, 'Failed to flush stale deferred events');
+    }
+  }
+
+  return flushedCount;
 }

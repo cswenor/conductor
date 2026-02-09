@@ -72,6 +72,9 @@ import {
   mirrorPhaseTransition,
   mirrorPlanArtifact,
   mirrorFailure,
+  flushStaleDeferredEvents,
+  enqueueWrite,
+  getTask,
   type MirrorContext,
 } from '@conductor/shared';
 
@@ -572,7 +575,7 @@ function markRunFailed(
   try {
     const ctx = getMirrorCtx();
     mirrorPhaseTransition(ctx, failedInput, result);
-    mirrorFailure(ctx, { runId, blockedReason: reason, blockedContext: failedInput.blockedContext });
+    mirrorFailure(ctx, { runId, blockedReason: reason, blockedContext: failedInput.blockedContext, eventSequence: result.event?.sequence });
   } catch { /* non-fatal */ }
 
   log.error({ runId, reason }, 'Run blocked due to failure');
@@ -871,6 +874,7 @@ async function handleImplementerAgent(
             runId,
             blockedReason: 'gate_failed',
             blockedContext: blockInput.blockedContext,
+            eventSequence: blockResult.event?.sequence,
           });
         } catch { /* non-fatal */ }
       }
@@ -1141,6 +1145,35 @@ async function processCleanup(job: Job<CleanupJobData>): Promise<void> {
       // TODO: Implement old job cleanup
       log.info({ targetId }, 'Old jobs cleanup not yet implemented');
       break;
+    case 'mirror_flush': {
+      // Flush stale deferred mirroring events for runs that haven't had a mirror call
+      const flushed = flushStaleDeferredEvents(db, (runId) => {
+        const run = getRun(db, runId);
+        if (run === null) return null;
+        const task = getTask(db, run.taskId);
+        if (task === null || task.githubIssueNumber === 0 || task.githubNodeId === '') return null;
+        const repo = getRepo(db, run.repoId);
+        if (repo === null) return null;
+
+        return (body: string, idempotencyKey: string) => {
+          return enqueueWrite(db, {
+            runId,
+            kind: 'comment',
+            targetNodeId: task.githubNodeId,
+            targetType: 'issue',
+            payload: {
+              owner: repo.githubOwner,
+              repo: repo.githubName,
+              issueNumber: task.githubIssueNumber,
+              body,
+            },
+            idempotencyKey,
+          }, getQueueManager());
+        };
+      });
+      log.info({ flushedRuns: flushed }, 'Mirror deferred events flush completed');
+      break;
+    }
     default:
       log.warn({ type, targetId }, 'Unknown cleanup type');
   }
@@ -1217,6 +1250,7 @@ async function processGitHubWrite(job: Job<GitHubWriteJobData>): Promise<void> {
 
 /** Active workers for graceful shutdown */
 const workers: Worker[] = [];
+let mirrorFlushTimer: ReturnType<typeof setInterval> | undefined;
 
 /** Flag to track shutdown state */
 let isShuttingDown = false;
@@ -1232,6 +1266,11 @@ async function shutdown(signal: string): Promise<void> {
 
   isShuttingDown = true;
   log.info({ signal }, 'Starting graceful shutdown');
+
+  // Stop periodic timers
+  if (mirrorFlushTimer !== undefined) {
+    clearInterval(mirrorFlushTimer);
+  }
 
   // Close all workers (waits for current jobs to complete)
   log.info('Closing workers');
@@ -1340,6 +1379,13 @@ async function main(): Promise<void> {
       log.error({ queue: worker.name, error: err.message }, 'Worker error');
     });
   }
+
+  // Schedule periodic mirror deferred events flush (every 60s)
+  mirrorFlushTimer = setInterval(() => {
+    void queueManager.addJob('cleanup', `cleanup:mirror_flush:${Date.now()}`, {
+      type: 'mirror_flush',
+    });
+  }, 60_000);
 
   // Register shutdown handlers
   process.on('SIGINT', () => void shutdown('SIGINT'));

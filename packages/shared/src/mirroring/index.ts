@@ -9,8 +9,8 @@ export type { MirrorEventType, FormatCommentInput } from './formatter.ts';
 
 export { redactContent } from './redact-content.ts';
 
-export { checkAndMirror } from './rate-limiter.ts';
-export type { MirrorResult, DeferredEvent } from './rate-limiter.ts';
+export { checkAndMirror, flushStaleDeferredEvents } from './rate-limiter.ts';
+export type { MirrorResult, DeferredEvent, CoalesceContext } from './rate-limiter.ts';
 
 export {
   mirrorPhaseTransition,

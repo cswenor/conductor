@@ -20,7 +20,7 @@ import type { QueueManager } from '../queue/index.ts';
 import type { TransitionInput, TransitionResult } from '../orchestrator/index.ts';
 import { formatMirrorComment, truncateComment } from './formatter.ts';
 import { redactContent } from './redact-content.ts';
-import { checkAndMirror, type MirrorResult } from './rate-limiter.ts';
+import { checkAndMirror, type MirrorResult, type CoalesceContext } from './rate-limiter.ts';
 
 const log = createLogger({ name: 'conductor:mirroring' });
 
@@ -74,6 +74,17 @@ function resolveIssueTarget(db: Database, runId: string): IssueTarget | null {
     issueNodeId: task.githubNodeId,
     runNumber: run.runNumber,
   };
+}
+
+/**
+ * Build coalesce context for structured coalesced comment formatting.
+ */
+function buildCoalesceCtx(
+  runId: string,
+  target: IssueTarget,
+  conductorBaseUrl?: string,
+): CoalesceContext {
+  return { runNumber: target.runNumber, runId, conductorBaseUrl };
 }
 
 /**
@@ -158,6 +169,7 @@ export function mirrorPhaseTransition(
         idempotencySuffix: `${input.runId}:mirror:phase:${sequence}`,
       },
       createEnqueueFn(ctx, input.runId, target),
+      buildCoalesceCtx(input.runId, target, ctx.conductorBaseUrl),
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
@@ -190,8 +202,6 @@ export function mirrorPlanArtifact(
     const planContent = artifact?.contentMarkdown ?? 'No plan content available.';
     const version = artifact?.version ?? 0;
 
-    const redactedPlan = redactContent(planContent);
-
     const comment = formatMirrorComment({
       eventType: 'plan_ready',
       runId,
@@ -200,11 +210,13 @@ export function mirrorPlanArtifact(
       timestamp: new Date().toISOString(),
       body: 'A plan has been generated and is ready for review.',
       detailsSummary: 'View Plan',
-      detailsContent: redactedPlan,
+      detailsContent: planContent,
       conductorUrl: ctx.conductorBaseUrl,
     });
 
-    const truncated = truncateComment(comment);
+    // Redact the full formatted comment (covers plan content + any body secrets)
+    const redacted = redactContent(comment);
+    const truncated = truncateComment(redacted);
 
     return checkAndMirror(
       ctx.db,
@@ -215,6 +227,7 @@ export function mirrorPlanArtifact(
         idempotencySuffix: `${runId}:mirror:plan:${version}`,
       },
       createEnqueueFn(ctx, runId, target),
+      buildCoalesceCtx(runId, target, ctx.conductorBaseUrl),
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
@@ -291,6 +304,7 @@ export function mirrorApprovalDecision(
         idempotencySuffix: `${input.runId}:mirror:approval:${input.operatorActionId}`,
       },
       createEnqueueFn(ctx, input.runId, target),
+      buildCoalesceCtx(input.runId, target, ctx.conductorBaseUrl),
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
@@ -314,6 +328,8 @@ export function mirrorFailure(
     runId: string;
     blockedReason: string;
     blockedContext?: Record<string, unknown>;
+    /** Sequence from the transition event, if available. Prevents idempotency collisions. */
+    eventSequence?: number;
   },
 ): MirrorResult {
   try {
@@ -368,9 +384,14 @@ export function mirrorFailure(
     const redacted = redactContent(comment);
     const truncated = truncateComment(redacted);
 
-    // Use run's next_sequence for failure idempotency
-    const run = getRun(ctx.db, input.runId);
-    const sequence = run?.lastEventSequence ?? Date.now();
+    // Use provided event sequence, or fall back to nextSequence (always unique/incrementing)
+    let sequence: number;
+    if (input.eventSequence !== undefined) {
+      sequence = input.eventSequence;
+    } else {
+      const run = getRun(ctx.db, input.runId);
+      sequence = run?.nextSequence ?? Date.now();
+    }
 
     return checkAndMirror(
       ctx.db,
@@ -381,6 +402,7 @@ export function mirrorFailure(
         idempotencySuffix: `${input.runId}:mirror:failure:${sequence}`,
       },
       createEnqueueFn(ctx, input.runId, target),
+      buildCoalesceCtx(input.runId, target, ctx.conductorBaseUrl),
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
