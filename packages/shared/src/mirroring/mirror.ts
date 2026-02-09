@@ -166,7 +166,7 @@ export function mirrorPhaseTransition(
       {
         eventType: 'phase_transition',
         formattedBody: truncated,
-        summary: body,
+        summary: redactContent(body).replaceAll('\n', ' '),
         idempotencySuffix: `${input.runId}:mirror:phase:${sequence}`,
       },
       createEnqueueFn(ctx, input.runId, target),
@@ -303,7 +303,7 @@ export function mirrorApprovalDecision(
       {
         eventType: 'approval_decision',
         formattedBody: truncated,
-        summary: body,
+        summary: redactContent(body).replaceAll('\n', ' '),
         idempotencySuffix: `${input.runId}:mirror:approval:${input.operatorActionId}`,
       },
       createEnqueueFn(ctx, input.runId, target),
@@ -402,7 +402,7 @@ export function mirrorFailure(
       {
         eventType: 'failure',
         formattedBody: truncated,
-        summary: body,
+        summary: redactContent(body).replaceAll('\n', ' '),
         idempotencySuffix: `${input.runId}:mirror:failure:${sequence}`,
       },
       createEnqueueFn(ctx, input.runId, target),

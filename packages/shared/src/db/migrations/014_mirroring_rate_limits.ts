@@ -19,7 +19,6 @@ export const migration014: Migration = {
         run_id TEXT NOT NULL REFERENCES runs(run_id),
         event_type TEXT NOT NULL,
         formatted_body TEXT NOT NULL,
-        summary TEXT NOT NULL DEFAULT '',
         idempotency_suffix TEXT NOT NULL UNIQUE,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
