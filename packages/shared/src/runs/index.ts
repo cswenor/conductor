@@ -385,6 +385,40 @@ export function clearActiveRunIfTerminal(db: Database, runId: string): void {
 }
 
 // =============================================================================
+// PR Bundle
+// =============================================================================
+
+export interface UpdateRunPrBundleInput {
+  runId: string;
+  prNumber: number;
+  prNodeId: string;
+  prUrl: string;
+  prState: string;
+  prSyncedAt: string;
+}
+
+/**
+ * Atomically set all 5 PR fields on a run.
+ * Returns true if the row was updated.
+ */
+export function updateRunPrBundle(db: Database, input: UpdateRunPrBundleInput): boolean {
+  const result = db.prepare(
+    `UPDATE runs
+     SET pr_number = ?, pr_node_id = ?, pr_url = ?, pr_state = ?, pr_synced_at = ?, updated_at = ?
+     WHERE run_id = ?`
+  ).run(
+    input.prNumber,
+    input.prNodeId,
+    input.prUrl,
+    input.prState,
+    input.prSyncedAt,
+    new Date().toISOString(),
+    input.runId
+  );
+  return result.changes > 0;
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 

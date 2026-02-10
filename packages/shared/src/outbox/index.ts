@@ -683,6 +683,30 @@ export function getRunWriteStats(
 }
 
 // =============================================================================
+// Stalled Write Recovery
+// =============================================================================
+
+/**
+ * Reset a stuck 'processing' write back to 'queued'.
+ *
+ * Only resets if the write has been in 'processing' longer than staleAfterMs
+ * (uses created_at as a staleness proxy). A write that was just created moments
+ * ago and is legitimately processing won't be reset.
+ */
+export function resetStalledWrite(
+  db: Database,
+  githubWriteId: string,
+  staleAfterMs: number = 5 * 60_000
+): boolean {
+  const cutoff = new Date(Date.now() - staleAfterMs).toISOString();
+  const result = db.prepare(
+    `UPDATE github_writes SET status = 'queued'
+     WHERE github_write_id = ? AND status = 'processing' AND created_at < ?`
+  ).run(githubWriteId, cutoff);
+  return result.changes > 0;
+}
+
+// =============================================================================
 // Helper Functions
 // =============================================================================
 

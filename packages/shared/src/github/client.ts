@@ -341,6 +341,63 @@ export class GitHubClient {
   // ===========================================================================
 
   /**
+   * List pull requests for a repository, optionally filtered by head branch
+   */
+  async listPullRequests(
+    owner: string,
+    repo: string,
+    options?: { head?: string; state?: 'open' | 'closed' | 'all' }
+  ): Promise<GitHubPullRequest[]> {
+    const octokit = await this.getOctokit();
+    const state = options?.state ?? 'open';
+
+    const params: Record<string, unknown> = {
+      owner,
+      repo,
+      state,
+      per_page: 100,
+    };
+    if (options?.head !== undefined) {
+      params['head'] = options.head;
+    }
+
+    const { data } = await octokit.request('GET /repos/{owner}/{repo}/pulls', params as {
+      owner: string;
+      repo: string;
+      state?: 'open' | 'closed' | 'all';
+      head?: string;
+      per_page?: number;
+    });
+
+    log.info({ owner, repo, count: data.length, state }, 'Listed pull requests');
+
+    return data.map((item) => ({
+      nodeId: item.node_id,
+      id: item.id,
+      number: item.number,
+      title: item.title,
+      body: item.body ?? null,
+      state: item.state as 'open' | 'closed',
+      merged: item.merged_at !== null,
+      htmlUrl: item.html_url,
+      head: {
+        ref: item.head.ref,
+        sha: item.head.sha,
+      },
+      base: {
+        ref: item.base.ref,
+      },
+      user: {
+        id: item.user?.id ?? 0,
+        login: item.user?.login ?? 'unknown',
+      },
+      createdAt: item.created_at,
+      updatedAt: item.updated_at,
+      mergedAt: item.merged_at,
+    }));
+  }
+
+  /**
    * Get a pull request by number
    */
   async getPullRequest(

@@ -9,27 +9,62 @@ const {
   mockGetRun,
   mockGetWorktreeForRun,
   mockGetRepo,
+  mockGetTask,
   mockResolveCredentials,
   mockExecFileSync,
+  mockListPullRequests,
+  mockGetPullRequest,
+  mockEnqueuePullRequest,
+  mockProcessSingleWrite,
+  mockGetWrite,
+  mockResetStalledWrite,
+  mockUpdateRunPrBundle,
+  mockCasUpdateRunStep,
 } = vi.hoisted(() => ({
   mockGetRun: vi.fn(),
   mockGetWorktreeForRun: vi.fn(),
   mockGetRepo: vi.fn(),
+  mockGetTask: vi.fn(),
   mockResolveCredentials: vi.fn(),
   mockExecFileSync: vi.fn(),
+  mockListPullRequests: vi.fn(),
+  mockGetPullRequest: vi.fn(),
+  mockEnqueuePullRequest: vi.fn(),
+  mockProcessSingleWrite: vi.fn(),
+  mockGetWrite: vi.fn(),
+  mockResetStalledWrite: vi.fn(),
+  mockUpdateRunPrBundle: vi.fn(),
+  mockCasUpdateRunStep: vi.fn(),
 }));
 
-vi.mock('@conductor/shared', () => ({
-  getRun: mockGetRun,
-  getWorktreeForRun: mockGetWorktreeForRun,
-  getRepo: mockGetRepo,
-  resolveCredentials: mockResolveCredentials,
-  getDatabase: vi.fn(),
-  createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
-}));
+vi.mock('@conductor/shared', () => {
+  const MockGitHubClient = class {
+    listPullRequests = mockListPullRequests;
+    getPullRequest = mockGetPullRequest;
+  };
+  return {
+    getRun: mockGetRun,
+    getWorktreeForRun: mockGetWorktreeForRun,
+    getRepo: mockGetRepo,
+    getTask: mockGetTask,
+    resolveCredentials: mockResolveCredentials,
+    getDatabase: vi.fn(),
+    createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+    GitHubClient: MockGitHubClient,
+    enqueuePullRequest: mockEnqueuePullRequest,
+    processSingleWrite: mockProcessSingleWrite,
+    getWrite: mockGetWrite,
+    resetStalledWrite: mockResetStalledWrite,
+    updateRunPrBundle: mockUpdateRunPrBundle,
+  };
+});
 
 vi.mock('node:child_process', () => ({
   execFileSync: mockExecFileSync,
+}));
+
+vi.mock('./run-helpers.ts', () => ({
+  casUpdateRunStep: mockCasUpdateRunStep,
 }));
 
 // Import after mocks are set up
@@ -95,6 +130,60 @@ function makeWorktree() {
     createdAt: new Date().toISOString(),
     destroyedAt: null,
   };
+}
+
+function makeTask() {
+  return {
+    taskId: 'task_1',
+    projectId: 'proj_1',
+    repoId: 'repo_1',
+    githubNodeId: 'issue_node_1',
+    githubIssueNumber: 42,
+    githubType: 'issue',
+    githubTitle: 'Add login page',
+    githubBody: 'Please add a login page',
+    githubState: 'open',
+    githubLabelsJson: '[]',
+    githubSyncedAt: new Date().toISOString(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    lastActivityAt: new Date().toISOString(),
+  };
+}
+
+function makePr(overrides: Record<string, unknown> = {}) {
+  return {
+    nodeId: 'PR_node_1',
+    id: 100,
+    number: 7,
+    title: 'Add login page',
+    body: 'Closes #42',
+    state: 'open' as const,
+    merged: false,
+    htmlUrl: 'https://github.com/acme/widget/pull/7',
+    head: { ref: 'conductor/run_1', sha: 'def456' },
+    base: { ref: 'main' },
+    user: { id: 1, login: 'bot' },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    mergedAt: null,
+    ...overrides,
+  };
+}
+
+/** Set up all mocks for the "push succeeds" base scenario */
+function setupPushSuccess() {
+  mockGetRun.mockReturnValue(makeRun());
+  mockGetWorktreeForRun.mockReturnValue(makeWorktree());
+  mockGetRepo.mockReturnValue(makeRepo());
+  mockResolveCredentials.mockResolvedValue({
+    mode: 'github_installation',
+    installationId: 42,
+    token: 'ghs_secret123',
+  });
+  mockExecFileSync.mockReturnValue(Buffer.from(''));
+  mockGetTask.mockReturnValue(makeTask());
+  mockListPullRequests.mockResolvedValue([]);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +312,15 @@ describe('handlePrCreation', () => {
 
     it('pushes branch with correct args on success', async () => {
       mockExecFileSync.mockReturnValue(Buffer.from(''));
+      mockGetTask.mockReturnValue(makeTask());
+      mockListPullRequests.mockResolvedValue([]);
+      mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: true, status: 'queued' });
+      mockProcessSingleWrite.mockResolvedValue({
+        githubWriteId: 'ghw_1', success: true,
+        githubUrl: 'https://github.com/acme/widget/pull/7', nodeId: 'PR_node_1', number: 7,
+      });
+      mockUpdateRunPrBundle.mockReturnValue(true);
+      mockCasUpdateRunStep.mockReturnValue(true);
 
       await handlePrCreation(db, makeRun(), mockMarkRunFailed);
 
@@ -246,6 +344,304 @@ describe('handlePrCreation', () => {
       const failedArgs = mockMarkRunFailed.mock.calls[0] as string[];
       expect(failedArgs[2]).not.toContain('ghs_secret123');
       expect(failedArgs[2]).not.toContain('x-access-token');
+    });
+  });
+
+  describe('PR creation (WP10.3)', () => {
+    describe('missing task', () => {
+      it('marks run failed when task is null', async () => {
+        setupPushSuccess();
+        mockGetTask.mockReturnValue(null);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockMarkRunFailed).toHaveBeenCalledWith(db, 'run_1', 'Task not found for run');
+        expect(mockEnqueuePullRequest).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('idempotency (open PR exists on GitHub)', () => {
+      it('backfills PR bundle and transitions step without creating new PR', async () => {
+        setupPushSuccess();
+        mockListPullRequests.mockResolvedValue([makePr()]);
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(true);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockEnqueuePullRequest).not.toHaveBeenCalled();
+        expect(mockUpdateRunPrBundle).toHaveBeenCalledWith(db, expect.objectContaining({
+          runId: 'run_1',
+          prNumber: 7,
+          prNodeId: 'PR_node_1',
+          prUrl: 'https://github.com/acme/widget/pull/7',
+          prState: 'open',
+        }));
+        expect(mockCasUpdateRunStep).toHaveBeenCalledWith(db, 'run_1', 'awaiting_review', 'create_pr', 'wait_pr_merge');
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('closed PR ignored', () => {
+      it('proceeds to create new PR when no open PR found', async () => {
+        setupPushSuccess();
+        // listPullRequests(state:'open') returns empty
+        mockListPullRequests.mockResolvedValue([]);
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: true, status: 'queued' });
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: true,
+          githubUrl: 'https://github.com/acme/widget/pull/8', nodeId: 'PR_node_2', number: 8,
+        });
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(true);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockEnqueuePullRequest).toHaveBeenCalled();
+        expect(mockProcessSingleWrite).toHaveBeenCalled();
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('happy path', () => {
+      it('push → no existing PR → enqueue (isNew) → process → bundle → CAS', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: true, status: 'queued' });
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: true,
+          githubUrl: 'https://github.com/acme/widget/pull/7', nodeId: 'PR_node_1', number: 7,
+        });
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(true);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockEnqueuePullRequest).toHaveBeenCalledWith(expect.objectContaining({
+          db,
+          runId: 'run_1',
+          owner: 'acme',
+          repo: 'widget',
+          repoNodeId: 'node_1',
+          title: 'Add login page',
+          body: 'Closes #42\n\nAdd login page',
+          head: 'conductor/run_1',
+          base: 'main',
+        }));
+        expect(mockProcessSingleWrite).toHaveBeenCalledWith(db, 'ghw_1', 42);
+        expect(mockUpdateRunPrBundle).toHaveBeenCalledWith(db, expect.objectContaining({
+          runId: 'run_1',
+          prNumber: 7,
+          prNodeId: 'PR_node_1',
+          prUrl: 'https://github.com/acme/widget/pull/7',
+          prState: 'open',
+        }));
+        expect(mockCasUpdateRunStep).toHaveBeenCalledWith(db, 'run_1', 'awaiting_review', 'create_pr', 'wait_pr_merge');
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('outbox failure', () => {
+      it('marks run failed when processSingleWrite returns success: false', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: true, status: 'queued' });
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: false, error: 'Validation failed', retryable: false,
+        });
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockMarkRunFailed).toHaveBeenCalledWith(db, 'run_1', 'PR creation failed: Validation failed');
+        expect(mockUpdateRunPrBundle).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('PR bundle update failure', () => {
+      it('marks run failed and does NOT transition step', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: true, status: 'queued' });
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: true,
+          githubUrl: 'https://github.com/acme/widget/pull/7', nodeId: 'PR_node_1', number: 7,
+        });
+        mockUpdateRunPrBundle.mockReturnValue(false);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockMarkRunFailed).toHaveBeenCalledWith(db, 'run_1', 'Failed to update run PR bundle');
+        expect(mockCasUpdateRunStep).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('CAS step fails (stale job)', () => {
+      it('logs and returns without markRunFailed', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: true, status: 'queued' });
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: true,
+          githubUrl: 'https://github.com/acme/widget/pull/7', nodeId: 'PR_node_1', number: 7,
+        });
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(false);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockCasUpdateRunStep).toHaveBeenCalled();
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('existing write — completed (crash recovery, open PR)', () => {
+      it('fetches PR, backfills bundle with prState open, CAS step', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'completed' });
+        mockGetWrite.mockReturnValue({
+          githubWriteId: 'ghw_1', status: 'completed',
+          githubUrl: 'https://github.com/acme/widget/pull/7', githubId: 100,
+        });
+        mockGetPullRequest.mockResolvedValue(makePr({ state: 'open', merged: false }));
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(true);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockGetPullRequest).toHaveBeenCalledWith('acme', 'widget', 7);
+        expect(mockUpdateRunPrBundle).toHaveBeenCalledWith(db, expect.objectContaining({
+          prState: 'open',
+          prNumber: 7,
+        }));
+        expect(mockCasUpdateRunStep).toHaveBeenCalled();
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+        expect(mockProcessSingleWrite).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('existing write — completed (crash recovery, merged PR)', () => {
+      it('backfills bundle with prState merged', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'completed' });
+        mockGetWrite.mockReturnValue({
+          githubWriteId: 'ghw_1', status: 'completed',
+          githubUrl: 'https://github.com/acme/widget/pull/7', githubId: 100,
+        });
+        mockGetPullRequest.mockResolvedValue(makePr({ state: 'closed', merged: true }));
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(true);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockUpdateRunPrBundle).toHaveBeenCalledWith(db, expect.objectContaining({
+          prState: 'merged',
+        }));
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('existing write — completed (crash recovery, closed PR)', () => {
+      it('backfills bundle with prState closed', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'completed' });
+        mockGetWrite.mockReturnValue({
+          githubWriteId: 'ghw_1', status: 'completed',
+          githubUrl: 'https://github.com/acme/widget/pull/7', githubId: 100,
+        });
+        mockGetPullRequest.mockResolvedValue(makePr({ state: 'closed', merged: false }));
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(true);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockUpdateRunPrBundle).toHaveBeenCalledWith(db, expect.objectContaining({
+          prState: 'closed',
+        }));
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('existing write — queued/failed', () => {
+      it('calls processSingleWrite for queued write', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'queued' });
+        mockGetWrite.mockReturnValue({ githubWriteId: 'ghw_1', status: 'queued' });
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: true,
+          githubUrl: 'https://github.com/acme/widget/pull/7', nodeId: 'PR_node_1', number: 7,
+        });
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(true);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockProcessSingleWrite).toHaveBeenCalledWith(db, 'ghw_1', 42);
+        expect(mockUpdateRunPrBundle).toHaveBeenCalled();
+        expect(mockCasUpdateRunStep).toHaveBeenCalled();
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+
+      it('calls processSingleWrite for failed write', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'failed' });
+        mockGetWrite.mockReturnValue({ githubWriteId: 'ghw_1', status: 'failed' });
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: true,
+          githubUrl: 'https://github.com/acme/widget/pull/7', nodeId: 'PR_node_1', number: 7,
+        });
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(true);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockProcessSingleWrite).toHaveBeenCalledWith(db, 'ghw_1', 42);
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('existing write — processing (stalled, reset succeeds)', () => {
+      it('resets stalled write and processes it', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'processing' });
+        mockGetWrite.mockReturnValue({ githubWriteId: 'ghw_1', status: 'processing' });
+        mockResetStalledWrite.mockReturnValue(true);
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: true,
+          githubUrl: 'https://github.com/acme/widget/pull/7', nodeId: 'PR_node_1', number: 7,
+        });
+        mockUpdateRunPrBundle.mockReturnValue(true);
+        mockCasUpdateRunStep.mockReturnValue(true);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockResetStalledWrite).toHaveBeenCalledWith(db, 'ghw_1');
+        expect(mockProcessSingleWrite).toHaveBeenCalledWith(db, 'ghw_1', 42);
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('existing write — processing (too recent, reset fails)', () => {
+      it('logs and returns without failure', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'processing' });
+        mockGetWrite.mockReturnValue({ githubWriteId: 'ghw_1', status: 'processing' });
+        mockResetStalledWrite.mockReturnValue(false);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockResetStalledWrite).toHaveBeenCalledWith(db, 'ghw_1');
+        expect(mockProcessSingleWrite).not.toHaveBeenCalled();
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('existing write — cancelled (stale skip)', () => {
+      it('logs and returns without markRunFailed', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'cancelled' });
+        mockGetWrite.mockReturnValue({ githubWriteId: 'ghw_1', status: 'cancelled' });
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockProcessSingleWrite).not.toHaveBeenCalled();
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
     });
   });
 });

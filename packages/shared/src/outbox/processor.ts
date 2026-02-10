@@ -160,6 +160,8 @@ export interface ProcessWriteResult {
   success: boolean;
   githubId?: number;
   githubUrl?: string;
+  nodeId?: string;
+  number?: number;
   error?: string;
   retryable: boolean;
 }
@@ -215,6 +217,8 @@ export async function executeWrite(
           success: true,
           githubId: result.id,
           githubUrl: result.htmlUrl,
+          nodeId: result.nodeId,
+          number: result.number,
           retryable: false,
         };
       }
