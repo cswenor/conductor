@@ -348,6 +348,33 @@ describe('Outbox Module', () => {
       closeDatabase(db);
     });
 
+    it('should reset a legacy processing write with NULL sent_at', () => {
+      cleanupTestDb();
+      const db = initDatabase({ path: TEST_DB_PATH });
+      setupTestData(db);
+
+      const result = enqueueWrite(db, {
+        runId: 'run_test',
+        kind: 'comment',
+        targetNodeId: 'I_123',
+        targetType: 'issue',
+        payload: { owner: 'o', repo: 'r', issueNumber: 42, body: 'test' },
+      });
+
+      // Simulate legacy row: set status to processing without setting sent_at
+      db.prepare(
+        `UPDATE github_writes SET status = 'processing', sent_at = NULL WHERE github_write_id = ?`
+      ).run(result.githubWriteId);
+
+      const wasReset = resetStalledWrite(db, result.githubWriteId);
+      expect(wasReset).toBe(true);
+
+      const write = getWrite(db, result.githubWriteId);
+      expect(write?.status).toBe('queued');
+
+      closeDatabase(db);
+    });
+
     it('should NOT reset a write that is not in processing status', () => {
       cleanupTestDb();
       const db = initDatabase({ path: TEST_DB_PATH });

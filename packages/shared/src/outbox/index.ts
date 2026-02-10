@@ -692,7 +692,8 @@ export function getRunWriteStats(
  * Only resets if the write has been in 'processing' longer than staleAfterMs.
  * Uses sent_at (set by markWriteProcessing when the write enters processing)
  * rather than created_at, so old writes that were just picked up for processing
- * are not incorrectly reset.
+ * are not incorrectly reset. Legacy rows with NULL sent_at are treated as
+ * definitely stale and always reset.
  */
 export function resetStalledWrite(
   db: Database,
@@ -702,7 +703,7 @@ export function resetStalledWrite(
   const cutoff = new Date(Date.now() - staleAfterMs).toISOString();
   const result = db.prepare(
     `UPDATE github_writes SET status = 'queued'
-     WHERE github_write_id = ? AND status = 'processing' AND sent_at < ?`
+     WHERE github_write_id = ? AND status = 'processing' AND (sent_at IS NULL OR sent_at < ?)`
   ).run(githubWriteId, cutoff);
   return result.changes > 0;
 }
