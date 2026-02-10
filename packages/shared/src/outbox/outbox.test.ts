@@ -8,6 +8,7 @@ import {
   markWriteProcessing,
   markWriteCompleted,
   markWriteFailed,
+  resetStalledWrite,
   generateIdempotencyKey,
   computeWritePayloadHash,
 } from './index.ts';
@@ -257,6 +258,147 @@ describe('Outbox Module', () => {
       expect(write?.status).toBe('failed');
       expect(write?.error).toBe('Rate limit exceeded');
       expect(write?.retryCount).toBe(1);
+
+      closeDatabase(db);
+    });
+  });
+
+  describe('markWriteProcessing sets sent_at', () => {
+    it('should set sent_at when transitioning to processing', () => {
+      cleanupTestDb();
+      const db = initDatabase({ path: TEST_DB_PATH });
+      setupTestData(db);
+
+      const result = enqueueWrite(db, {
+        runId: 'run_test',
+        kind: 'comment',
+        targetNodeId: 'I_123',
+        targetType: 'issue',
+        payload: { owner: 'o', repo: 'r', issueNumber: 42, body: 'test' },
+      });
+
+      // Before processing, sent_at should not be set
+      let write = getWrite(db, result.githubWriteId);
+      expect(write?.sentAt).toBeFalsy();
+
+      // Mark as processing
+      markWriteProcessing(db, result.githubWriteId);
+
+      // After processing, sent_at should be set
+      write = getWrite(db, result.githubWriteId);
+      expect(write?.status).toBe('processing');
+      expect(write?.sentAt).toBeDefined();
+
+      closeDatabase(db);
+    });
+  });
+
+  describe('resetStalledWrite', () => {
+    it('should reset a stalled processing write back to queued', () => {
+      cleanupTestDb();
+      const db = initDatabase({ path: TEST_DB_PATH });
+      setupTestData(db);
+
+      const result = enqueueWrite(db, {
+        runId: 'run_test',
+        kind: 'comment',
+        targetNodeId: 'I_123',
+        targetType: 'issue',
+        payload: { owner: 'o', repo: 'r', issueNumber: 42, body: 'test' },
+      });
+
+      markWriteProcessing(db, result.githubWriteId);
+
+      // Backdating sent_at to simulate a stale write (10 minutes ago)
+      db.prepare(
+        `UPDATE github_writes SET sent_at = ? WHERE github_write_id = ?`
+      ).run(new Date(Date.now() - 10 * 60_000).toISOString(), result.githubWriteId);
+
+      const wasReset = resetStalledWrite(db, result.githubWriteId);
+      expect(wasReset).toBe(true);
+
+      const write = getWrite(db, result.githubWriteId);
+      expect(write?.status).toBe('queued');
+
+      closeDatabase(db);
+    });
+
+    it('should NOT reset a recently-processing write', () => {
+      cleanupTestDb();
+      const db = initDatabase({ path: TEST_DB_PATH });
+      setupTestData(db);
+
+      const result = enqueueWrite(db, {
+        runId: 'run_test',
+        kind: 'comment',
+        targetNodeId: 'I_123',
+        targetType: 'issue',
+        payload: { owner: 'o', repo: 'r', issueNumber: 42, body: 'test' },
+      });
+
+      markWriteProcessing(db, result.githubWriteId);
+      // sent_at is just now — should NOT be considered stale
+
+      const wasReset = resetStalledWrite(db, result.githubWriteId);
+      expect(wasReset).toBe(false);
+
+      const write = getWrite(db, result.githubWriteId);
+      expect(write?.status).toBe('processing');
+
+      closeDatabase(db);
+    });
+
+    it('should NOT reset a write that is not in processing status', () => {
+      cleanupTestDb();
+      const db = initDatabase({ path: TEST_DB_PATH });
+      setupTestData(db);
+
+      const result = enqueueWrite(db, {
+        runId: 'run_test',
+        kind: 'comment',
+        targetNodeId: 'I_123',
+        targetType: 'issue',
+        payload: { owner: 'o', repo: 'r', issueNumber: 42, body: 'test' },
+      });
+
+      // Write is in 'queued' status, not 'processing'
+      const wasReset = resetStalledWrite(db, result.githubWriteId);
+      expect(wasReset).toBe(false);
+
+      const write = getWrite(db, result.githubWriteId);
+      expect(write?.status).toBe('queued');
+
+      closeDatabase(db);
+    });
+
+    it('should respect custom staleAfterMs threshold', () => {
+      cleanupTestDb();
+      const db = initDatabase({ path: TEST_DB_PATH });
+      setupTestData(db);
+
+      const result = enqueueWrite(db, {
+        runId: 'run_test',
+        kind: 'comment',
+        targetNodeId: 'I_123',
+        targetType: 'issue',
+        payload: { owner: 'o', repo: 'r', issueNumber: 42, body: 'test' },
+      });
+
+      markWriteProcessing(db, result.githubWriteId);
+
+      // Backdate sent_at by 2 minutes
+      db.prepare(
+        `UPDATE github_writes SET sent_at = ? WHERE github_write_id = ?`
+      ).run(new Date(Date.now() - 2 * 60_000).toISOString(), result.githubWriteId);
+
+      // With default 5-minute threshold, should NOT reset
+      expect(resetStalledWrite(db, result.githubWriteId)).toBe(false);
+
+      // With 1-minute threshold, SHOULD reset
+      expect(resetStalledWrite(db, result.githubWriteId, 60_000)).toBe(true);
+
+      const write = getWrite(db, result.githubWriteId);
+      expect(write?.status).toBe('queued');
 
       closeDatabase(db);
     });

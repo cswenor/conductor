@@ -655,7 +655,22 @@ describe('handlePrCreation', () => {
     });
 
     describe('existing write — processing (too recent, reset fails)', () => {
-      it('throws so job fails visibly instead of stranding the run', async () => {
+      it('calls scheduleRetry when provided', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'processing' });
+        mockGetWrite.mockReturnValue({ githubWriteId: 'ghw_1', status: 'processing' });
+        mockResetStalledWrite.mockReturnValue(false);
+        const mockScheduleRetry = vi.fn().mockResolvedValue(undefined);
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed, mockScheduleRetry);
+
+        expect(mockResetStalledWrite).toHaveBeenCalledWith(db, 'ghw_1');
+        expect(mockScheduleRetry).toHaveBeenCalledWith('run_1', 30_000);
+        expect(mockProcessSingleWrite).not.toHaveBeenCalled();
+        expect(mockMarkRunFailed).not.toHaveBeenCalled();
+      });
+
+      it('throws when scheduleRetry is not provided (fallback)', async () => {
         setupPushSuccess();
         mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'processing' });
         mockGetWrite.mockReturnValue({ githubWriteId: 'ghw_1', status: 'processing' });
@@ -664,7 +679,6 @@ describe('handlePrCreation', () => {
         await expect(handlePrCreation(db, makeRun(), mockMarkRunFailed))
           .rejects.toThrow('PR write ghw_1 is in-flight for run run_1; retry later');
 
-        expect(mockResetStalledWrite).toHaveBeenCalledWith(db, 'ghw_1');
         expect(mockProcessSingleWrite).not.toHaveBeenCalled();
         expect(mockMarkRunFailed).not.toHaveBeenCalled();
       });

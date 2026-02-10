@@ -662,6 +662,17 @@ async function handleRunResume(
     try { mirrorPhaseTransition(getMirrorCtx(), retryInput, result); } catch { /* non-fatal */ }
 
     log.info({ runId, toPhase: priorPhase }, 'Run retried from blocked');
+  } else if (phase === 'awaiting_review' && run.step === 'create_pr') {
+    // Retry PR creation (e.g. after in-flight write delay)
+    log.info({ runId, triggeredBy }, 'Retrying PR creation from awaiting_review/create_pr');
+    await handlePrCreation(db, run, markRunFailed, async (retryRunId, delayMs) => {
+      const qm = getQueueManager();
+      await qm.addJob('runs', `run-pr-retry-${retryRunId}-${Date.now()}`, {
+        runId: retryRunId,
+        action: 'resume',
+        triggeredBy: 'pr-creation-retry',
+      }, { delay: delayMs });
+    });
   } else {
     log.warn({ runId, phase }, 'Resume not valid from this phase');
   }
@@ -932,7 +943,14 @@ async function handleCodeReviewerAgent(
       return;
     }
 
-    await handlePrCreation(db, run, markRunFailed);
+    await handlePrCreation(db, run, markRunFailed, async (retryRunId, delayMs) => {
+      const qm = getQueueManager();
+      await qm.addJob('runs', `run-pr-retry-${retryRunId}-${Date.now()}`, {
+        runId: retryRunId,
+        action: 'resume',
+        triggeredBy: 'pr-creation-retry',
+      }, { delay: delayMs });
+    });
   } else {
     // Re-read run to get current review_rounds
     const currentRun = getRun(db, runId);

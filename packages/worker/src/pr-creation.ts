@@ -28,11 +28,13 @@ const log = createLogger({ name: 'conductor:worker:pr-creation' });
 
 type Db = ReturnType<typeof getDatabase>;
 type MarkRunFailed = (db: Db, runId: string, reason: string) => void;
+type ScheduleRetry = (runId: string, delayMs: number) => Promise<void>;
 
 export async function handlePrCreation(
   db: Db,
   run: Run,
-  markRunFailed: MarkRunFailed
+  markRunFailed: MarkRunFailed,
+  scheduleRetry?: ScheduleRetry
 ): Promise<void> {
   const { runId } = run;
 
@@ -204,11 +206,19 @@ export async function handlePrCreation(
           handleWriteResult(db, runId, result, markRunFailed);
         } else {
           // Write is too recent to be considered stalled — may be legitimately in-flight.
-          // Throw so the job fails visibly and can be retried, rather than silently
-          // stranding the run in create_pr with no recovery path.
-          throw new Error(
-            `PR write ${write.githubWriteId} is in-flight for run ${runId}; retry later`
-          );
+          // Schedule a delayed retry so the run doesn't get stranded.
+          if (scheduleRetry !== undefined) {
+            log.info(
+              { runId, githubWriteId: write.githubWriteId },
+              'Write is in-flight, scheduling delayed retry'
+            );
+            await scheduleRetry(runId, 30_000);
+          } else {
+            // No retry mechanism available — fail visibly rather than silent strand.
+            throw new Error(
+              `PR write ${write.githubWriteId} is in-flight for run ${runId}; retry later`
+            );
+          }
         }
         return;
       }
