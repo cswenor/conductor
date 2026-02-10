@@ -463,6 +463,7 @@ export async function processOutbox(
       markWriteCompleted(db, write.githubWriteId, {
         githubId: execResult.githubId,
         githubUrl: execResult.githubUrl,
+        githubNumber: execResult.number,
       });
       result.succeeded++;
     } else {
@@ -524,6 +525,7 @@ export async function processSingleWrite(
     markWriteCompleted(db, githubWriteId, {
       githubId: result.githubId,
       githubUrl: result.githubUrl,
+      githubNumber: result.number,
     });
   } else {
     markWriteFailed(db, githubWriteId, result.error ?? 'Unknown error');

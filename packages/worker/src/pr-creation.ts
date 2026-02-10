@@ -161,14 +161,19 @@ export async function handlePrCreation(
     switch (write.status) {
       case 'completed': {
         // Crash recovery: PR exists on GitHub but run wasn't updated.
-        // Parse PR number from write.githubUrl (format: https://github.com/{owner}/{repo}/pull/{number})
-        const prNumberMatch = write.githubUrl?.match(/\/pull\/(\d+)$/);
-        const prNumberStr = prNumberMatch?.[1];
-        if (prNumberStr === undefined || prNumberStr === null) {
-          markRunFailed(db, runId, 'Cannot parse PR number from completed write URL');
+        // Prefer stored github_number; fall back to URL parsing for legacy writes.
+        let prNumber: number | undefined = write.githubNumber ?? undefined;
+        if (prNumber === undefined) {
+          const prNumberMatch = write.githubUrl?.match(/\/pull\/(\d+)$/);
+          const prNumberStr = prNumberMatch?.[1];
+          if (prNumberStr !== undefined && prNumberStr !== null) {
+            prNumber = parseInt(prNumberStr, 10);
+          }
+        }
+        if (prNumber === undefined) {
+          markRunFailed(db, runId, 'Cannot determine PR number from completed write');
           return;
         }
-        const prNumber = parseInt(prNumberStr, 10);
         const pr = await client.getPullRequest(repo.githubOwner, repo.githubName, prNumber);
         const prState = pr.merged ? 'merged' : pr.state;
         const updated = updateRunPrBundle(db, {

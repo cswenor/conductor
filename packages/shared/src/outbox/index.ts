@@ -109,6 +109,7 @@ export interface GitHubWriteRecord {
   error?: string;
   githubId?: number;
   githubUrl?: string;
+  githubNumber?: number;
   createdAt: string;
   sentAt?: string;
   retryCount: number;
@@ -511,13 +512,14 @@ export function markWriteProcessing(db: Database, githubWriteId: string): boolea
 export function markWriteCompleted(
   db: Database,
   githubWriteId: string,
-  result: { githubId?: number; githubUrl?: string }
+  result: { githubId?: number; githubUrl?: string; githubNumber?: number }
 ): void {
   const stmt = db.prepare(`
     UPDATE github_writes
     SET status = 'completed',
         github_id = ?,
         github_url = ?,
+        github_number = ?,
         sent_at = ?,
         error = NULL
     WHERE github_write_id = ?
@@ -525,6 +527,7 @@ export function markWriteCompleted(
   stmt.run(
     result.githubId ?? null,
     result.githubUrl ?? null,
+    result.githubNumber ?? null,
     new Date().toISOString(),
     githubWriteId
   );
@@ -727,6 +730,7 @@ function rowToWriteRecord(row: Record<string, unknown>): GitHubWriteRecord {
     error: row['error'] as string | undefined,
     githubId: row['github_id'] as number | undefined,
     githubUrl: row['github_url'] as string | undefined,
+    githubNumber: row['github_number'] as number | undefined,
     createdAt: row['created_at'] as string,
     sentAt: row['sent_at'] as string | undefined,
     retryCount: row['retry_count'] as number,

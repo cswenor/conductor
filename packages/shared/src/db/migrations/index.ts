@@ -28,8 +28,9 @@ import { migration012 } from './012_repo_clone_tracking.ts';
 import { migration013 } from './013_worktree_metadata.ts';
 import { migration014 } from './014_mirroring_rate_limits.ts';
 import { migration015 } from './015_mirror_deferred_summary.ts';
+import { migration016 } from './016_github_writes_number.ts';
 
 /**
  * All migrations in order
  */
-export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015];
+export const migrations: Migration[] = [migration001, migration002, migration003, migration004, migration005, migration006, migration007, migration008, migration009, migration010, migration011, migration012, migration013, migration014, migration015, migration016];
