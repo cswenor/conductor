@@ -78,6 +78,7 @@ import {
   type MirrorContext,
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
+import { casUpdateRunStep } from './run-helpers.ts';
 
 const log = createLogger({ name: 'conductor:worker' });
 
@@ -120,24 +121,6 @@ function updateRunStep(
     .run(step, new Date().toISOString(), runId);
 }
 
-/**
- * Compare-and-set variant of updateRunStep.
- *
- * Only updates the step if the run is currently in the expected phase and step.
- * Returns true if the row was updated (CAS succeeded), false otherwise.
- */
-function casUpdateRunStep(
-  db: ReturnType<typeof getDatabase>,
-  runId: string,
-  expectedPhase: string,
-  expectedStep: string,
-  newStep: string
-): boolean {
-  const result = db.prepare(
-    'UPDATE runs SET step = ?, updated_at = ? WHERE run_id = ? AND phase = ? AND step = ?'
-  ).run(newStep, new Date().toISOString(), runId, expectedPhase, expectedStep);
-  return result.changes > 0;
-}
 
 /**
  * Build a MirrorContext for posting comments on linked GitHub issues.
