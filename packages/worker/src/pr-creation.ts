@@ -203,9 +203,11 @@ export async function handlePrCreation(
           const result = await processSingleWrite(db, write.githubWriteId, installationId);
           handleWriteResult(db, runId, result, markRunFailed);
         } else {
-          log.info(
-            { runId, githubWriteId: write.githubWriteId },
-            'Write is processing and not stale, will retry later'
+          // Write is too recent to be considered stalled — may be legitimately in-flight.
+          // Throw so the job fails visibly and can be retried, rather than silently
+          // stranding the run in create_pr with no recovery path.
+          throw new Error(
+            `PR write ${write.githubWriteId} is in-flight for run ${runId}; retry later`
           );
         }
         return;
@@ -240,11 +242,16 @@ function handleWriteResult(
     return;
   }
 
+  if (result.number === undefined || result.nodeId === undefined || result.githubUrl === undefined) {
+    markRunFailed(db, runId, 'PR creation succeeded but response is missing required metadata (number, nodeId, or URL)');
+    return;
+  }
+
   const updated = updateRunPrBundle(db, {
     runId,
-    prNumber: result.number ?? 0,
-    prNodeId: result.nodeId ?? '',
-    prUrl: result.githubUrl ?? '',
+    prNumber: result.number,
+    prNodeId: result.nodeId,
+    prUrl: result.githubUrl,
     prState: 'open',
     prSyncedAt: new Date().toISOString(),
   });

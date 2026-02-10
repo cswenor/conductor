@@ -498,10 +498,10 @@ export function listRunWrites(
 export function markWriteProcessing(db: Database, githubWriteId: string): boolean {
   const stmt = db.prepare(`
     UPDATE github_writes
-    SET status = 'processing'
+    SET status = 'processing', sent_at = ?
     WHERE github_write_id = ? AND status IN ('queued', 'failed')
   `);
-  const result = stmt.run(githubWriteId);
+  const result = stmt.run(new Date().toISOString(), githubWriteId);
   return result.changes > 0;
 }
 
@@ -689,9 +689,10 @@ export function getRunWriteStats(
 /**
  * Reset a stuck 'processing' write back to 'queued'.
  *
- * Only resets if the write has been in 'processing' longer than staleAfterMs
- * (uses created_at as a staleness proxy). A write that was just created moments
- * ago and is legitimately processing won't be reset.
+ * Only resets if the write has been in 'processing' longer than staleAfterMs.
+ * Uses sent_at (set by markWriteProcessing when the write enters processing)
+ * rather than created_at, so old writes that were just picked up for processing
+ * are not incorrectly reset.
  */
 export function resetStalledWrite(
   db: Database,
@@ -701,7 +702,7 @@ export function resetStalledWrite(
   const cutoff = new Date(Date.now() - staleAfterMs).toISOString();
   const result = db.prepare(
     `UPDATE github_writes SET status = 'queued'
-     WHERE github_write_id = ? AND status = 'processing' AND created_at < ?`
+     WHERE github_write_id = ? AND status = 'processing' AND sent_at < ?`
   ).run(githubWriteId, cutoff);
   return result.changes > 0;
 }

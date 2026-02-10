@@ -455,6 +455,44 @@ describe('handlePrCreation', () => {
       });
     });
 
+    describe('PR write result missing metadata', () => {
+      it('marks run failed when number is missing from write result', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: true, status: 'queued' });
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: true,
+          githubUrl: 'https://github.com/acme/widget/pull/7', nodeId: 'PR_node_1',
+          // number is missing
+        });
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockMarkRunFailed).toHaveBeenCalledWith(
+          db, 'run_1',
+          'PR creation succeeded but response is missing required metadata (number, nodeId, or URL)'
+        );
+        expect(mockUpdateRunPrBundle).not.toHaveBeenCalled();
+      });
+
+      it('marks run failed when nodeId is missing from write result', async () => {
+        setupPushSuccess();
+        mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: true, status: 'queued' });
+        mockProcessSingleWrite.mockResolvedValue({
+          githubWriteId: 'ghw_1', success: true,
+          githubUrl: 'https://github.com/acme/widget/pull/7', number: 7,
+          // nodeId is missing
+        });
+
+        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+
+        expect(mockMarkRunFailed).toHaveBeenCalledWith(
+          db, 'run_1',
+          'PR creation succeeded but response is missing required metadata (number, nodeId, or URL)'
+        );
+        expect(mockUpdateRunPrBundle).not.toHaveBeenCalled();
+      });
+    });
+
     describe('PR bundle update failure', () => {
       it('marks run failed and does NOT transition step', async () => {
         setupPushSuccess();
@@ -617,13 +655,14 @@ describe('handlePrCreation', () => {
     });
 
     describe('existing write — processing (too recent, reset fails)', () => {
-      it('logs and returns without failure', async () => {
+      it('throws so job fails visibly instead of stranding the run', async () => {
         setupPushSuccess();
         mockEnqueuePullRequest.mockReturnValue({ githubWriteId: 'ghw_1', isNew: false, status: 'processing' });
         mockGetWrite.mockReturnValue({ githubWriteId: 'ghw_1', status: 'processing' });
         mockResetStalledWrite.mockReturnValue(false);
 
-        await handlePrCreation(db, makeRun(), mockMarkRunFailed);
+        await expect(handlePrCreation(db, makeRun(), mockMarkRunFailed))
+          .rejects.toThrow('PR write ghw_1 is in-flight for run run_1; retry later');
 
         expect(mockResetStalledWrite).toHaveBeenCalledWith(db, 'ghw_1');
         expect(mockProcessSingleWrite).not.toHaveBeenCalled();
