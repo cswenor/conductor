@@ -121,6 +121,25 @@ function updateRunStep(
 }
 
 /**
+ * Compare-and-set variant of updateRunStep.
+ *
+ * Only updates the step if the run is currently in the expected phase and step.
+ * Returns true if the row was updated (CAS succeeded), false otherwise.
+ */
+function casUpdateRunStep(
+  db: ReturnType<typeof getDatabase>,
+  runId: string,
+  expectedPhase: string,
+  expectedStep: string,
+  newStep: string
+): boolean {
+  const result = db.prepare(
+    'UPDATE runs SET step = ?, updated_at = ? WHERE run_id = ? AND phase = ? AND step = ?'
+  ).run(newStep, new Date().toISOString(), runId, expectedPhase, expectedStep);
+  return result.changes > 0;
+}
+
+/**
  * Build a MirrorContext for posting comments on linked GitHub issues.
  */
 function getMirrorCtx(): MirrorContext {
@@ -921,18 +940,15 @@ async function handleCodeReviewerAgent(
   );
 
   if (reviewResult.approved) {
-    // Guard against stale job: re-read run and verify it's still in the expected state
-    const freshRun = getRun(db, runId);
-    if (freshRun?.phase !== 'awaiting_review' || freshRun.step !== 'reviewer_review_code') {
-      log.warn(
-        { runId, phase: freshRun?.phase, step: freshRun?.step },
-        'Stale reviewer job: run no longer in awaiting_review/reviewer_review_code, skipping push'
-      );
+    // Atomic CAS: only advance step if run is still in the expected state.
+    // Closes the race window where another worker could transition the run
+    // between a guard read and the step write.
+    const stepped = casUpdateRunStep(db, runId, 'awaiting_review', 'reviewer_review_code', 'create_pr');
+    if (!stepped) {
+      log.warn({ runId }, 'CAS failed: run no longer in awaiting_review/reviewer_review_code, skipping push');
       return;
     }
 
-    // Move to create_pr step (intra-phase) and push the branch
-    updateRunStep(db, runId, 'create_pr');
     await handlePrCreation(db, run, markRunFailed);
   } else {
     // Re-read run to get current review_rounds
