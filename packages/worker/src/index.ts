@@ -34,6 +34,7 @@ import {
   // Worktree management (WP4)
   runJanitor,
   cleanupWorktree,
+  releaseExpiredPortLeases,
   cloneOrFetchRepo,
   createWorktree,
   getWorktreeForRun,
@@ -1157,10 +1158,11 @@ async function processCleanup(job: Job<CleanupJobData>): Promise<void> {
       }
       break;
     }
-    case 'expired_leases':
-      // TODO: Implement lease cleanup in WP5+
-      log.info({ targetId }, 'Expired leases cleanup not yet implemented');
+    case 'expired_leases': {
+      const released = releaseExpiredPortLeases(db);
+      log.info({ released }, 'Expired leases cleanup completed');
       break;
+    }
     case 'old_jobs':
       // TODO: Implement old job cleanup
       log.info({ targetId }, 'Old jobs cleanup not yet implemented');
@@ -1271,6 +1273,7 @@ async function processGitHubWrite(job: Job<GitHubWriteJobData>): Promise<void> {
 /** Active workers for graceful shutdown */
 const workers: Worker[] = [];
 let mirrorFlushTimer: ReturnType<typeof setInterval> | undefined;
+let leaseCleanupTimer: ReturnType<typeof setInterval> | undefined;
 
 /** Flag to track shutdown state */
 let isShuttingDown = false;
@@ -1290,6 +1293,9 @@ async function shutdown(signal: string): Promise<void> {
   // Stop periodic timers
   if (mirrorFlushTimer !== undefined) {
     clearInterval(mirrorFlushTimer);
+  }
+  if (leaseCleanupTimer !== undefined) {
+    clearInterval(leaseCleanupTimer);
   }
 
   // Close all workers (waits for current jobs to complete)
@@ -1406,6 +1412,13 @@ async function main(): Promise<void> {
       type: 'mirror_flush',
     });
   }, 60_000);
+
+  // Schedule periodic expired lease cleanup (every 5 minutes)
+  leaseCleanupTimer = setInterval(() => {
+    void queueManager.addJob('cleanup', `cleanup:expired_leases:${Date.now()}`, {
+      type: 'expired_leases',
+    });
+  }, 300_000);
 
   // Register shutdown handlers
   process.on('SIGINT', () => void shutdown('SIGINT'));

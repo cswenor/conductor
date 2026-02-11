@@ -25,6 +25,7 @@ import {
   allocatePort,
   releasePort,
   releaseWorktreePorts,
+  releaseExpiredPortLeases,
   getWorktreePorts,
   updateWorktreeHeartbeat,
   cloneOrFetchRepo,
@@ -672,6 +673,85 @@ describe('Worktree Module', () => {
         expect(ports).toHaveLength(1);
         expect(ports[0]!.port).toBe(5001);
         expect(ports[0]!.purpose).toBe('api');
+      });
+    });
+
+    describe('releaseExpiredPortLeases', () => {
+      it('should release leases whose expires_at is in the past', () => {
+        const now = '2025-06-15T12:00:00.000Z';
+        const pastExpiry = '2025-06-15T11:00:00.000Z';
+
+        db.prepare(`
+          INSERT INTO port_leases (
+            port_lease_id, project_id, worktree_id, port, purpose, is_active, leased_at, expires_at
+          ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        `).run('pl_expired1', seed.projectId, worktreeId, 5000, 'dev_server', pastExpiry, pastExpiry);
+
+        const released = releaseExpiredPortLeases(db, now);
+        expect(released).toBe(1);
+
+        const row = db.prepare(
+          'SELECT is_active, released_at FROM port_leases WHERE port_lease_id = ?'
+        ).get('pl_expired1') as { is_active: number; released_at: string | null };
+        expect(row.is_active).toBe(0);
+        expect(row.released_at).toBe(now);
+      });
+
+      it('should release leases whose expires_at equals now exactly', () => {
+        const now = '2025-06-15T12:00:00.000Z';
+
+        db.prepare(`
+          INSERT INTO port_leases (
+            port_lease_id, project_id, worktree_id, port, purpose, is_active, leased_at, expires_at
+          ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        `).run('pl_boundary', seed.projectId, worktreeId, 5000, 'dev_server', '2025-06-14T12:00:00.000Z', now);
+
+        const released = releaseExpiredPortLeases(db, now);
+        expect(released).toBe(1);
+      });
+
+      it('should not release leases whose expires_at is in the future', () => {
+        const now = '2025-06-15T12:00:00.000Z';
+        const futureExpiry = '2025-06-15T13:00:00.000Z';
+
+        db.prepare(`
+          INSERT INTO port_leases (
+            port_lease_id, project_id, worktree_id, port, purpose, is_active, leased_at, expires_at
+          ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+        `).run('pl_future', seed.projectId, worktreeId, 5000, 'dev_server', now, futureExpiry);
+
+        const released = releaseExpiredPortLeases(db, now);
+        expect(released).toBe(0);
+
+        const row = db.prepare(
+          'SELECT is_active FROM port_leases WHERE port_lease_id = ?'
+        ).get('pl_future') as { is_active: number };
+        expect(row.is_active).toBe(1);
+      });
+
+      it('should not release already-inactive leases even if expired', () => {
+        const now = '2025-06-15T12:00:00.000Z';
+        const pastExpiry = '2025-06-15T11:00:00.000Z';
+        const originalReleasedAt = '2025-06-15T10:30:00.000Z';
+
+        db.prepare(`
+          INSERT INTO port_leases (
+            port_lease_id, project_id, worktree_id, port, purpose, is_active, leased_at, expires_at, released_at
+          ) VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+        `).run('pl_already_inactive', seed.projectId, worktreeId, 5000, 'dev_server', pastExpiry, pastExpiry, originalReleasedAt);
+
+        const released = releaseExpiredPortLeases(db, now);
+        expect(released).toBe(0);
+
+        const row = db.prepare(
+          'SELECT released_at FROM port_leases WHERE port_lease_id = ?'
+        ).get('pl_already_inactive') as { released_at: string | null };
+        expect(row.released_at).toBe(originalReleasedAt);
+      });
+
+      it('should return 0 when no expired leases exist', () => {
+        const released = releaseExpiredPortLeases(db, '2025-06-15T12:00:00.000Z');
+        expect(released).toBe(0);
       });
     });
   });

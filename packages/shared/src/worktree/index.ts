@@ -701,6 +701,22 @@ export function releaseWorktreePorts(db: Database, worktreeId: string): number {
 }
 
 /**
+ * Release all active port leases whose expires_at has passed.
+ * Returns the number of leases released.
+ */
+export function releaseExpiredPortLeases(db: Database, now?: string): number {
+  const ts = now ?? new Date().toISOString();
+  const stmt = db.prepare(
+    'UPDATE port_leases SET is_active = 0, released_at = ? WHERE is_active = 1 AND expires_at <= ?'
+  );
+  const result = stmt.run(ts, ts);
+  if (result.changes > 0) {
+    log.info({ count: result.changes }, 'Expired port leases released');
+  }
+  return result.changes;
+}
+
+/**
  * Get active port leases for a worktree.
  */
 export function getWorktreePorts(db: Database, worktreeId: string): PortLease[] {
