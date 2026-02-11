@@ -5,12 +5,8 @@
  * Operator actions are the mechanism by which humans interact with gates
  * and control runs (approve, reject, revise, pause, resume, cancel, retry).
  *
- * Actor attribution: per DATA_MODEL.md Section 6.6, the service API accepts
- * actorId, actorType, actorDisplayName. The current schema has a single
- * `operator` column — actorId is stored there.
- *
- * TODO: Future migration should add actor_type and actor_display_name columns
- * to operator_actions table to match DATA_MODEL.md Section 6.6.
+ * Actor attribution: per DATA_MODEL.md Section 6.6, the table stores
+ * actor_type and actor_display_name alongside the operator (actor ID) column.
  *
  * GitHub mirroring: The github_write_id FK is nullable and will be populated
  * by WP9 (GitHub Mirroring). WP8 records the action; WP9 mirrors it.
@@ -28,6 +24,8 @@ export interface OperatorAction {
   runId: string;
   action: OperatorActionType;
   operator: string;
+  actorType: ActorType;
+  actorDisplayName: string;
   comment?: string;
   fromPhase?: string;
   toPhase?: string;
@@ -40,6 +38,8 @@ interface OperatorActionRow {
   run_id: string;
   action: string;
   operator: string;
+  actor_type: string;
+  actor_display_name: string;
   comment: string | null;
   from_phase: string | null;
   to_phase: string | null;
@@ -115,6 +115,8 @@ function mapRow(row: OperatorActionRow): OperatorAction {
     runId: row.run_id,
     action: row.action as OperatorActionType,
     operator: row.operator,
+    actorType: row.actor_type as ActorType,
+    actorDisplayName: row.actor_display_name,
     comment: row.comment ?? undefined,
     fromPhase: row.from_phase ?? undefined,
     toPhase: row.to_phase ?? undefined,
@@ -220,17 +222,21 @@ export function recordOperatorAction(
   const id = generateOperatorActionId();
   const now = new Date().toISOString();
 
-  // Store actorId in the operator column (see TODO at top for schema gap)
+  const displayName = params.actorDisplayName ?? params.actorId;
+
   db.prepare(`
     INSERT INTO operator_actions (
       operator_action_id, run_id, action, operator,
+      actor_type, actor_display_name,
       comment, from_phase, to_phase, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     id,
     params.runId,
     params.action,
     params.actorId,
+    params.actorType,
+    displayName,
     params.comment ?? null,
     params.fromPhase ?? null,
     params.toPhase ?? null,
@@ -242,6 +248,8 @@ export function recordOperatorAction(
     runId: params.runId,
     action: params.action,
     operator: params.actorId,
+    actorType: params.actorType,
+    actorDisplayName: displayName,
     comment: params.comment,
     fromPhase: params.fromPhase,
     toPhase: params.toPhase,

@@ -231,6 +231,8 @@ describe('recordOperatorAction', () => {
     expect(action.runId).toBe(runId);
     expect(action.action).toBe('cancel');
     expect(action.operator).toBe('user_test');
+    expect(action.actorType).toBe('operator');
+    expect(action.actorDisplayName).toBe('Test User');
     expect(action.comment).toBe('Cancelling for test');
     expect(action.fromPhase).toBe('pending');
     expect(action.toPhase).toBe('cancelled');
@@ -249,6 +251,23 @@ describe('recordOperatorAction', () => {
     expect(action.comment).toBeUndefined();
     expect(action.fromPhase).toBeUndefined();
     expect(action.toPhase).toBeUndefined();
+  });
+
+  it('falls back actorDisplayName to actorId when not provided', () => {
+    const { runId } = seedTestData(db);
+    const action = recordOperatorAction(db, {
+      runId,
+      action: 'cancel',
+      actorId: 'user_test',
+      actorType: 'operator',
+    });
+
+    expect(action.actorDisplayName).toBe('user_test');
+
+    // Verify it persisted correctly via a read-back
+    const fetched = getOperatorAction(db, runId, 'cancel');
+    expect(fetched?.actorDisplayName).toBe('user_test');
+    expect(fetched?.actorType).toBe('operator');
   });
 
   it('throws on invalid action type', () => {
