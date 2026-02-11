@@ -1,5 +1,5 @@
 import { PageHeader } from '@/components/layout';
-import { SystemHealth } from '@/components/settings';
+import { SystemHealth, ApiKeyManagement } from '@/components/settings';
 import { GitHubIntegration } from '@/components/settings/github-integration';
 
 export default function SettingsPage() {
@@ -12,6 +12,7 @@ export default function SettingsPage() {
       <div className="flex-1 p-6">
         <div className="max-w-2xl space-y-6">
           <GitHubIntegration />
+          <ApiKeyManagement />
           <SystemHealth />
         </div>
       </div>
