@@ -79,6 +79,7 @@ import {
   type MirrorContext,
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
+import { cleanOldJobs } from './old-jobs-cleanup.ts';
 import { casUpdateRunStep } from './run-helpers.ts';
 import { dispatchPrWebhook } from './webhook-dispatch.ts';
 
@@ -1163,10 +1164,12 @@ async function processCleanup(job: Job<CleanupJobData>): Promise<void> {
       log.info({ released }, 'Expired leases cleanup completed');
       break;
     }
-    case 'old_jobs':
-      // TODO: Implement old job cleanup
-      log.info({ targetId }, 'Old jobs cleanup not yet implemented');
+    case 'old_jobs': {
+      const qm = getQueueManager();
+      const result = await cleanOldJobs(qm, QUEUES);
+      log.info(result, 'Old jobs cleanup completed');
       break;
+    }
     case 'mirror_flush': {
       // Flush stale deferred mirroring events for runs that haven't had a mirror call
       const flushed = flushStaleDeferredEvents(db, (runId) => {
@@ -1199,8 +1202,6 @@ async function processCleanup(job: Job<CleanupJobData>): Promise<void> {
     default:
       log.warn({ type, targetId }, 'Unknown cleanup type');
   }
-
-  await Promise.resolve();
 }
 
 /**
@@ -1274,6 +1275,7 @@ async function processGitHubWrite(job: Job<GitHubWriteJobData>): Promise<void> {
 const workers: Worker[] = [];
 let mirrorFlushTimer: ReturnType<typeof setInterval> | undefined;
 let leaseCleanupTimer: ReturnType<typeof setInterval> | undefined;
+let oldJobsCleanupTimer: ReturnType<typeof setInterval> | undefined;
 
 /** Flag to track shutdown state */
 let isShuttingDown = false;
@@ -1296,6 +1298,9 @@ async function shutdown(signal: string): Promise<void> {
   }
   if (leaseCleanupTimer !== undefined) {
     clearInterval(leaseCleanupTimer);
+  }
+  if (oldJobsCleanupTimer !== undefined) {
+    clearInterval(oldJobsCleanupTimer);
   }
 
   // Close all workers (waits for current jobs to complete)
@@ -1419,6 +1424,13 @@ async function main(): Promise<void> {
       type: 'expired_leases',
     });
   }, 300_000);
+
+  // Schedule periodic old jobs cleanup (every 6 hours)
+  oldJobsCleanupTimer = setInterval(() => {
+    void queueManager.addJob('cleanup', `cleanup:old_jobs:${Date.now()}`, {
+      type: 'old_jobs',
+    });
+  }, 21_600_000);
 
   // Register shutdown handlers
   process.on('SIGINT', () => void shutdown('SIGINT'));
