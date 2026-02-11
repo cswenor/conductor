@@ -451,6 +451,59 @@ export function createProjectFromInstallation(
 }
 
 // =============================================================================
+// Installation Discovery
+// =============================================================================
+
+export interface DiscoveredInstallation {
+  installationId: number;
+  accountLogin: string;
+  accountId: number;
+  accountNodeId: string;
+  accountType: 'User' | 'Organization';
+}
+
+/**
+ * Sync user-accessible GitHub installations into pending_github_installations.
+ *
+ * For each installation in `apiInstallations`:
+ * - Skips if already linked to a project (in `projects.github_installation_id`)
+ * - Skips if already pending for this user
+ * - Otherwise inserts a new pending record with setup_action='discovered'
+ *
+ * Returns the merged list of all pending installations for this user.
+ */
+export function syncUserInstallations(
+  db: Database,
+  userId: string,
+  apiInstallations: DiscoveredInstallation[],
+): PendingInstallation[] {
+  // Build set of installation IDs already linked to projects
+  const projectRows = db
+    .prepare('SELECT github_installation_id FROM projects')
+    .all() as Array<{ github_installation_id: number }>;
+  const linkedIds = new Set(projectRows.map((r) => r['github_installation_id']));
+
+  // Build set of installation IDs already pending for this user
+  const pendingRows = db
+    .prepare('SELECT installation_id FROM pending_github_installations WHERE user_id = ?')
+    .all(userId) as Array<{ installation_id: number }>;
+  const pendingIds = new Set(pendingRows.map((r) => r['installation_id']));
+
+  const insertStmt = db.prepare(
+    'INSERT OR IGNORE INTO pending_github_installations (installation_id, setup_action, state, user_id, created_at) VALUES (?, ?, ?, ?, ?)'
+  );
+
+  const now = new Date().toISOString();
+  for (const inst of apiInstallations) {
+    if (!linkedIds.has(inst.installationId) && !pendingIds.has(inst.installationId)) {
+      insertStmt.run(inst.installationId, 'discovered', null, userId, now);
+    }
+  }
+
+  return listPendingInstallations(db, { userId });
+}
+
+// =============================================================================
 // Helper Functions
 // =============================================================================
 
