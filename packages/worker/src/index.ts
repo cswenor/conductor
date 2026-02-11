@@ -252,9 +252,7 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
     return Promise.resolve();
   }
 
-  // Find the project for this repository (if any)
-  // For now, we'll use a placeholder project ID since project lookup requires WP3
-  // In the full implementation, we'd look up the repo by node_id and get its project_id
+  // Look up the project that owns this repository
   let projectId: string | null = null;
 
   if (repositoryNodeId !== undefined) {
@@ -276,17 +274,11 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
   // Create the internal event
   const event = createEvent(db, {
     projectId,
-    repoId: undefined, // Would be looked up from repos table
     type: normalized.eventType,
     class: normalized.class,
     payload: normalized.payload,
     idempotencyKey: normalized.idempotencyKey,
     source: 'webhook',
-  });
-
-  // Mark webhook as processed (whether event is new or duplicate)
-  updateWebhookStatus(db, deliveryId, 'processed', {
-    processedAt: new Date().toISOString(),
   });
 
   if (event !== null) {
@@ -309,6 +301,12 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
       type: 'worktree',
       targetId: runId,
     });
+  });
+
+  // Mark webhook as processed after all dispatch work completes.
+  // If dispatch throws, BullMQ retries with delivery still in 'pending' state.
+  updateWebhookStatus(db, deliveryId, 'processed', {
+    processedAt: new Date().toISOString(),
   });
 }
 
