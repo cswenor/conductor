@@ -31,7 +31,14 @@ import {
   ThumbsUp, ThumbsDown, Pencil, ShieldAlert,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { getPhaseLabel, getPhaseVariant, formatTimestamp } from '@/lib/phase-config';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from '@/components/ui/tooltip';
+import { getPhaseLabel, getPhaseVariant, formatTimestamp, formatDuration } from '@/lib/phase-config';
 import {
   approvePlan,
   revisePlan,
@@ -72,6 +79,42 @@ function formatGateId(gateId: string): string {
 
 const TERMINAL_PHASES = new Set(['completed', 'cancelled']);
 
+const ACTION_LABELS: Record<string, string> = {
+  create_plan: 'Planning',
+  review_plan: 'Plan Review',
+  apply_changes: 'Implementation',
+  run_tests: 'Test Execution',
+};
+
+function getActionLabel(action: string): string {
+  return ACTION_LABELS[action] ?? action.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function getEventSummary(event: { type: string; payload: unknown }): string {
+  try {
+    const p = event.payload as Record<string, unknown>;
+    switch (event.type) {
+      case 'phase.transitioned': {
+        const from = typeof p['from'] === 'string' ? p['from'] : '?';
+        const to = typeof p['to'] === 'string' ? p['to'] : '?';
+        return `${from} → ${to}`;
+      }
+      case 'agent.failed':
+        return (p['errorMessage'] as string) ?? (p['error_message'] as string) ?? '—';
+      case 'agent.started':
+      case 'agent.completed': {
+        const agent = (p['agent'] as string) ?? '';
+        const action = (p['action'] as string) ?? '';
+        return agent + (action ? `: ${getActionLabel(action)}` : '');
+      }
+      default:
+        return '—';
+    }
+  } catch {
+    return '—';
+  }
+}
+
 export function RunDetailContent({ data }: { data: RunDetailData }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -89,12 +132,17 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
 
   const commentOptional = commentDialog?.action === 'approve_plan' || commentDialog?.action === 'cancel';
 
-  const { run, task, repo, events, gates, gateEvaluations, operatorActions, requiredGates, optionalGates } = data;
+  const { run, task, repo, events, gates, gateEvaluations, operatorActions, agentInvocations, requiredGates, optionalGates } = data;
   const phaseEvents = events.filter(e => e.type === 'phase.transitioned');
   const isTerminal = TERMINAL_PHASES.has(run.phase);
   const blockedContext = run.blockedContextJson !== undefined
     ? JSON.parse(run.blockedContextJson) as Record<string, unknown>
     : null;
+
+  const latestInvocation = agentInvocations.at(-1) ?? null;
+  const showErrorAlert = latestInvocation !== null
+    && (latestInvocation.status === 'failed' || latestInvocation.status === 'timed_out')
+    && !isTerminal;
 
   async function executeAction(action: string, commentOrJustification?: string) {
     const runId = run.runId;
@@ -159,13 +207,17 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                 <ArrowLeft className="h-4 w-4" />
               </Button>
             </Link>
-            <h1 className="text-2xl font-semibold">{run.runId}</h1>
+            <h1 className="text-2xl font-semibold">
+              {task !== null ? task.githubTitle : run.runId}
+            </h1>
             <Badge variant={getPhaseVariant(run.phase)}>
               {getPhaseLabel(run.phase)}
             </Badge>
           </div>
           <p className="text-sm text-muted-foreground mt-1 ml-12">
-            {task !== null ? `${task.githubType} #${task.githubIssueNumber}: ${task.githubTitle}` : run.taskId}
+            {task !== null
+              ? `${task.githubType} #${task.githubIssueNumber} · ${run.runId}`
+              : run.taskId}
           </p>
         </div>
       </div>
@@ -234,11 +286,34 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
       </Dialog>
 
       <div className="flex-1 p-6 space-y-6 pb-24">
+        {/* Error Alert for Failed Agent Invocation */}
+        {showErrorAlert && latestInvocation !== null && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle className="flex items-center gap-2">
+              {getActionLabel(latestInvocation.action)} Failed
+              {latestInvocation.errorCode !== undefined && (
+                <Badge variant="secondary" className="text-xs font-mono">
+                  {latestInvocation.errorCode}
+                </Badge>
+              )}
+            </AlertTitle>
+            <AlertDescription>
+              <p>{latestInvocation.errorMessage ?? 'An unknown error occurred.'}</p>
+              {latestInvocation.completedAt !== undefined && (
+                <p className="text-xs mt-1 opacity-70">
+                  {formatTimestamp(latestInvocation.completedAt)}
+                </p>
+              )}
+            </AlertDescription>
+          </Alert>
+        )}
+
         {/* Blocked State Explanation */}
         {run.phase === 'blocked' && run.blockedReason !== undefined && (
-          <Card className="border-destructive">
+          <Card className={showErrorAlert ? 'border-muted' : 'border-destructive'}>
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-destructive flex items-center gap-2">
+              <CardTitle className={`text-sm font-medium flex items-center gap-2 ${showErrorAlert ? 'text-muted-foreground' : 'text-destructive'}`}>
                 <AlertTriangle className="h-4 w-4" />
                 Run Blocked
               </CardTitle>
@@ -414,6 +489,60 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
           </>
         )}
 
+        {/* Agent Activity */}
+        {agentInvocations.length > 0 && (
+          <>
+            <div>
+              <h3 className="text-lg font-semibold mb-4">Agent Activity</h3>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Action</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Duration</TableHead>
+                      <TableHead>Error</TableHead>
+                      <TableHead>Time</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {agentInvocations.map((inv) => (
+                      <TableRow key={inv.agentInvocationId}>
+                        <TableCell className="font-medium">{inv.agent}</TableCell>
+                        <TableCell>{getActionLabel(inv.action)}</TableCell>
+                        <TableCell>
+                          <Badge variant={
+                            inv.status === 'failed' ? 'destructive'
+                              : inv.status === 'completed' ? 'success'
+                              : inv.status === 'timed_out' ? 'warning'
+                              : 'secondary'
+                          }>
+                            {inv.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {inv.durationMs !== undefined ? formatDuration(inv.durationMs) : '—'}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm max-w-[300px] truncate">
+                          {(inv.status === 'failed' || inv.status === 'timed_out')
+                            ? [inv.errorCode, inv.errorMessage].filter(Boolean).join(': ') || '—'
+                            : '—'}
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
+                          {formatTimestamp(inv.startedAt)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+
+            <Separator />
+          </>
+        )}
+
         {/* Operator Actions History */}
         {operatorActions.length > 0 && (
           <>
@@ -486,38 +615,63 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
           {events.length === 0 ? (
             <p className="text-sm text-muted-foreground">No events</p>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Seq</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Class</TableHead>
-                  <TableHead>Source</TableHead>
-                  <TableHead>Time</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {events.map((event) => (
-                  <TableRow key={event.eventId}>
-                    <TableCell className="font-mono text-sm">
-                      {event.sequence ?? '—'}
-                    </TableCell>
-                    <TableCell className="font-mono text-sm">
-                      {event.type}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="secondary">{event.class}</Badge>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {event.source}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-sm">
-                      {formatTimestamp(event.createdAt)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            <div className="overflow-x-auto">
+              <TooltipProvider>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Seq</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead>Class</TableHead>
+                      <TableHead>Source</TableHead>
+                      <TableHead>Details</TableHead>
+                      <TableHead>Time</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {events.map((event) => {
+                      const summary = getEventSummary(event);
+                      const isTruncated = summary.length > 60;
+                      return (
+                        <TableRow key={event.eventId}>
+                          <TableCell className="font-mono text-sm">
+                            {event.sequence ?? '—'}
+                          </TableCell>
+                          <TableCell className="font-mono text-sm">
+                            {event.type}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">{event.class}</Badge>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {event.source}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground text-sm max-w-[200px]">
+                            {summary === '—' ? (
+                              <span>—</span>
+                            ) : isTruncated ? (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="truncate block cursor-default">{summary}</span>
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-sm whitespace-pre-wrap">
+                                  {summary}
+                                </TooltipContent>
+                              </Tooltip>
+                            ) : (
+                              <span className="truncate block">{summary}</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
+                            {formatTimestamp(event.createdAt)}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </TooltipProvider>
+            </div>
           )}
         </div>
       </div>

@@ -9,6 +9,7 @@ import {
   listGateEvaluations,
   listOperatorActions,
   getRunGateConfig,
+  listAgentInvocations,
   type Database,
   type Run,
 } from '@conductor/shared';
@@ -33,6 +34,7 @@ export interface RunDetailData {
   gates: Record<string, string>;
   gateEvaluations: ReturnType<typeof listGateEvaluations>;
   operatorActions: ReturnType<typeof listOperatorActions>;
+  agentInvocations: ReturnType<typeof listAgentInvocations>;
   requiredGates: string[];
   optionalGates: string[];
 }
@@ -54,6 +56,7 @@ export function fetchRunDetail(
   const gates = deriveGateState(db, run.runId);
   const gateEvaluations = listGateEvaluations(db, run.runId);
   const operatorActions = listOperatorActions(db, run.runId);
+  const agentInvocations = listAgentInvocations(db, run.runId);
   const { requiredGates, optionalGates } = getRunGateConfig(db, run.runId);
 
   return {
@@ -75,6 +78,7 @@ export function fetchRunDetail(
     gates,
     gateEvaluations,
     operatorActions,
+    agentInvocations,
     requiredGates,
     optionalGates,
   };
