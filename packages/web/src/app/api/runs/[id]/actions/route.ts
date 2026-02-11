@@ -547,9 +547,16 @@ export const POST = withAuth(async (
           );
         }
 
-        // Record operator action (audit trail stays in web for immediate persistence).
-        // Duplicate clicks are harmless: stable job ID below deduplicates the enqueue,
-        // and a second operator_action record is an accurate audit log entry.
+        // Enqueue cancel job first — worker owns transition + signal + cleanup.
+        // Stable job ID ensures repeated clicks are idempotent (BullMQ deduplicates).
+        // Audit + mirror are written only after enqueue succeeds to avoid
+        // recording a cancellation that was never actually queued.
+        await queues.addJob('runs', `run-cancel-${runId}`, {
+          runId,
+          action: 'cancel',
+          triggeredBy: userId,
+        });
+
         const cancelAction = recordOperatorAction(db, {
           runId,
           action: 'cancel',
@@ -560,21 +567,12 @@ export const POST = withAuth(async (
           toPhase: 'cancelled',
         });
 
-        // Mirror the operator's cancel decision — non-fatal
         try {
           mirrorApprovalDecision(
             { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
             { runId, operatorActionId: cancelAction.operatorActionId, action: 'cancel', actorId: userId, fromPhase: run.phase, toPhase: 'cancelled', comment: body.comment },
           );
         } catch { /* non-fatal */ }
-
-        // Enqueue cancel job — worker owns transition + signal + cleanup.
-        // Stable job ID ensures repeated clicks are idempotent (BullMQ deduplicates).
-        await queues.addJob('runs', `run-cancel-${runId}`, {
-          runId,
-          action: 'cancel',
-          triggeredBy: userId,
-        });
 
         log.info({ runId, userId }, 'Run cancel enqueued');
         return NextResponse.json({ success: true, status: 'cancel_enqueued' });

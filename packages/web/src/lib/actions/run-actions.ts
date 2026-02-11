@@ -264,6 +264,17 @@ export async function cancelRun(runId: string, comment?: string): Promise<Action
       return { success: false, error: 'Run is already in a terminal state' };
     }
 
+    // Enqueue cancel job first — worker owns transition + signal + cleanup.
+    // Stable job ID ensures repeated clicks are idempotent (BullMQ deduplicates).
+    // Audit record is written only after enqueue succeeds to avoid recording
+    // a cancellation that was never actually queued.
+    const queues = await getQueues();
+    await queues.addJob('runs', `run-cancel-${runId}`, {
+      runId,
+      action: 'cancel',
+      triggeredBy: user.userId,
+    });
+
     recordOperatorAction(db, {
       runId,
       action: 'cancel',
@@ -272,15 +283,6 @@ export async function cancelRun(runId: string, comment?: string): Promise<Action
       comment,
       fromPhase: run.phase,
       toPhase: 'cancelled',
-    });
-
-    // Enqueue cancel job — worker owns transition + signal + cleanup.
-    // Stable job ID ensures repeated clicks are idempotent (BullMQ deduplicates).
-    const queues = await getQueues();
-    await queues.addJob('runs', `run-cancel-${runId}`, {
-      runId,
-      action: 'cancel',
-      triggeredBy: user.userId,
     });
 
     log.info({ runId, userId: user.userId }, 'Run cancel enqueued');
