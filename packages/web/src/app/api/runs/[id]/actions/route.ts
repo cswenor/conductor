@@ -3,7 +3,6 @@
  *
  * Operator actions: approve_plan, revise_plan, reject_run, retry,
  * grant_policy_exception, deny_policy_exception, cancel.
- * (Pause/resume deferred to WP11.)
  */
 
 import { NextResponse } from 'next/server';
