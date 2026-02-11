@@ -214,6 +214,15 @@ export async function retryRun(runId: string, comment?: string): Promise<ActionR
       return { success: false, error: 'Run is not in blocked state' };
     }
 
+    // Enqueue before recording audit — matches cancel pattern.
+    // Stable job ID ensures repeated clicks are idempotent (BullMQ deduplicates).
+    const queues = await getQueues();
+    await queues.addJob('runs', `run-retry-${runId}`, {
+      runId,
+      action: 'resume',
+      triggeredBy: user.userId,
+    });
+
     recordOperatorAction(db, {
       runId,
       action: 'retry',
@@ -223,30 +232,7 @@ export async function retryRun(runId: string, comment?: string): Promise<ActionR
       fromPhase: run.phase,
     });
 
-    let priorPhase: string = 'executing';
-    if (run.blockedContextJson !== undefined) {
-      const ctx = JSON.parse(run.blockedContextJson) as Record<string, unknown>;
-      if (typeof ctx['prior_phase'] === 'string') {
-        priorPhase = ctx['prior_phase'];
-      }
-    }
-
-    const result = transitionPhase(db, {
-      runId,
-      toPhase: priorPhase as 'executing',
-      triggeredBy: user.userId,
-      reason: 'Retried by operator',
-    });
-
-    if (!result.success) {
-      return { success: false, error: result.error ?? 'Failed to retry run' };
-    }
-
-    db.prepare(
-      'UPDATE runs SET blocked_reason = NULL, blocked_context_json = NULL WHERE run_id = ?'
-    ).run(runId);
-
-    log.info({ runId, userId: user.userId, priorPhase }, 'Run retried by operator');
+    log.info({ runId, userId: user.userId }, 'Run retry enqueued');
     revalidateRunPaths(runId);
     return { success: true };
   } catch (err) {

@@ -61,6 +61,7 @@ import {
   TERMINAL_PHASES,
   type Run,
   type RunPhase,
+  type RunStep,
   // Agent Runtime (WP6)
   generateAgentInvocationId,
   runPlanner,
@@ -595,12 +596,16 @@ function markRunFailed(
   runId: string,
   reason: string
 ): void {
+  const currentRun = getRun(db, runId);
+  const priorPhase = currentRun?.phase ?? 'pending';
+  const priorStep = currentRun?.step ?? 'setup_worktree';
+
   const failedInput = {
     runId,
     toPhase: 'blocked' as const,
     triggeredBy: 'system',
     blockedReason: reason,
-    blockedContext: { error: reason },
+    blockedContext: { error: reason, prior_phase: priorPhase, prior_step: priorStep },
   };
   const result = transitionPhase(db, failedInput);
 
@@ -672,17 +677,43 @@ async function handleRunResume(
     await enqueueAgentJob(runId, 'implementer', 'apply_changes');
     log.info({ runId }, 'Run resumed — implementer enqueued');
   } else if (phase === 'blocked') {
-    // Retry from blocked state — read blocked_context for target phase
-    const blockedContext = run.blockedContextJson !== undefined
-      ? JSON.parse(run.blockedContextJson) as Record<string, unknown>
-      : {};
-    const priorPhase = (blockedContext['prior_phase'] as string) ?? 'pending';
+    // Retry from blocked state — read blocked_context for target phase/step
+    let blockedContext: Record<string, unknown> = {};
+    if (run.blockedContextJson !== undefined) {
+      try {
+        blockedContext = JSON.parse(run.blockedContextJson) as Record<string, unknown>;
+      } catch {
+        log.warn({ runId }, 'Invalid blocked context JSON, using defaults');
+      }
+    }
 
-    log.info({ runId, triggeredBy, priorPhase }, 'Retrying from blocked state');
+    // Validate prior_phase against retryable phases
+    const RETRYABLE_PHASES = new Set<RunPhase>(['pending', 'planning', 'executing', 'awaiting_plan_approval', 'awaiting_review']);
+    const rawPhase = blockedContext['prior_phase'];
+    if (typeof rawPhase !== 'string' || !RETRYABLE_PHASES.has(rawPhase as RunPhase)) {
+      log.error({ runId, rawPhase }, 'Invalid or missing prior_phase in blocked context — cannot retry');
+      return;
+    }
+    const priorPhase = rawPhase as RunPhase;
+
+    // Validate prior_step against known steps
+    const VALID_STEPS = new Set<RunStep>([
+      'setup_worktree', 'route', 'planner_create_plan', 'reviewer_review_plan',
+      'wait_plan_approval', 'implementer_apply_changes', 'tester_run_tests',
+      'reviewer_review_code', 'create_pr', 'wait_pr_merge', 'cleanup',
+    ]);
+    const rawStep = blockedContext['prior_step'];
+    const priorStep: RunStep | undefined =
+      typeof rawStep === 'string' && VALID_STEPS.has(rawStep as RunStep)
+        ? rawStep as RunStep
+        : undefined;
+
+    log.info({ runId, triggeredBy, priorPhase, priorStep }, 'Retrying from blocked state');
 
     const retryInput = {
       runId,
-      toPhase: priorPhase as RunPhase,
+      toPhase: priorPhase,
+      toStep: priorStep,
       triggeredBy: triggeredBy ?? 'system',
       reason: 'Operator retry from blocked state',
     };
@@ -695,7 +726,52 @@ async function handleRunResume(
 
     try { mirrorPhaseTransition(getMirrorCtx(), retryInput, result); } catch { /* non-fatal */ }
 
-    log.info({ runId, toPhase: priorPhase }, 'Run retried from blocked');
+    // Enqueue the correct work. If enqueue fails, revert to blocked so
+    // the BullMQ retry can re-attempt rather than stranding the run.
+    const STEP_TO_AGENT: Partial<Record<RunStep, { agent: 'planner' | 'reviewer' | 'implementer'; action: 'create_plan' | 'review_plan' | 'apply_changes' | 'review_code' }>> = {
+      planner_create_plan: { agent: 'planner', action: 'create_plan' },
+      reviewer_review_plan: { agent: 'reviewer', action: 'review_plan' },
+      implementer_apply_changes: { agent: 'implementer', action: 'apply_changes' },
+      reviewer_review_code: { agent: 'reviewer', action: 'review_code' },
+    };
+
+    try {
+      const route = priorStep !== undefined ? STEP_TO_AGENT[priorStep] : undefined;
+      if (route !== undefined) {
+        await enqueueAgentJob(runId, route.agent, route.action);
+        log.info({ runId, toPhase: priorPhase, agent: route.agent, action: route.action }, 'Run retried — agent enqueued');
+      } else if (priorStep === 'setup_worktree') {
+        const qm = getQueueManager();
+        await qm.addJob('runs', `run-restart-${runId}-${Date.now()}`, {
+          runId,
+          action: 'start',
+          triggeredBy: triggeredBy ?? 'system',
+        });
+        log.info({ runId }, 'Run retried — re-enqueued start');
+      } else if (priorStep === 'create_pr') {
+        const qm = getQueueManager();
+        await qm.addJob('runs', `run-pr-retry-${runId}-${Date.now()}`, {
+          runId,
+          action: 'resume',
+          triggeredBy: triggeredBy ?? 'system',
+        });
+        log.info({ runId }, 'Run retried — re-enqueued PR creation');
+      } else {
+        log.warn({ runId, priorPhase, priorStep }, 'Run retried but no agent route found for step');
+      }
+    } catch (enqueueErr) {
+      // Revert to blocked so BullMQ retry can re-attempt
+      log.error({ runId, error: enqueueErr instanceof Error ? enqueueErr.message : 'Unknown' },
+        'Failed to enqueue after retry transition — reverting to blocked');
+      transitionPhase(db, {
+        runId,
+        toPhase: 'blocked' as const,
+        triggeredBy: 'system',
+        blockedReason: run.blockedReason ?? 'Retry failed — agent enqueue error',
+        blockedContext,
+      });
+      throw enqueueErr;
+    }
   } else if (phase === 'awaiting_review' && run.step === 'create_pr') {
     // Retry PR creation (e.g. after in-flight write delay)
     log.info({ runId, triggeredBy }, 'Retrying PR creation from awaiting_review/create_pr');
@@ -809,10 +885,17 @@ async function handleImplementerAgent(
   }
 
   // Resolve credentials and create provider for tool-use mode
-  const creds = await resolveCredentials(db, {
-    runId,
-    step: 'implementer_apply_changes',
-  });
+  let creds: Awaited<ReturnType<typeof resolveCredentials>>;
+  try {
+    creds = await resolveCredentials(db, {
+      runId,
+      step: 'implementer_apply_changes',
+    });
+  } catch (credErr) {
+    const msg = credErr instanceof Error ? credErr.message : 'Credential resolution failed';
+    markRunFailed(db, runId, msg);
+    return;
+  }
 
   if (creds.mode !== 'ai_provider') {
     markRunFailed(db, runId, `Implementer requires AI provider credentials (got: ${creds.mode})`);

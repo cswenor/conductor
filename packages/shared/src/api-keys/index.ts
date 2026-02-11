@@ -14,6 +14,18 @@ import { encrypt, decrypt, isEncryptionInitialized } from '../crypto/index.ts';
 const log = createLogger({ name: 'conductor:api-keys' });
 
 // =============================================================================
+// Errors
+// =============================================================================
+
+/** Thrown when a required API key is not configured for a user/provider. */
+export class ApiKeyNotConfiguredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ApiKeyNotConfiguredError';
+  }
+}
+
+// =============================================================================
 // Types
 // =============================================================================
 
@@ -336,7 +348,7 @@ export function getApiKeyForRun(
 
   if (apiKey === null) {
     const providerInfo = getProviderInfo(provider);
-    throw new Error(
+    throw new ApiKeyNotConfiguredError(
       `${providerInfo?.name ?? provider} API key not configured. Please add your API key in Settings.`
     );
   }

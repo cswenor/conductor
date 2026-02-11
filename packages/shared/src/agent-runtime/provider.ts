@@ -8,7 +8,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../logger/index.ts';
-import type { ApiKeyProvider } from '../api-keys/index.ts';
+import { ApiKeyNotConfiguredError, type ApiKeyProvider } from '../api-keys/index.ts';
 import type { RunStep } from '../types/index.ts';
 import { resolveCredentials } from './resolver.ts';
 import {
@@ -334,10 +334,20 @@ export async function executeAgent(
     }
 
     // 3. Resolve credentials
-    const creds = await resolveCredentials(db, {
-      runId: input.runId,
-      step: input.step,
-    });
+    let creds: Awaited<ReturnType<typeof resolveCredentials>>;
+    try {
+      creds = await resolveCredentials(db, {
+        runId: input.runId,
+        step: input.step,
+      });
+    } catch (credErr) {
+      // Only classify missing-API-key as auth_error; other resolver
+      // failures (run not found, config missing) are infra errors.
+      if (credErr instanceof ApiKeyNotConfiguredError) {
+        throw new AgentAuthError(credErr.message);
+      }
+      throw credErr;
+    }
 
     if (creds.mode !== 'ai_provider') {
       throw new AgentError(`Step ${input.step} does not use AI provider credentials (mode: ${creds.mode})`);

@@ -298,6 +298,14 @@ export const POST = withAuth(async (
           );
         }
 
+        // Enqueue before recording audit — matches cancel pattern.
+        // Stable job ID ensures repeated clicks are idempotent.
+        await queues.addJob('runs', `run-retry-${runId}`, {
+          runId,
+          action: 'resume',
+          triggeredBy: userId,
+        });
+
         recordOperatorAction(db, {
           runId,
           action: 'retry',
@@ -307,36 +315,7 @@ export const POST = withAuth(async (
           fromPhase: run.phase,
         });
 
-        // Determine prior phase from blocked context
-        let priorPhase: string = 'executing';
-        if (run.blockedContextJson !== undefined) {
-          const ctx = JSON.parse(run.blockedContextJson) as Record<string, unknown>;
-          if (typeof ctx['prior_phase'] === 'string') {
-            priorPhase = ctx['prior_phase'];
-          }
-        }
-
-        const result = transitionPhase(db, {
-          runId,
-          toPhase: priorPhase as 'executing',
-          triggeredBy: userId,
-          reason: 'Retried by operator',
-        });
-
-        if (!result.success) {
-          log.error({ runId, error: result.error }, 'Retry transition failed');
-          return NextResponse.json(
-            { error: result.error ?? 'Failed to retry run' },
-            { status: 409 }
-          );
-        }
-
-        // Clear blocked state
-        db.prepare(
-          'UPDATE runs SET blocked_reason = NULL, blocked_context_json = NULL WHERE run_id = ?'
-        ).run(runId);
-
-        log.info({ runId, userId, priorPhase }, 'Run retried by operator');
+        log.info({ runId, userId }, 'Run retry enqueued');
         return NextResponse.json({ success: true, run: getRun(db, runId) });
       }
 

@@ -10,6 +10,7 @@ import type { Database as DatabaseType } from 'better-sqlite3';
 import { initDatabase, closeDatabase } from '../db/index.ts';
 import { createRun } from '../runs/index.ts';
 import { resolveCredentials } from './resolver.ts';
+import { ApiKeyNotConfiguredError } from '../api-keys/index.ts';
 
 let db: DatabaseType;
 
@@ -88,20 +89,28 @@ describe('resolveCredentials', () => {
     expect(result.mode).toBe('none');
   });
 
-  it('throws for ai_provider step when user has no API key', async () => {
+  it('throws ApiKeyNotConfiguredError when user has no API key', async () => {
     const { runId } = seedTestData(db);
+
+    await expect(
+      resolveCredentials(db, { runId, step: 'planner_create_plan' })
+    ).rejects.toThrow(ApiKeyNotConfiguredError);
 
     await expect(
       resolveCredentials(db, { runId, step: 'planner_create_plan' })
     ).rejects.toThrow(/API key not configured/);
   });
 
-  it('throws for non-existent run when credentials needed', async () => {
+  it('throws plain Error (not ApiKeyNotConfiguredError) for non-existent run', async () => {
     seedTestData(db);
 
-    await expect(
-      resolveCredentials(db, { runId: 'run_nonexistent', step: 'planner_create_plan' })
-    ).rejects.toThrow('Run not found');
+    try {
+      await resolveCredentials(db, { runId: 'run_nonexistent', step: 'planner_create_plan' });
+      expect.fail('Should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(ApiKeyNotConfiguredError);
+    }
   });
 
   it('resolves ai_provider credentials when user has unencrypted API key', async () => {

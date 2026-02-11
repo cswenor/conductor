@@ -16,6 +16,7 @@ import {
   getRunGateConfig,
   evaluateGatesForPhase,
   areGatesPassed,
+  evaluateGatesAndTransition,
 } from './index.ts';
 import { ensureBuiltInGateDefinitions } from '../gates/gate-definitions.ts';
 import { createGateEvaluation } from '../gates/gate-evaluations.ts';
@@ -470,5 +471,135 @@ describe('areGatesPassed', () => {
 
     const check = areGatesPassed(db, run.runId, 'awaiting_plan_approval');
     expect(check.passed).toBe(true);
+  });
+});
+
+describe('transitionPhase sequence floor', () => {
+  it('skips sequences already used by worker-emitted events', () => {
+    const seed = seedTestData(db, '10');
+    const run = createTestRun(db, seed);
+
+    // Transition pending → planning (uses sequence 1)
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'planner_create_plan',
+      triggeredBy: 'system',
+    });
+
+    // Simulate worker emitting agent events (auto-allocated sequences 2, 3)
+    createEvent(db, {
+      projectId: seed.projectId,
+      runId: run.runId,
+      type: 'agent.started',
+      class: 'signal',
+      payload: { agent: 'planner', action: 'create_plan' },
+      idempotencyKey: `agent.started:${run.runId}:1`,
+      source: 'worker',
+    });
+    createEvent(db, {
+      projectId: seed.projectId,
+      runId: run.runId,
+      type: 'agent.failed',
+      class: 'decision',
+      payload: { agent: 'planner', action: 'create_plan', errorCode: 'auth_error' },
+      idempotencyKey: `agent.failed:${run.runId}:1`,
+      source: 'worker',
+    });
+
+    // runs.next_sequence is still 2 (only updated by transitionPhase),
+    // but events table has sequences 1, 2, 3.
+    // Without the floor fix, transitionPhase would try sequence 2 and collide.
+    const result = transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Auth error',
+    });
+
+    expect(result.success).toBe(true);
+    // Sequence should be 4 (max(3) + 1), not 2
+    expect(result.event!.sequence).toBe(4);
+  });
+
+  it('uses runs.next_sequence when it is already ahead of events', () => {
+    const seed = seedTestData(db, '11');
+    const run = createTestRun(db, seed);
+
+    // Normal sequential transitions — no worker events in between
+    const r1 = transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'planner_create_plan',
+      triggeredBy: 'system',
+    });
+    expect(r1.event!.sequence).toBe(1);
+
+    const r2 = transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'test',
+    });
+    // next_sequence=2, max(events.sequence)=1+1=2, so Math.max(2,2)=2
+    expect(r2.event!.sequence).toBe(2);
+  });
+});
+
+describe('evaluateGatesAndTransition sequence floor', () => {
+  it('uses sequence floor when worker events advance beyond nextSequence', () => {
+    const seed = seedTestData(db, '12');
+    const run = createTestRun(db, seed);
+    ensureBuiltInGateDefinitions(db);
+
+    // Move to planning (sequence 1, nextSequence becomes 2)
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      triggeredBy: 'system',
+    });
+
+    // Simulate worker events that auto-allocate sequences 2, 3
+    createEvent(db, {
+      projectId: seed.projectId,
+      runId: run.runId,
+      type: 'agent.started',
+      class: 'signal',
+      payload: { agent: 'planner', action: 'create_plan' },
+      idempotencyKey: `agent.started:${run.runId}:gate_test`,
+      source: 'worker',
+    });
+    createEvent(db, {
+      projectId: seed.projectId,
+      runId: run.runId,
+      type: 'agent.completed',
+      class: 'decision',
+      payload: { agent: 'planner', action: 'create_plan' },
+      idempotencyKey: `agent.completed:${run.runId}:gate_test`,
+      source: 'worker',
+    });
+
+    // evaluateGatesAndTransition with no applicable gates (planning phase
+    // has no gates) will attempt a transition. Without the floor fix,
+    // it would try sequence 2 (from nextSequence) and collide.
+    const runObj = getRun(db, run.runId)!;
+    const { transition: txnResult } = evaluateGatesAndTransition(
+      db, runObj, 'planning',
+      {
+        runId: run.runId,
+        toPhase: 'blocked',
+        triggeredBy: 'system',
+        blockedReason: 'test',
+      },
+    );
+
+    expect(txnResult?.success).toBe(true);
+    // Verify all event sequences are unique
+    const events = listRunEvents(db, run.runId);
+    const sequences = events.map(e => e.sequence).filter((s): s is number => s !== undefined);
+    const uniqueSeqs = new Set(sequences);
+    expect(uniqueSeqs.size).toBe(sequences.length);
+    // The transition event should have sequence 4 (max(3) + 1)
+    expect(txnResult?.event?.sequence).toBe(4);
   });
 });

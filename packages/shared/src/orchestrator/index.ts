@@ -89,8 +89,12 @@ export function transitionPhase(db: Database, input: TransitionInput): Transitio
       };
     }
 
-    // 3. Allocate sequence from runs.next_sequence
-    const sequence = run.nextSequence;
+    // 3. Allocate sequence with event-table floor to avoid collisions with
+    // worker-emitted events that auto-allocate from MAX(events.sequence) + 1.
+    const maxEventSeq = (db.prepare(
+      'SELECT COALESCE(MAX(sequence), 0) as max_seq FROM events WHERE run_id = ?'
+    ).get(input.runId) as { max_seq: number }).max_seq;
+    const sequence = Math.max(run.nextSequence, maxEventSeq + 1);
 
     // 4. INSERT phase.transitioned event
     const now = new Date().toISOString();
@@ -441,7 +445,10 @@ export function evaluateGatesAndTransition(
       return { success: false, error: `Invalid transition: ${fromPhase} → ${toPhase}` };
     }
 
-    const sequence = currentRun.nextSequence;
+    const maxEventSeq = (db.prepare(
+      'SELECT COALESCE(MAX(sequence), 0) as max_seq FROM events WHERE run_id = ?'
+    ).get(transition.runId) as { max_seq: number }).max_seq;
+    const sequence = Math.max(currentRun.nextSequence, maxEventSeq + 1);
     const now = new Date().toISOString();
 
     const payload: Record<string, unknown> = {
