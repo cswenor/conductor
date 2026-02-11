@@ -2,9 +2,30 @@
  * Run step helpers for the worker.
  */
 
-import { getDatabase } from '@conductor/shared';
+import { getDatabase, type Run } from '@conductor/shared';
 
 type Db = ReturnType<typeof getDatabase>;
+
+/**
+ * Check whether a run job is stale based on expected phase and event sequence.
+ *
+ * Returns a reason string if stale, or undefined if the job is still valid.
+ * The sequence check prevents a duplicate retry from acting on a later
+ * blocked episode (same phase, different epoch).
+ */
+export function isStaleRunJob(
+  run: Run,
+  expectedPhase: string | undefined,
+  expectedSequence: number | undefined,
+): string | undefined {
+  if (expectedPhase !== undefined && run.phase !== expectedPhase) {
+    return `phase mismatch: expected ${expectedPhase}, got ${run.phase}`;
+  }
+  if (expectedSequence !== undefined && run.lastEventSequence !== expectedSequence) {
+    return `sequence mismatch: expected ${expectedSequence}, got ${run.lastEventSequence}`;
+  }
+  return undefined;
+}
 
 /**
  * Compare-and-set step update.

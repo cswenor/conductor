@@ -221,6 +221,7 @@ export async function retryRun(runId: string, comment?: string): Promise<ActionR
       action: 'resume',
       triggeredBy: user.userId,
       fromPhase: 'blocked',
+      fromSequence: run.lastEventSequence,
     });
 
     recordOperatorAction(db, {

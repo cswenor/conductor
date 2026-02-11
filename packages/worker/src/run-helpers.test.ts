@@ -1,5 +1,5 @@
 /**
- * Tests for casUpdateRunStep — the atomic compare-and-set step update.
+ * Tests for casUpdateRunStep and isStaleRunJob.
  *
  * Uses a real in-memory SQLite database (via shared's initDatabase) so we
  * exercise the actual SQL WHERE clause rather than mocking it away.
@@ -14,7 +14,7 @@ import {
   getRun,
   transitionPhase,
 } from '@conductor/shared';
-import { casUpdateRunStep } from './run-helpers.ts';
+import { casUpdateRunStep, isStaleRunJob } from './run-helpers.ts';
 
 type Db = ReturnType<typeof getDatabase>;
 let db: Db;
@@ -180,5 +180,95 @@ describe('casUpdateRunStep', () => {
 
     const after = getRun(db, run.runId);
     expect(after?.updatedAt).toBe(before?.updatedAt);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isStaleRunJob
+// ---------------------------------------------------------------------------
+
+describe('isStaleRunJob', () => {
+  it('returns undefined when no expectations are set', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    expect(isStaleRunJob(run, undefined, undefined)).toBeUndefined();
+  });
+
+  it('returns undefined when phase matches', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed); // phase = pending
+    expect(isStaleRunJob(run, 'pending', undefined)).toBeUndefined();
+  });
+
+  it('detects phase mismatch', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed); // phase = pending
+    const reason = isStaleRunJob(run, 'blocked', undefined);
+    expect(reason).toContain('phase mismatch');
+    expect(reason).toContain('blocked');
+    expect(reason).toContain('pending');
+  });
+
+  it('returns undefined when sequence matches', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed); // lastEventSequence = 0
+    expect(isStaleRunJob(run, undefined, 0)).toBeUndefined();
+  });
+
+  it('detects sequence mismatch (cross-episode blocked)', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Transition to blocked (sequence advances)
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'first episode',
+    });
+
+    const blockedRun1 = getRun(db, run.runId);
+    expect(blockedRun1?.phase).toBe('blocked');
+    const seq1 = blockedRun1?.lastEventSequence ?? 0;
+
+    // Simulate retry: unblock, then re-block (new episode)
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      triggeredBy: 'system',
+    });
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'second episode',
+    });
+
+    const blockedRun2 = getRun(db, run.runId);
+    expect(blockedRun2?.phase).toBe('blocked');
+    expect(blockedRun2?.lastEventSequence).toBeGreaterThan(seq1);
+
+    // A job from episode 1 should be stale even though phase matches
+    const reason = isStaleRunJob(blockedRun2 ?? run, 'blocked', seq1);
+    expect(reason).toContain('sequence mismatch');
+  });
+
+  it('passes when both phase and sequence match', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'test',
+    });
+
+    const blockedRun = getRun(db, run.runId);
+    expect(blockedRun?.phase).toBe('blocked');
+
+    expect(
+      isStaleRunJob(blockedRun ?? run, 'blocked', blockedRun?.lastEventSequence)
+    ).toBeUndefined();
   });
 });

@@ -94,7 +94,7 @@ import {
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
 import { cleanOldJobs } from './old-jobs-cleanup.ts';
-import { casUpdateRunStep } from './run-helpers.ts';
+import { casUpdateRunStep, isStaleRunJob } from './run-helpers.ts';
 import { dispatchPrWebhook } from './webhook-dispatch.ts';
 import { handleBlockedRetry } from './blocked-retry.ts';
 
@@ -362,10 +362,12 @@ async function processRun(job: Job<RunJobData>): Promise<void> {
     return;
   }
 
-  // fromPhase guard: skip stale jobs when the run has already moved on.
-  const expectedPhase = job.data.fromPhase;
-  if (expectedPhase !== undefined && run.phase !== expectedPhase) {
-    log.info({ runId, action, expected: expectedPhase, actual: run.phase }, 'Stale run job skipped — phase already advanced');
+  // Staleness guard: skip jobs when the run has moved on since dispatch.
+  // fromPhase checks the phase hasn't changed; fromSequence checks the exact
+  // event epoch so a re-blocked run isn't confused with the original episode.
+  const staleReason = isStaleRunJob(run, job.data.fromPhase, job.data.fromSequence);
+  if (staleReason !== undefined) {
+    log.info({ runId, action, reason: staleReason }, 'Stale run job skipped');
     return;
   }
 

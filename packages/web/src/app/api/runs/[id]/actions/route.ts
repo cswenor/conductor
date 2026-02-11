@@ -304,6 +304,7 @@ export const POST = withAuth(async (
           action: 'resume',
           triggeredBy: userId,
           fromPhase: 'blocked',
+          fromSequence: run.lastEventSequence,
         });
 
         recordOperatorAction(db, {

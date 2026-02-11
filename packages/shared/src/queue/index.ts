@@ -38,6 +38,8 @@ export interface RunJobData {
   triggeredBy?: string;
   /** Expected phase at dispatch time — worker skips the job if run has moved on. */
   fromPhase?: string;
+  /** Expected lastEventSequence at dispatch time — distinguishes blocked episodes. */
+  fromSequence?: number;
 }
 
 export interface AgentJobData {
