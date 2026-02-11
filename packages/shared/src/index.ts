@@ -85,6 +85,9 @@ export * from './overrides/index.ts';
 // Re-export agent runtime module
 export * from './agent-runtime/index.ts';
 
+// Re-export cancellation module
+export * from './cancellation/index.ts';
+
 // Re-export analytics module
 export * from './analytics/index.ts';
 

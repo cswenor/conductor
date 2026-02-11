@@ -22,6 +22,7 @@ import { registerTestRunnerTool } from '../tools/test-runner.ts';
 import { DEFAULT_POLICY_RULES } from '../tools/policy.ts';
 import { runToolLoop } from '../executor.ts';
 import { listToolInvocations } from '../tool-invocations.ts';
+import { getAbortSignal } from '../../cancellation/index.ts';
 
 const log = createLogger({ name: 'conductor:implementer' });
 
@@ -327,6 +328,7 @@ export async function runImplementerWithTools(
   }
 
   try {
+    const abortSignal = getAbortSignal(input.runId);
     const result = await runToolLoop({
       db,
       provider: input.provider,
@@ -340,9 +342,11 @@ export async function runImplementerWithTools(
         worktreePath: input.worktreePath,
         db,
         projectId,
+        abortSignal,
       },
       maxTokens: 16384,
       temperature: 0.2,
+      abortSignal,
     });
 
     // Record success

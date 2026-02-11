@@ -238,6 +238,32 @@ describe('detectTestCommand', () => {
   });
 });
 
+describe('abort signal', () => {
+  it('kills child process when abort signal fires', async () => {
+    const registry = createToolRegistry();
+    registerTestRunnerTool(registry);
+    const tool = registry.get('run_tests')!;
+
+    // Create a package.json whose test script runs a long-sleeping process
+    writeFileSync(
+      join(worktreePath, 'package.json'),
+      '{"scripts":{"test":"node -e \\"setTimeout(() => {}, 30000)\\""}}'
+    );
+
+    const abortController = new AbortController();
+    const abortContext = { ...context, abortSignal: abortController.signal };
+
+    // Fire abort after a short delay
+    setTimeout(() => abortController.abort(), 500);
+
+    const result = await tool.execute({ command: 'npm test' }, abortContext);
+
+    // Process should have been killed — non-zero exit code
+    expect(result.isError).toBe(true);
+    expect(result.meta['exitCode']).not.toBe(0);
+  }, 15000);
+});
+
 describe('registerTestRunnerTool', () => {
   it('registers run_tests tool', () => {
     const registry = createToolRegistry();

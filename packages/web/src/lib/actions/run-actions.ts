@@ -274,26 +274,16 @@ export async function cancelRun(runId: string, comment?: string): Promise<Action
       toPhase: 'cancelled',
     });
 
-    const result = transitionPhase(db, {
-      runId,
-      toPhase: 'cancelled',
-      toStep: 'cleanup',
-      triggeredBy: user.userId,
-      result: 'cancelled',
-      reason: comment ?? undefined,
-    });
-
-    if (!result.success) {
-      return { success: false, error: result.error ?? 'Failed to cancel run' };
-    }
-
+    // Enqueue cancel job — worker owns transition + signal + cleanup.
+    // Stable job ID ensures repeated clicks are idempotent (BullMQ deduplicates).
     const queues = await getQueues();
-    await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
-      type: 'worktree',
-      targetId: runId,
+    await queues.addJob('runs', `run-cancel-${runId}`, {
+      runId,
+      action: 'cancel',
+      triggeredBy: user.userId,
     });
 
-    log.info({ runId, userId: user.userId }, 'Run cancelled by operator');
+    log.info({ runId, userId: user.userId }, 'Run cancel enqueued');
     revalidateRunPaths(runId);
     return { success: true };
   } catch (err) {

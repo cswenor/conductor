@@ -11,6 +11,7 @@ import { initDatabase, closeDatabase } from '../db/index.ts';
 import { createRun } from '../runs/index.ts';
 import { createAgentInvocation, markAgentRunning } from './invocations.ts';
 import type { AgentInput, AgentOutput, AgentProvider } from './provider.ts';
+import { AgentCancelledError } from './provider.ts';
 import { createToolRegistry } from './tools/registry.ts';
 import type { ToolDefinition, ToolExecutionContext } from './tools/types.ts';
 import { DEFAULT_POLICY_RULES } from './tools/policy.ts';
@@ -469,5 +470,114 @@ describe('runToolLoop', () => {
     expect(result.iterations).toBe(3);
     expect(result.totalTokensInput).toBe(300);  // 100 * 3
     expect(result.totalTokensOutput).toBe(150); // 50 * 3
+  });
+
+  it('aborts when signal is pre-aborted', async () => {
+    const provider = createMockProvider([
+      { content: 'Should not reach', stopReason: 'end_turn' },
+    ]);
+
+    const registry = createToolRegistry();
+    const abortController = new AbortController();
+    abortController.abort();
+
+    await expect(
+      runToolLoop({
+        db,
+        provider,
+        systemPrompt: 'Test',
+        userPrompt: 'Test',
+        registry,
+        policyRules: [],
+        context: makeContext(),
+        abortSignal: abortController.signal,
+      })
+    ).rejects.toThrow(AgentCancelledError);
+  });
+
+  it('aborts between iterations when signal fires', async () => {
+    const abortController = new AbortController();
+
+    // Tool that fires abort during execution
+    const abortTriggerTool: ToolDefinition = {
+      name: 'trigger_abort',
+      description: 'Triggers abort signal',
+      inputSchema: { type: 'object' },
+      execute: async () => {
+        abortController.abort();
+        return { content: 'done', meta: {} };
+      },
+    };
+
+    const provider = createMockProvider([
+      {
+        content: '',
+        stopReason: 'tool_use',
+        toolCalls: [{ id: 'tc_1', name: 'trigger_abort', input: {} }],
+        rawContentBlocks: [
+          { type: 'tool_use' as const, id: 'tc_1', name: 'trigger_abort', input: {} },
+        ],
+      },
+      // Second response should never be reached
+      { content: 'Should not reach', stopReason: 'end_turn' },
+    ]);
+
+    const registry = createToolRegistry();
+    registry.register(abortTriggerTool);
+
+    await expect(
+      runToolLoop({
+        db,
+        provider,
+        systemPrompt: 'Test',
+        userPrompt: 'Test',
+        registry,
+        policyRules: [],
+        context: makeContext(),
+        abortSignal: abortController.signal,
+      })
+    ).rejects.toThrow(AgentCancelledError);
+  });
+
+  it('aborts when DB phase is cancelled', async () => {
+    // Tool that sets the run phase to cancelled in the DB
+    const cancelPhaseTool: ToolDefinition = {
+      name: 'cancel_in_db',
+      description: 'Cancels run in DB',
+      inputSchema: { type: 'object' },
+      execute: async (_input, context) => {
+        context.db.prepare('UPDATE runs SET phase = ? WHERE run_id = ?')
+          .run('cancelled', context.runId);
+        return { content: 'cancelled', meta: {} };
+      },
+    };
+
+    const provider = createMockProvider([
+      {
+        content: '',
+        stopReason: 'tool_use',
+        toolCalls: [{ id: 'tc_1', name: 'cancel_in_db', input: {} }],
+        rawContentBlocks: [
+          { type: 'tool_use' as const, id: 'tc_1', name: 'cancel_in_db', input: {} },
+        ],
+      },
+      // Second response should never be reached
+      { content: 'Should not reach', stopReason: 'end_turn' },
+    ]);
+
+    const registry = createToolRegistry();
+    registry.register(cancelPhaseTool);
+
+    await expect(
+      runToolLoop({
+        db,
+        provider,
+        systemPrompt: 'Test',
+        userPrompt: 'Test',
+        registry,
+        policyRules: [],
+        context: makeContext(),
+      })
+    ).rejects.toThrow(AgentCancelledError);
   });
 });

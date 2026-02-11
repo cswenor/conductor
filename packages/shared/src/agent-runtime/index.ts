@@ -60,6 +60,7 @@ export {
   AgentContextLengthError,
   AgentUnsupportedProviderError,
   AgentTimeoutError,
+  AgentCancelledError,
   AnthropicProvider,
   createProvider,
   executeAgent,

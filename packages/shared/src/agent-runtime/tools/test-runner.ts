@@ -238,6 +238,23 @@ export const runTestsTool: ToolDefinition = {
         }, 5000);
       }, DEFAULT_TEST_TIMEOUT_MS);
 
+      // Listen for abort signal to kill subprocess on cancellation
+      let abortListener: (() => void) | undefined;
+      if (context.abortSignal !== undefined) {
+        const onAbort = () => {
+          child.kill('SIGTERM');
+          setTimeout(() => {
+            if (!child.killed) child.kill('SIGKILL');
+          }, 5000);
+        };
+        if (context.abortSignal.aborted) {
+          onAbort();
+        } else {
+          abortListener = onAbort;
+          context.abortSignal.addEventListener('abort', onAbort, { once: true });
+        }
+      }
+
       const collectOutput = (data: Buffer) => {
         chunks.push(data);
         totalBytes += data.length;
@@ -257,6 +274,9 @@ export const runTestsTool: ToolDefinition = {
 
       child.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
         clearTimeout(killTimer);
+        if (abortListener !== undefined && context.abortSignal !== undefined) {
+          context.abortSignal.removeEventListener('abort', abortListener);
+        }
         const durationMs = Date.now() - startTime;
         let output = Buffer.concat(chunks).toString('utf8');
 

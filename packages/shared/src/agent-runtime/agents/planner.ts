@@ -8,6 +8,7 @@ import type { Database } from 'better-sqlite3';
 import { executeAgent } from '../provider.ts';
 import { assembleContext, formatContextForPrompt } from '../context.ts';
 import { createArtifact } from '../artifacts.ts';
+import { getAbortSignal } from '../../cancellation/index.ts';
 
 // =============================================================================
 // Types
@@ -91,6 +92,7 @@ export async function runPlanner(
     userPrompt,
     maxTokens: 8192,
     temperature: 0.3,
+    abortSignal: getAbortSignal(input.runId),
   });
 
   // Store plan as artifact

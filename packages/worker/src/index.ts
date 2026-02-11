@@ -60,6 +60,10 @@ import {
   AgentAuthError,
   AgentRateLimitError,
   AgentTimeoutError,
+  AgentCancelledError,
+  registerCancellable,
+  unregisterCancellable,
+  signalCancellation,
   // Agent Runtime (WP7) - Tool-use mode
   resolveCredentials,
   createProvider,
@@ -318,6 +322,12 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
 async function processRun(job: Job<RunJobData>): Promise<void> {
   const { runId, action, triggeredBy } = job.data;
   log.info({ runId, action, triggeredBy }, 'Processing run');
+
+  // For cancel/timeout, fire abort signal immediately regardless of current phase.
+  // Single call site — handleRunCancel/handleRunTimeout do not duplicate this.
+  if (action === 'cancel' || action === 'timeout') {
+    signalCancellation(runId);
+  }
 
   const db = getDatabase();
 
@@ -1000,6 +1010,11 @@ async function handleAgentError(
 ): Promise<void> {
   const { runId } = run;
 
+  if (err instanceof AgentCancelledError) {
+    log.info({ runId, agent, action }, 'Agent cancelled (already transitioned)');
+    return;
+  }
+
   if (err instanceof AgentTimeoutError) {
     log.error({ runId, agent, action, timeoutMs: err.timeoutMs }, 'Agent timed out');
     markRunFailed(db, runId, `Agent '${agent}' timed out after ${Math.round(err.timeoutMs / 1000)}s`);
@@ -1098,6 +1113,8 @@ async function processAgent(job: Job<AgentJobData>): Promise<void> {
   const worktree = getWorktreeForRun(db, runId);
   const worktreePath = worktree?.path;
 
+  registerCancellable(runId);
+
   try {
     const routeKey = `${agent}:${action}`;
     switch (routeKey) {
@@ -1126,12 +1143,22 @@ async function processAgent(job: Job<AgentJobData>): Promise<void> {
     // Emit agent.completed event
     emitAgentEvent(db, run, 'agent.completed', agent, action);
   } catch (err) {
+    if (err instanceof AgentCancelledError) {
+      log.info({ runId, agent, action }, 'Agent cancelled mid-execution');
+      emitAgentEvent(db, run, 'agent.failed', agent, action, {
+        errorCode: 'cancelled',
+        errorMessage: 'Agent cancelled by operator',
+      });
+      return;
+    }
     // Emit agent.failed event
     emitAgentEvent(db, run, 'agent.failed', agent, action, {
       errorCode: err instanceof AgentError ? err.code : 'unknown',
       errorMessage: err instanceof Error ? err.message : 'Unknown error',
     });
     await handleAgentError(db, run, agent, action, err);
+  } finally {
+    unregisterCancellable(runId);
   }
 }
 

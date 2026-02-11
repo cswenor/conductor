@@ -12,7 +12,7 @@ import { createLogger } from '../logger/index.ts';
 import { redact } from '../redact/index.ts';
 import { createEvent } from '../events/index.ts';
 import type { AgentProvider } from './provider.ts';
-import { AgentError } from './provider.ts';
+import { AgentError, AgentCancelledError } from './provider.ts';
 import type { ToolRegistry } from './tools/registry.ts';
 import type { PolicyRule } from './tools/policy.ts';
 import { evaluatePolicy } from './tools/policy.ts';
@@ -49,6 +49,8 @@ export interface ExecutorInput {
   temperature?: number;
   timeoutMs?: number;
   maxIterations?: number;
+  /** Abort signal for cancellation */
+  abortSignal?: AbortSignal;
 }
 
 export interface ExecutorResult {
@@ -63,6 +65,15 @@ export interface ExecutorResult {
 // =============================================================================
 // Internal Helpers
 // =============================================================================
+
+/**
+ * Check if a signal is aborted. Extracted to a helper to prevent TypeScript's
+ * control-flow narrowing from eliminating the check when it follows an earlier
+ * guard on the same signal in the same block.
+ */
+function isAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true;
+}
 
 function redactToolArgs(
   toolName: string,
@@ -288,6 +299,18 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
   ];
 
   for (let i = 0; i < maxIterations; i++) {
+    // Check abort signal (in-process cancellation)
+    if (input.abortSignal?.aborted === true) {
+      throw new AgentCancelledError(input.context.runId);
+    }
+
+    // DB phase check fallback (cross-process cancellation)
+    const phaseRow = input.db.prepare('SELECT phase FROM runs WHERE run_id = ?')
+      .get(input.context.runId) as { phase: string } | undefined;
+    if (phaseRow !== undefined && (phaseRow.phase === 'cancelled' || phaseRow.phase === 'completed')) {
+      throw new AgentCancelledError(input.context.runId);
+    }
+
     const response = await input.provider.invoke({
       systemPrompt: input.systemPrompt,
       userPrompt: input.userPrompt,
@@ -296,6 +319,8 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
       maxTokens: input.maxTokens,
       temperature: input.temperature,
       timeoutMs: input.timeoutMs,
+      abortSignal: input.abortSignal,
+      runId: input.context.runId,
     });
 
     totalTokensInput += response.tokensInput;
@@ -327,6 +352,11 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
     // Execute each tool call and collect results
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const toolCall of response.toolCalls) {
+      // Re-check abort signal before each tool call. Signal may flip async
+      // between loop top and here, so we call a helper to bypass narrowing.
+      if (isAborted(input.abortSignal)) {
+        throw new AgentCancelledError(input.context.runId);
+      }
       const result = await executeToolCall(toolCall, input);
       toolResults.push(result);
     }

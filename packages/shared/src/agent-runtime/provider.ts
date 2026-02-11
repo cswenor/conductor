@@ -80,6 +80,16 @@ export class AgentTimeoutError extends AgentError {
   }
 }
 
+export class AgentCancelledError extends AgentError {
+  public readonly runId: string;
+  constructor(runId: string, agent?: string, action?: string) {
+    const detail = agent !== undefined ? ` (agent=${agent}, action=${action})` : '';
+    super(`Agent cancelled for run ${runId}${detail}`, 'cancelled');
+    this.name = 'AgentCancelledError';
+    this.runId = runId;
+  }
+}
+
 // =============================================================================
 // Provider Abstraction
 // =============================================================================
@@ -94,6 +104,10 @@ export interface AgentInput {
   tools?: Anthropic.Tool[];
   /** Full message history for multi-turn tool loops (overrides userPrompt) */
   messages?: Anthropic.MessageParam[];
+  /** Abort signal for cancellation (composed with timeout signal) */
+  abortSignal?: AbortSignal;
+  /** Run ID for error attribution */
+  runId?: string;
 }
 
 export interface AgentOutput {
@@ -148,9 +162,12 @@ export class AnthropicProvider implements AgentProvider {
     const maxTokens = input.maxTokens ?? 16384;
     const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-    // Set up AbortController for timeout
+    // Set up AbortController for timeout, composed with external abort signal
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const composedSignal = input.abortSignal !== undefined
+      ? AbortSignal.any([controller.signal, input.abortSignal])
+      : controller.signal;
 
     // Use provided messages or create single user message
     const messages: Anthropic.MessageParam[] =
@@ -172,7 +189,7 @@ export class AnthropicProvider implements AgentProvider {
 
       const response = await this.client.messages.create(
         createParams,
-        { signal: controller.signal }
+        { signal: composedSignal }
       );
 
       const durationMs = Date.now() - start;
@@ -207,8 +224,11 @@ export class AnthropicProvider implements AgentProvider {
     } catch (err) {
       const durationMs = Date.now() - start;
 
-      // Timeout (AbortError) — agent/action filled in by executeAgent catch block
+      // AbortError — distinguish cancellation from timeout
       if (err instanceof Error && err.name === 'AbortError') {
+        if (input.abortSignal?.aborted === true) {
+          throw new AgentCancelledError(input.runId ?? 'unknown');
+        }
         throw new AgentTimeoutError(timeoutMs, 'provider', 'invoke');
       }
 
@@ -273,6 +293,8 @@ export interface ExecuteAgentInput {
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
+  /** Abort signal for cancellation */
+  abortSignal?: AbortSignal;
 }
 
 export interface ExecuteAgentResult {
@@ -306,6 +328,11 @@ export async function executeAgent(
   markAgentRunning(db, invocation.agentInvocationId);
 
   try {
+    // Check for pre-cancellation before doing any work
+    if (input.abortSignal?.aborted === true) {
+      throw new AgentCancelledError(input.runId, input.agent, input.action);
+    }
+
     // 3. Resolve credentials
     const creds = await resolveCredentials(db, {
       runId: input.runId,
@@ -326,6 +353,8 @@ export async function executeAgent(
       maxTokens: input.maxTokens,
       temperature: input.temperature,
       timeoutMs,
+      abortSignal: input.abortSignal,
+      runId: input.runId,
     });
 
     // 5. Record success
@@ -355,6 +384,29 @@ export async function executeAgent(
       durationMs: output.durationMs,
     };
   } catch (err) {
+    // Handle cancellation — record failure and re-throw with correct metadata
+    if (err instanceof AgentCancelledError) {
+      try {
+        failAgentInvocation(db, invocation.agentInvocationId, {
+          errorCode: 'cancelled',
+          errorMessage: err.message,
+        });
+      } catch {
+        // Invocation may already be in terminal state; ignore
+      }
+
+      log.info(
+        {
+          agentInvocationId: invocation.agentInvocationId,
+          agent: input.agent,
+          action: input.action,
+        },
+        'Agent invocation cancelled'
+      );
+
+      throw new AgentCancelledError(input.runId, input.agent, input.action);
+    }
+
     // Re-throw timeout with correct agent/action metadata
     if (err instanceof AgentTimeoutError && err.agent !== input.agent) {
       const corrected = new AgentTimeoutError(err.timeoutMs, input.agent, input.action);

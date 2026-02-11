@@ -28,6 +28,8 @@ export interface ToolExecutionContext {
   worktreePath: string;
   db: Database;
   projectId: string;
+  /** Abort signal for cancellation — tools should listen for this to terminate subprocesses */
+  abortSignal?: AbortSignal;
 }
 
 export interface ToolResult {
