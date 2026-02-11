@@ -96,6 +96,11 @@ describe('handlePrMerged', () => {
       toPhase: 'blocked',
       triggeredBy: 'webhook:pr.merged',
       blockedReason: 'PR bundle fields missing at merge time',
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      blockedContext: expect.objectContaining({
+        prior_phase: 'awaiting_review',
+        prior_step: 'wait_pr_merge',
+      }),
     }));
     expect(mockUpdateRunPrBundle).not.toHaveBeenCalled();
     expect(mockScheduleCleanup).not.toHaveBeenCalled();
@@ -115,6 +120,11 @@ describe('handlePrMerged', () => {
     expect(mockTransitionPhase).toHaveBeenCalledWith(fakeDb, expect.objectContaining({
       toPhase: 'blocked',
       blockedReason: 'Failed to update PR state to merged',
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+      blockedContext: expect.objectContaining({
+        prior_phase: 'awaiting_review',
+        prior_step: 'wait_pr_merge',
+      }),
     }));
     expect(mockScheduleCleanup).not.toHaveBeenCalled();
   });

@@ -299,8 +299,7 @@ export const POST = withAuth(async (
         }
 
         // Enqueue before recording audit — matches cancel pattern.
-        // Stable job ID ensures repeated clicks are idempotent.
-        await queues.addJob('runs', `run-retry-${runId}`, {
+        await queues.addJob('runs', `run-retry-${runId}-${Date.now()}`, {
           runId,
           action: 'resume',
           triggeredBy: userId,

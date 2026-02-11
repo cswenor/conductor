@@ -760,16 +760,19 @@ async function handleRunResume(
         log.warn({ runId, priorPhase, priorStep }, 'Run retried but no agent route found for step');
       }
     } catch (enqueueErr) {
-      // Revert to blocked so BullMQ retry can re-attempt
+      // Revert to blocked so operator can retry again from the UI.
       log.error({ runId, error: enqueueErr instanceof Error ? enqueueErr.message : 'Unknown' },
         'Failed to enqueue after retry transition — reverting to blocked');
-      transitionPhase(db, {
+      const rollback = transitionPhase(db, {
         runId,
         toPhase: 'blocked' as const,
         triggeredBy: 'system',
         blockedReason: run.blockedReason ?? 'Retry failed — agent enqueue error',
         blockedContext,
       });
+      if (!rollback.success) {
+        log.error({ runId, error: rollback.error }, 'Rollback to blocked also failed — run may be stranded');
+      }
       throw enqueueErr;
     }
   } else if (phase === 'awaiting_review' && run.step === 'create_pr') {
@@ -987,6 +990,7 @@ async function handleImplementerAgent(
         blockedReason: 'gate_failed',
         blockedContext: {
           prior_phase: 'executing',
+          prior_step: freshRun.step,
           gate_id: failedGate,
           gate_status: gateResult?.status ?? 'failed',
           escalate: gateResult?.escalate ?? false,

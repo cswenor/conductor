@@ -50,6 +50,7 @@ export async function handlePrMerged(
       toPhase: 'blocked',
       triggeredBy: 'webhook:pr.merged',
       blockedReason: 'PR bundle fields missing at merge time',
+      blockedContext: { error: 'PR bundle fields missing', prior_phase: run.phase, prior_step: run.step },
     });
     return;
   }
@@ -70,6 +71,7 @@ export async function handlePrMerged(
       toPhase: 'blocked',
       triggeredBy: 'webhook:pr.merged',
       blockedReason: 'Failed to update PR state to merged',
+      blockedContext: { error: 'Failed to update PR state', prior_phase: run.phase, prior_step: run.step },
     });
     return;
   }

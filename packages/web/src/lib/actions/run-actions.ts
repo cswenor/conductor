@@ -215,9 +215,8 @@ export async function retryRun(runId: string, comment?: string): Promise<ActionR
     }
 
     // Enqueue before recording audit — matches cancel pattern.
-    // Stable job ID ensures repeated clicks are idempotent (BullMQ deduplicates).
     const queues = await getQueues();
-    await queues.addJob('runs', `run-retry-${runId}`, {
+    await queues.addJob('runs', `run-retry-${runId}-${Date.now()}`, {
       runId,
       action: 'resume',
       triggeredBy: user.userId,
