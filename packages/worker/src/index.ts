@@ -60,8 +60,6 @@ import {
   transitionPhase,
   TERMINAL_PHASES,
   type Run,
-  type RunPhase,
-  type RunStep,
   // Agent Runtime (WP6)
   generateAgentInvocationId,
   runPlanner,
@@ -98,6 +96,7 @@ import { handlePrCreation } from './pr-creation.ts';
 import { cleanOldJobs } from './old-jobs-cleanup.ts';
 import { casUpdateRunStep } from './run-helpers.ts';
 import { dispatchPrWebhook } from './webhook-dispatch.ts';
+import { handleBlockedRetry } from './blocked-retry.ts';
 
 const log = createLogger({ name: 'conductor:worker' });
 
@@ -360,6 +359,13 @@ async function processRun(job: Job<RunJobData>): Promise<void> {
   // Idempotency guard: skip if already in terminal state
   if (TERMINAL_PHASES.has(run.phase)) {
     log.info({ runId, phase: run.phase }, 'Run already in terminal state, skipping');
+    return;
+  }
+
+  // fromPhase guard: skip stale jobs when the run has already moved on.
+  const expectedPhase = job.data.fromPhase;
+  if (expectedPhase !== undefined && run.phase !== expectedPhase) {
+    log.info({ runId, action, expected: expectedPhase, actual: run.phase }, 'Stale run job skipped — phase already advanced');
     return;
   }
 
@@ -677,104 +683,22 @@ async function handleRunResume(
     await enqueueAgentJob(runId, 'implementer', 'apply_changes');
     log.info({ runId }, 'Run resumed — implementer enqueued');
   } else if (phase === 'blocked') {
-    // Retry from blocked state — read blocked_context for target phase/step
-    let blockedContext: Record<string, unknown> = {};
-    if (run.blockedContextJson !== undefined) {
-      try {
-        blockedContext = JSON.parse(run.blockedContextJson) as Record<string, unknown>;
-      } catch {
-        log.warn({ runId }, 'Invalid blocked context JSON, using defaults');
-      }
-    }
-
-    // Validate prior_phase against retryable phases
-    const RETRYABLE_PHASES = new Set<RunPhase>(['pending', 'planning', 'executing', 'awaiting_plan_approval', 'awaiting_review']);
-    const rawPhase = blockedContext['prior_phase'];
-    if (typeof rawPhase !== 'string' || !RETRYABLE_PHASES.has(rawPhase as RunPhase)) {
-      log.error({ runId, rawPhase }, 'Invalid or missing prior_phase in blocked context — cannot retry');
-      return;
-    }
-    const priorPhase = rawPhase as RunPhase;
-
-    // Validate prior_step against known steps
-    const VALID_STEPS = new Set<RunStep>([
-      'setup_worktree', 'route', 'planner_create_plan', 'reviewer_review_plan',
-      'wait_plan_approval', 'implementer_apply_changes', 'tester_run_tests',
-      'reviewer_review_code', 'create_pr', 'wait_pr_merge', 'cleanup',
-    ]);
-    const rawStep = blockedContext['prior_step'];
-    const priorStep: RunStep | undefined =
-      typeof rawStep === 'string' && VALID_STEPS.has(rawStep as RunStep)
-        ? rawStep as RunStep
-        : undefined;
-
-    log.info({ runId, triggeredBy, priorPhase, priorStep }, 'Retrying from blocked state');
-
-    const retryInput = {
-      runId,
-      toPhase: priorPhase,
-      toStep: priorStep,
-      triggeredBy: triggeredBy ?? 'system',
-      reason: 'Operator retry from blocked state',
-    };
-    const result = transitionPhase(db, retryInput);
-
-    if (!result.success) {
-      log.error({ runId, error: result.error, targetPhase: priorPhase }, 'Failed to transition from blocked');
-      return;
-    }
-
-    try { mirrorPhaseTransition(getMirrorCtx(), retryInput, result); } catch { /* non-fatal */ }
-
-    // Enqueue the correct work. If enqueue fails, revert to blocked so
-    // the BullMQ retry can re-attempt rather than stranding the run.
-    const STEP_TO_AGENT: Partial<Record<RunStep, { agent: 'planner' | 'reviewer' | 'implementer'; action: 'create_plan' | 'review_plan' | 'apply_changes' | 'review_code' }>> = {
-      planner_create_plan: { agent: 'planner', action: 'create_plan' },
-      reviewer_review_plan: { agent: 'reviewer', action: 'review_plan' },
-      implementer_apply_changes: { agent: 'implementer', action: 'apply_changes' },
-      reviewer_review_code: { agent: 'reviewer', action: 'review_code' },
-    };
-
-    try {
-      const route = priorStep !== undefined ? STEP_TO_AGENT[priorStep] : undefined;
-      if (route !== undefined) {
-        await enqueueAgentJob(runId, route.agent, route.action);
-        log.info({ runId, toPhase: priorPhase, agent: route.agent, action: route.action }, 'Run retried — agent enqueued');
-      } else if (priorStep === 'setup_worktree') {
+    // Delegate to extracted blocked-retry handler
+    await handleBlockedRetry(db, run, triggeredBy, {
+      enqueueAgent: enqueueAgentJob,
+      enqueueRunJob: async (retryRunId, retryAction, retryTriggeredBy) => {
         const qm = getQueueManager();
-        await qm.addJob('runs', `run-restart-${runId}-${Date.now()}`, {
-          runId,
-          action: 'start',
-          triggeredBy: triggeredBy ?? 'system',
+        const jobId = retryAction === 'start'
+          ? `run-restart-${retryRunId}-${Date.now()}`
+          : `run-pr-retry-${retryRunId}-${Date.now()}`;
+        await qm.addJob('runs', jobId, {
+          runId: retryRunId,
+          action: retryAction as 'start' | 'resume',
+          triggeredBy: retryTriggeredBy,
         });
-        log.info({ runId }, 'Run retried — re-enqueued start');
-      } else if (priorStep === 'create_pr') {
-        const qm = getQueueManager();
-        await qm.addJob('runs', `run-pr-retry-${runId}-${Date.now()}`, {
-          runId,
-          action: 'resume',
-          triggeredBy: triggeredBy ?? 'system',
-        });
-        log.info({ runId }, 'Run retried — re-enqueued PR creation');
-      } else {
-        log.warn({ runId, priorPhase, priorStep }, 'Run retried but no agent route found for step');
-      }
-    } catch (enqueueErr) {
-      // Revert to blocked so operator can retry again from the UI.
-      log.error({ runId, error: enqueueErr instanceof Error ? enqueueErr.message : 'Unknown' },
-        'Failed to enqueue after retry transition — reverting to blocked');
-      const rollback = transitionPhase(db, {
-        runId,
-        toPhase: 'blocked' as const,
-        triggeredBy: 'system',
-        blockedReason: run.blockedReason ?? 'Retry failed — agent enqueue error',
-        blockedContext,
-      });
-      if (!rollback.success) {
-        log.error({ runId, error: rollback.error }, 'Rollback to blocked also failed — run may be stranded');
-      }
-      throw enqueueErr;
-    }
+      },
+      mirror: (input, result) => mirrorPhaseTransition(getMirrorCtx(), input, result),
+    });
   } else if (phase === 'awaiting_review' && run.step === 'create_pr') {
     // Retry PR creation (e.g. after in-flight write delay)
     log.info({ runId, triggeredBy }, 'Retrying PR creation from awaiting_review/create_pr');

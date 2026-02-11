@@ -303,6 +303,7 @@ export const POST = withAuth(async (
           runId,
           action: 'resume',
           triggeredBy: userId,
+          fromPhase: 'blocked',
         });
 
         recordOperatorAction(db, {

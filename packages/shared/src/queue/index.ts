@@ -36,6 +36,8 @@ export interface RunJobData {
   runId: string;
   action: 'start' | 'resume' | 'cancel' | 'timeout';
   triggeredBy?: string;
+  /** Expected phase at dispatch time — worker skips the job if run has moved on. */
+  fromPhase?: string;
 }
 
 export interface AgentJobData {
