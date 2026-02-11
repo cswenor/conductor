@@ -110,7 +110,9 @@ function advanceToBlockedFromPlanning(
 }
 
 const mockEnqueueAgent = vi.fn<(runId: string, agent: string, action: string) => Promise<void>>().mockResolvedValue(undefined);
-const mockEnqueueRunJob = vi.fn<(runId: string, action: string, triggeredBy: string) => Promise<void>>().mockResolvedValue(undefined);
+const mockEnqueueRunJob = vi.fn<
+  (runId: string, action: string, triggeredBy: string, fromPhase?: string, fromSequence?: number) => Promise<void>
+>().mockResolvedValue(undefined);
 const mockMirror = vi.fn();
 
 beforeEach(() => {
@@ -281,7 +283,63 @@ describe('handleBlockedRetry', () => {
     const result = await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
 
     expect(result.retried).toBe(true);
-    expect(mockEnqueueRunJob).toHaveBeenCalledWith(run.runId, 'start', 'operator_1');
+    expect(mockEnqueueRunJob).toHaveBeenCalledWith(
+      run.runId,
+      'start',
+      'operator_1',
+      'pending',
+      expect.any(Number),
+    );
+    expect(mockEnqueueAgent).not.toHaveBeenCalled();
+  });
+
+  it('routes create_pr to guarded run resume', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'planner_create_plan',
+      triggeredBy: 'system',
+    });
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'awaiting_plan_approval',
+      toStep: 'wait_plan_approval',
+      triggeredBy: 'system',
+    });
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'executing',
+      toStep: 'implementer_apply_changes',
+      triggeredBy: 'system',
+    });
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'awaiting_review',
+      toStep: 'create_pr',
+      triggeredBy: 'system',
+    });
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'PR retry test',
+      blockedContext: { prior_phase: 'awaiting_review', prior_step: 'create_pr' },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    const result = await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    expect(result.retried).toBe(true);
+    expect(mockEnqueueRunJob).toHaveBeenCalledWith(
+      run.runId,
+      'resume',
+      'operator_1',
+      'awaiting_review',
+      expect.any(Number),
+    );
     expect(mockEnqueueAgent).not.toHaveBeenCalled();
   });
 

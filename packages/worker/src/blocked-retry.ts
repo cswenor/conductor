@@ -24,7 +24,13 @@ type Db = ReturnType<typeof getDatabase>;
 export type EnqueueAgentFn = (runId: string, agent: string, action: string) => Promise<void>;
 
 /** Callback to enqueue a run job (start/resume). */
-export type EnqueueRunJobFn = (runId: string, action: string, triggeredBy: string) => Promise<void>;
+export type EnqueueRunJobFn = (
+  runId: string,
+  action: string,
+  triggeredBy: string,
+  fromPhase?: RunPhase,
+  fromSequence?: number,
+) => Promise<void>;
 
 /** Callback to mirror a phase transition. */
 export type MirrorFn = (input: TransitionInput, result: TransitionResult) => void;
@@ -162,6 +168,9 @@ export async function handleBlockedRetry(
   // Mirror (non-fatal)
   try { deps.mirror(retryInput, result); } catch { /* non-fatal */ }
 
+  // Guard follow-up run jobs to this exact post-retry episode.
+  const fromSequence = result.run?.lastEventSequence ?? result.event?.sequence;
+
   // Enqueue the correct work
   try {
     const route = priorStep !== undefined ? STEP_TO_AGENT[priorStep] : undefined;
@@ -169,10 +178,10 @@ export async function handleBlockedRetry(
       await deps.enqueueAgent(runId, route.agent, route.action);
       log.info({ runId, toPhase: priorPhase, agent: route.agent, action: route.action }, 'Run retried — agent enqueued');
     } else if (priorStep === 'setup_worktree') {
-      await deps.enqueueRunJob(runId, 'start', triggeredBy ?? 'system');
+      await deps.enqueueRunJob(runId, 'start', triggeredBy ?? 'system', priorPhase, fromSequence);
       log.info({ runId }, 'Run retried — re-enqueued start');
     } else if (priorStep === 'create_pr') {
-      await deps.enqueueRunJob(runId, 'resume', triggeredBy ?? 'system');
+      await deps.enqueueRunJob(runId, 'resume', triggeredBy ?? 'system', priorPhase, fromSequence);
       log.info({ runId }, 'Run retried — re-enqueued PR creation');
     } else {
       log.warn({ runId, priorPhase, priorStep }, 'Run retried but no agent route found for step');

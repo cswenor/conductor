@@ -688,7 +688,13 @@ async function handleRunResume(
     // Delegate to extracted blocked-retry handler
     await handleBlockedRetry(db, run, triggeredBy, {
       enqueueAgent: enqueueAgentJob,
-      enqueueRunJob: async (retryRunId, retryAction, retryTriggeredBy) => {
+      enqueueRunJob: async (
+        retryRunId,
+        retryAction,
+        retryTriggeredBy,
+        fromPhase,
+        fromSequence,
+      ) => {
         const qm = getQueueManager();
         const jobId = retryAction === 'start'
           ? `run-restart-${retryRunId}-${Date.now()}`
@@ -697,6 +703,8 @@ async function handleRunResume(
           runId: retryRunId,
           action: retryAction as 'start' | 'resume',
           triggeredBy: retryTriggeredBy,
+          fromPhase,
+          fromSequence,
         });
       },
       mirror: (input, result) => mirrorPhaseTransition(getMirrorCtx(), input, result),
@@ -710,6 +718,8 @@ async function handleRunResume(
         runId: retryRunId,
         action: 'resume',
         triggeredBy: 'pr-creation-retry',
+        fromPhase: 'awaiting_review',
+        fromSequence: run.lastEventSequence,
       }, { delay: delayMs });
     });
   } else {
@@ -996,6 +1006,8 @@ async function handleCodeReviewerAgent(
         runId: retryRunId,
         action: 'resume',
         triggeredBy: 'pr-creation-retry',
+        fromPhase: 'awaiting_review',
+        fromSequence: run.lastEventSequence,
       }, { delay: delayMs });
     });
   } else {
