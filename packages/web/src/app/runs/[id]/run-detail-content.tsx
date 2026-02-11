@@ -39,6 +39,7 @@ import {
   TooltipProvider,
 } from '@/components/ui/tooltip';
 import { getPhaseLabel, getPhaseVariant, formatTimestamp, formatDuration } from '@/lib/phase-config';
+import { getActionLabel, getEventSummary } from '@/lib/run-detail-helpers';
 import {
   approvePlan,
   revisePlan,
@@ -78,42 +79,6 @@ function formatGateId(gateId: string): string {
 }
 
 const TERMINAL_PHASES = new Set(['completed', 'cancelled']);
-
-const ACTION_LABELS: Record<string, string> = {
-  create_plan: 'Planning',
-  review_plan: 'Plan Review',
-  apply_changes: 'Implementation',
-  run_tests: 'Test Execution',
-};
-
-function getActionLabel(action: string): string {
-  return ACTION_LABELS[action] ?? action.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-}
-
-function getEventSummary(event: { type: string; payload: unknown }): string {
-  try {
-    const p = event.payload as Record<string, unknown>;
-    switch (event.type) {
-      case 'phase.transitioned': {
-        const from = typeof p['from'] === 'string' ? p['from'] : '?';
-        const to = typeof p['to'] === 'string' ? p['to'] : '?';
-        return `${from} → ${to}`;
-      }
-      case 'agent.failed':
-        return (p['errorMessage'] as string) ?? (p['error_message'] as string) ?? '—';
-      case 'agent.started':
-      case 'agent.completed': {
-        const agent = (p['agent'] as string) ?? '';
-        const action = (p['action'] as string) ?? '';
-        return agent + (action ? `: ${getActionLabel(action)}` : '');
-      }
-      default:
-        return '—';
-    }
-  } catch {
-    return '—';
-  }
-}
 
 export function RunDetailContent({ data }: { data: RunDetailData }) {
   const router = useRouter();
