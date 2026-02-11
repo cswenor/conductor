@@ -418,6 +418,24 @@ export function updateRunPrBundle(db: Database, input: UpdateRunPrBundleInput): 
   return result.changes > 0;
 }
 
+/**
+ * Look up a run by its PR node ID, but only if it's in the merge-wait state.
+ * Returns null if no matching run is found or if the run is in any other state.
+ */
+export function getRunByPrNodeId(db: Database, prNodeId: string): Run | null {
+  const row = db
+    .prepare(
+      `SELECT * FROM runs
+       WHERE pr_node_id = ?
+         AND phase = 'awaiting_review'
+         AND step = 'wait_pr_merge'
+       LIMIT 1`
+    )
+    .get(prNodeId) as Record<string, unknown> | undefined;
+  if (row === undefined) return null;
+  return rowToRun(row);
+}
+
 // =============================================================================
 // Helpers
 // =============================================================================

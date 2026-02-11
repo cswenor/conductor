@@ -12,6 +12,7 @@ import {
   listRuns,
   getRunCountForTask,
   clearActiveRunIfTerminal,
+  getRunByPrNodeId,
 } from './index.ts';
 import { updateTaskActiveRun } from '../tasks/index.ts';
 
@@ -283,5 +284,67 @@ describe('clearActiveRunIfTerminal', () => {
 
   it('handles missing run gracefully', () => {
     expect(() => clearActiveRunIfTerminal(db, 'run_nonexistent')).not.toThrow();
+  });
+});
+
+describe('getRunByPrNodeId', () => {
+  function createRunInMergeWait(prNodeId: string): string {
+    const { projectId, repoId, taskId } = seedTestData(db);
+    const run = createRun(db, { taskId, projectId, repoId, baseBranch: 'main' });
+    const now = new Date().toISOString();
+    db.prepare(
+      `UPDATE runs SET phase = 'awaiting_review', step = 'wait_pr_merge',
+       pr_node_id = ?, pr_number = 1, pr_url = 'https://github.com/o/r/pull/1',
+       pr_state = 'open', pr_synced_at = ? WHERE run_id = ?`
+    ).run(prNodeId, now, run.runId);
+    return run.runId;
+  }
+
+  it('returns null for non-existent prNodeId', () => {
+    expect(getRunByPrNodeId(db, 'PR_nonexistent')).toBeNull();
+  });
+
+  it('finds run in awaiting_review/wait_pr_merge by prNodeId', () => {
+    const prNodeId = 'PR_test123';
+    const runId = createRunInMergeWait(prNodeId);
+
+    const result = getRunByPrNodeId(db, prNodeId);
+    expect(result).not.toBeNull();
+    expect(result!.runId).toBe(runId);
+    expect(result!.phase).toBe('awaiting_review');
+    expect(result!.step).toBe('wait_pr_merge');
+    expect(result!.prNodeId).toBe(prNodeId);
+  });
+
+  it('returns null for completed run', () => {
+    const prNodeId = 'PR_completed';
+    const runId = createRunInMergeWait(prNodeId);
+    db.prepare(
+      `UPDATE runs SET phase = 'completed', step = 'cleanup', completed_at = ? WHERE run_id = ?`
+    ).run(new Date().toISOString(), runId);
+
+    expect(getRunByPrNodeId(db, prNodeId)).toBeNull();
+  });
+
+  it('returns null for cancelled run', () => {
+    const prNodeId = 'PR_cancelled';
+    const runId = createRunInMergeWait(prNodeId);
+    db.prepare(
+      `UPDATE runs SET phase = 'cancelled', step = 'cleanup', completed_at = ? WHERE run_id = ?`
+    ).run(new Date().toISOString(), runId);
+
+    expect(getRunByPrNodeId(db, prNodeId)).toBeNull();
+  });
+
+  it('returns null for run in awaiting_review/create_pr (wrong step)', () => {
+    const { projectId, repoId, taskId } = seedTestData(db);
+    const run = createRun(db, { taskId, projectId, repoId, baseBranch: 'main' });
+    db.prepare(
+      `UPDATE runs SET phase = 'awaiting_review', step = 'create_pr',
+       pr_node_id = ?, pr_number = 1, pr_url = 'https://github.com/o/r/pull/1',
+       pr_state = 'open', pr_synced_at = ? WHERE run_id = ?`
+    ).run('PR_wrong_step', new Date().toISOString(), run.runId);
+
+    expect(getRunByPrNodeId(db, 'PR_wrong_step')).toBeNull();
   });
 });

@@ -79,6 +79,7 @@ import {
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
 import { casUpdateRunStep } from './run-helpers.ts';
+import { dispatchPrWebhook } from './webhook-dispatch.ts';
 
 const log = createLogger({ name: 'conductor:worker' });
 
@@ -283,26 +284,32 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
     source: 'webhook',
   });
 
-  if (event === null) {
-    // Duplicate event (idempotency)
-    updateWebhookStatus(db, deliveryId, 'processed', {
-      processedAt: new Date().toISOString(),
-    });
-    log.info({ deliveryId }, 'Webhook already processed (duplicate event)');
-    return Promise.resolve();
-  }
-
-  // Mark webhook as processed
+  // Mark webhook as processed (whether event is new or duplicate)
   updateWebhookStatus(db, deliveryId, 'processed', {
     processedAt: new Date().toISOString(),
   });
 
-  log.info(
-    { deliveryId, eventId: event.eventId, eventType: normalized.eventType },
-    'Webhook processed successfully'
-  );
+  if (event !== null) {
+    log.info(
+      { deliveryId, eventId: event.eventId, eventType: normalized.eventType },
+      'Webhook processed successfully'
+    );
+  } else {
+    log.info({ deliveryId }, 'Webhook already processed (duplicate event)');
+  }
 
-  return Promise.resolve();
+  // --- WP10.4-10.6: Dispatch PR state changes ---
+  // Runs regardless of whether event was new or duplicate (crash-retry safety).
+  // Both handlePrMerged and handlePrStateChange are internally idempotent.
+  await dispatchPrWebhook(db, normalized, (input, result) => {
+    try { mirrorPhaseTransition(getMirrorCtx(), input, result); } catch { /* non-fatal */ }
+  }, async (runId) => {
+    const qm = getQueueManager();
+    await qm.addJob('cleanup', `cleanup-merge-${runId}`, {
+      type: 'worktree',
+      targetId: runId,
+    });
+  });
 }
 
 /**
