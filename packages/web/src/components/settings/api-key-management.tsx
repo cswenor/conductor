@@ -71,6 +71,7 @@ export function ApiKeyManagement() {
 
   async function fetchKeys() {
     try {
+      setError(null);
       const res = await fetch('/api/user/api-keys');
       if (!res.ok) {
         throw new Error('Failed to fetch API keys');
@@ -180,10 +181,19 @@ export function ApiKeyManagement() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center gap-2 text-destructive">
+          <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
-            <p className="text-sm">{error}</p>
-          </div>
+            <AlertDescription className="flex items-center justify-between">
+              <span>{error}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setLoading(true); void fetchKeys(); }}
+              >
+                Retry
+              </Button>
+            </AlertDescription>
+          </Alert>
         </CardContent>
       </Card>
     );
@@ -232,17 +242,16 @@ export function ApiKeyManagement() {
                     {PROVIDER_DESCRIPTIONS[provider.id] ?? ''}
                   </p>
                 </div>
-                <a
-                  href={provider.docUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="shrink-0"
-                >
-                  <Button variant="outline" size="sm">
+                <Button variant="outline" size="sm" asChild className="shrink-0">
+                  <a
+                    href={provider.docUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
                     <ExternalLink className="h-4 w-4 mr-1" />
                     Get Key
-                  </Button>
-                </a>
+                  </a>
+                </Button>
               </div>
 
               {editingProvider === provider.id ? (
@@ -305,6 +314,7 @@ export function ApiKeyManagement() {
                     <Button
                       variant="outline"
                       size="sm"
+                      aria-label={`Remove ${provider.name} API key`}
                       onClick={() => setDeletingProvider(provider.id)}
                     >
                       <Trash2 className="h-4 w-4" />
