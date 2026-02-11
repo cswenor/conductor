@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "@conductor/shared": "workspace:*",
-    "bullmq": "^5.67.3"
+    "bullmq": "^5.67.3",
+    "dotenv": "^17.2.3"
   },
   "devDependencies": {
     "eslint-config-prettier": "^10.0.0",

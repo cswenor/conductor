@@ -5,6 +5,7 @@
  * for use in Next.js API routes.
  */
 
+import { resolve, isAbsolute } from 'node:path';
 import {
   bootstrap,
   isBootstrapped,
@@ -18,6 +19,10 @@ import {
   createLogger,
 } from '@conductor/shared';
 import { getConfig } from './config';
+
+// Resolve relative paths from the monorepo root so web and worker share the
+// same database file. Assumes cwd is packages/web (pnpm --filter @conductor/web ...).
+const monorepoRoot = resolve(process.cwd(), '../..');
 
 const log = createLogger({ name: 'conductor:web:bootstrap' });
 
@@ -46,10 +51,11 @@ export async function ensureBootstrap(): Promise<void> {
   const config = getConfig();
   log.info('Starting lazy bootstrap');
 
-  const databasePath = config.databasePath === '' ? './conductor.db' : config.databasePath;
+  const rawPath = config.databasePath === '' ? './conductor.db' : config.databasePath;
   if (config.databasePath === '') {
     log.warn('DATABASE_PATH is empty. Falling back to ./conductor.db');
   }
+  const databasePath = isAbsolute(rawPath) ? rawPath : resolve(monorepoRoot, rawPath);
 
   bootstrapPromise = bootstrap({
     databasePath,

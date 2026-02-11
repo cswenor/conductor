@@ -5,6 +5,17 @@
  * orchestration logic.
  */
 
+import { config as loadEnv } from 'dotenv';
+import { resolve, isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Load .env.local from monorepo root (same file Next.js reads in the web package).
+// __dirname → packages/worker/src (dev) or packages/worker/dist (compiled);
+// ../../.. always reaches the monorepo root in both cases.
+const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const monorepoRoot = resolve(__dirname, '../../..');
+loadEnv({ path: resolve(monorepoRoot, '.env.local') });
+
 import { Worker, Job } from 'bullmq';
 import { execFileSync } from 'node:child_process';
 import {
@@ -161,13 +172,19 @@ interface WorkerConfig {
 
 /** Load configuration from environment with validation */
 function loadConfig(): WorkerConfig {
-  const databasePath = getEnv({
+  const rawDatabasePath = getEnv({
     name: 'DATABASE_PATH',
     type: 'path',
     required: false,
     default: './conductor.db',
     description: 'SQLite database file path',
   });
+
+  // Resolve relative paths against monorepo root so web and worker share the
+  // same database file regardless of which package's cwd they run from.
+  const databasePath = isAbsolute(rawDatabasePath)
+    ? rawDatabasePath
+    : resolve(monorepoRoot, rawDatabasePath);
 
   const redisUrl = getEnv({
     name: 'REDIS_URL',
