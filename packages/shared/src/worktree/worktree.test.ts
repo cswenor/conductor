@@ -343,6 +343,7 @@ describe('Worktree Module', () => {
       execFileSync('git', ['clone', bareRepoPath, workDir], { encoding: 'utf8' });
       execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: workDir, encoding: 'utf8' });
       execFileSync('git', ['config', 'user.name', 'Test'], { cwd: workDir, encoding: 'utf8' });
+      execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: workDir, encoding: 'utf8' });
       execFileSync('git', ['checkout', '-b', 'master'], { cwd: workDir, encoding: 'utf8' });
       writeFileSync(join(workDir, 'master.txt'), 'master branch');
       execFileSync('git', ['add', '.'], { cwd: workDir, encoding: 'utf8' });
