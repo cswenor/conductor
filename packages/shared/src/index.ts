@@ -93,3 +93,6 @@ export * from './analytics/index.ts';
 
 // Re-export mirroring module
 export * from './mirroring/index.ts';
+
+// Re-export pubsub module
+export * from './pubsub/index.ts';

@@ -14,6 +14,7 @@ import {
   type TransitionResult,
   getDatabase,
   createLogger,
+  publishTransitionEvent,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker:blocked-retry' });
@@ -165,6 +166,8 @@ export async function handleBlockedRetry(
     return { retried: false, priorPhase, priorStep, error: result.error ?? 'Transition failed' };
   }
 
+  publishTransitionEvent(run.projectId, runId, 'blocked', priorPhase);
+
   // Mirror (non-fatal)
   try { deps.mirror(retryInput, result); } catch { /* non-fatal */ }
 
@@ -199,7 +202,9 @@ export async function handleBlockedRetry(
       blockedReason: run.blockedReason ?? 'Retry failed — agent enqueue error',
       blockedContext,
     });
-    if (!rollback.success) {
+    if (rollback.success) {
+      publishTransitionEvent(run.projectId, runId, priorPhase, 'blocked');
+    } else {
       log.error({ runId, error: rollback.error }, 'Rollback to blocked also failed — run may be stranded');
     }
     throw enqueueErr;

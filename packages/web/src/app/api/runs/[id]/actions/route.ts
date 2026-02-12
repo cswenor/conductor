@@ -18,9 +18,12 @@ import {
   createOverride,
   isValidOverrideScope,
   mirrorApprovalDecision,
+  initPublisher,
+  publishTransitionEvent,
 } from '@conductor/shared';
 import type { OverrideScope } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
+import { getConfig } from '@/lib/config';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:api:run-actions' });
@@ -49,6 +52,7 @@ export const POST = withAuth(async (
 ): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
+    initPublisher(getConfig().redisUrl);
     const db = await getDb();
     const queues = await getQueues();
     const { id: runId } = await params;
@@ -123,6 +127,8 @@ export const POST = withAuth(async (
             { status: 409 }
           );
         }
+
+        publishTransitionEvent(run.projectId, runId, run.phase, 'executing');
 
         // Record operator action only after successful gate check + transition
         const approveAction = recordOperatorAction(db, {
@@ -199,6 +205,14 @@ export const POST = withAuth(async (
             blockedContext: { prior_phase: run.phase, revisions: updatedRun.planRevisions },
           });
 
+          if (!blockResult.success) {
+            return NextResponse.json(
+              { error: blockResult.error ?? 'Failed to block run' },
+              { status: 409 }
+            );
+          }
+
+          publishTransitionEvent(run.projectId, runId, run.phase, 'blocked');
           log.info({ runId, userId, revisions: updatedRun.planRevisions }, 'Plan revision limit exceeded');
           return NextResponse.json({ success: true, run: blockResult.run });
         }
@@ -219,6 +233,7 @@ export const POST = withAuth(async (
           );
         }
 
+        publishTransitionEvent(run.projectId, runId, run.phase, 'planning');
         log.info({ runId, userId }, 'Plan revision requested');
         return NextResponse.json({ success: true, run: result.run });
       }
@@ -277,6 +292,8 @@ export const POST = withAuth(async (
             { status: 409 }
           );
         }
+
+        publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
 
         await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
           type: 'worktree',
@@ -439,6 +456,8 @@ export const POST = withAuth(async (
           );
         }
 
+        publishTransitionEvent(run.projectId, runId, run.phase, priorPhase);
+
         // Clear blocked state
         db.prepare(
           'UPDATE runs SET blocked_reason = NULL, blocked_context_json = NULL WHERE run_id = ?'
@@ -506,6 +525,8 @@ export const POST = withAuth(async (
             { status: 409 }
           );
         }
+
+        publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
 
         await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
           type: 'worktree',

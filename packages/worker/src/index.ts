@@ -91,6 +91,10 @@ import {
   enqueueWrite,
   getTask,
   type MirrorContext,
+  // Pub/Sub (SSE push)
+  initPublisher,
+  closePublisher,
+  publishTransitionEvent,
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
 import { cleanOldJobs } from './old-jobs-cleanup.ts';
@@ -422,6 +426,7 @@ async function handleRunStart(
       log.warn({ runId, error: result.error }, 'Phase transition failed (idempotency — may already be advanced)');
       return;
     }
+    publishTransitionEvent(run.projectId, runId, run.phase, 'planning');
     try { mirrorPhaseTransition(getMirrorCtx(), transitionInput, result); } catch { /* non-fatal */ }
     // Enqueue planner agent
     await enqueueAgentJob(runId, 'planner', 'create_plan');
@@ -502,6 +507,7 @@ async function handleRunStart(
     return;
   }
 
+  publishTransitionEvent(run.projectId, runId, run.phase, 'planning');
   try { mirrorPhaseTransition(getMirrorCtx(), startTransitionInput, result); } catch { /* non-fatal */ }
 
   // 9. Enqueue planner agent
@@ -539,6 +545,7 @@ function handleRunCancel(
     return;
   }
 
+  publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
   try { mirrorPhaseTransition(getMirrorCtx(), cancelInput, result); } catch { /* non-fatal */ }
 
   // Best-effort worktree cleanup
@@ -581,6 +588,7 @@ function handleRunTimeout(
     return;
   }
 
+  publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
   try { mirrorPhaseTransition(getMirrorCtx(), timeoutInput, result); } catch { /* non-fatal */ }
 
   // Best-effort worktree cleanup
@@ -622,6 +630,7 @@ function markRunFailed(
     return;
   }
 
+  publishTransitionEvent(currentRun?.projectId ?? '', runId, priorPhase, 'blocked');
   try {
     const ctx = getMirrorCtx();
     mirrorPhaseTransition(ctx, failedInput, result);
@@ -671,6 +680,7 @@ async function handleRunResume(
       return;
     }
 
+    publishTransitionEvent(run.projectId, runId, run.phase, 'executing');
     try {
       mirrorPhaseTransition(getMirrorCtx(), {
         runId,
@@ -786,6 +796,7 @@ async function handlePlanReviewerAgent(
     if (!result.success) {
       log.error({ runId, error: result.error }, 'Failed to transition to awaiting_plan_approval');
     } else {
+      publishTransitionEvent(run.projectId, runId, run.phase, 'awaiting_plan_approval');
       try {
         const ctx = getMirrorCtx();
         mirrorPhaseTransition(ctx, planApprovalInput, result);
@@ -934,6 +945,7 @@ async function handleImplementerAgent(
       };
       const blockResult = transitionPhase(db, blockInput);
       if (blockResult.success) {
+        publishTransitionEvent(run.projectId, runId, run.phase, 'blocked');
         log.info(
           { runId, gate: failedGate, status: gateResult?.status, escalate: gateResult?.escalate },
           'Run blocked — gate failed with escalation'
@@ -967,6 +979,7 @@ async function handleImplementerAgent(
     log.error({ runId, error: result.error }, 'Failed to transition to awaiting_review');
     return;
   }
+  publishTransitionEvent(run.projectId, runId, run.phase, 'awaiting_review');
   try { mirrorPhaseTransition(getMirrorCtx(), reviewTransitionInput, result); } catch { /* non-fatal */ }
 
   // Enqueue code reviewer
@@ -1034,6 +1047,7 @@ async function handleCodeReviewerAgent(
       log.error({ runId, error: result.error }, 'Failed to transition back to executing');
       return;
     }
+    publishTransitionEvent(run.projectId, runId, run.phase, 'executing');
     try { mirrorPhaseTransition(getMirrorCtx(), rejectInput, result); } catch { /* non-fatal */ }
 
     await enqueueAgentJob(runId, 'implementer', 'apply_changes');
@@ -1376,6 +1390,9 @@ async function shutdown(signal: string): Promise<void> {
   log.info('Closing workers');
   await Promise.all(workers.map(w => w.close()));
 
+  // Close pub/sub publisher
+  await closePublisher();
+
   // Close bootstrap (queue manager + database)
   log.info('Closing services');
   await bootstrapShutdown();
@@ -1408,6 +1425,9 @@ async function main(): Promise<void> {
 
   const queueManager = getQueueManager();
   log.info('Database and Redis initialized');
+
+  // Initialize pub/sub publisher for SSE push events
+  initPublisher(config.redisUrl);
 
   // Seed built-in definitions (idempotent)
   ensureBuiltInGateDefinitions(getDatabase());

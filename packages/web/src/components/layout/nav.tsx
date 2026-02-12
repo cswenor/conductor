@@ -1,6 +1,5 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import type { Route } from 'next';
@@ -17,6 +16,7 @@ import {
 } from 'lucide-react';
 import { UserMenu } from './user-menu';
 import { Badge, Separator } from '@/components/ui';
+import { useApprovalsCount } from '@/hooks/use-approvals-count';
 
 const mainNavigation = [
   { name: 'Dashboard', href: '/dashboard' as Route, icon: LayoutDashboard },
@@ -33,27 +33,7 @@ const settingsNavigation = [
 
 export function Nav() {
   const pathname = usePathname();
-  const [approvalsCount, setApprovalsCount] = useState(0);
-
-  const fetchCount = useCallback(async () => {
-    try {
-      const res = await fetch('/api/approvals/count');
-      if (res.ok) {
-        const data = await res.json() as { count: number };
-        setApprovalsCount(data.count);
-      }
-    } catch {
-      // Silently ignore — badge will show 0
-    }
-  }, []);
-
-  useEffect(() => {
-    // Initial fetch + polling — legitimate data subscription pattern
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void fetchCount();
-    const interval = setInterval(() => { void fetchCount(); }, 30000);
-    return () => clearInterval(interval);
-  }, [fetchCount]);
+  const approvalsCount = useApprovalsCount();
 
   return (
     <nav className="flex flex-col gap-1">

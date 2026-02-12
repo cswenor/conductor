@@ -24,6 +24,7 @@ vi.mock('@conductor/shared', () => ({
   cleanupWorktree: mockCleanupWorktree,
   getDatabase: vi.fn(),
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
+  publishTransitionEvent: vi.fn(),
 }));
 
 import { handlePrMerged, handlePrStateChange } from './merge-handler.ts';
@@ -64,6 +65,8 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Default: transitions succeed (tests that need failure override this)
+  mockTransitionPhase.mockReturnValue({ success: true });
 });
 
 // ---------------------------------------------------------------------------

@@ -29,6 +29,8 @@ vi.mock('@conductor/shared', () => ({
   createOverride: vi.fn(),
   isValidOverrideScope: vi.fn(),
   mirrorApprovalDecision: vi.fn(),
+  initPublisher: vi.fn(),
+  publishTransitionEvent: vi.fn(),
 }));
 
 vi.mock('@/lib/bootstrap', () => ({
@@ -37,6 +39,10 @@ vi.mock('@/lib/bootstrap', () => ({
   getQueues: vi.fn().mockResolvedValue({
     addJob: (...args: unknown[]) => mockAddJob(...(args as [string, string, Record<string, unknown>])),
   }),
+}));
+
+vi.mock('@/lib/config', () => ({
+  getConfig: () => ({ redisUrl: 'redis://localhost:6379' }),
 }));
 
 vi.mock('@/lib/auth', () => ({

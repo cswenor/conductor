@@ -14,6 +14,7 @@ import {
   cleanupWorktree,
   getDatabase,
   createLogger,
+  publishTransitionEvent,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker:merge-handler' });
@@ -45,13 +46,16 @@ export async function handlePrMerged(
   // Validate PR bundle fields — must all be present
   if (run.prNumber === undefined || run.prNodeId === undefined || run.prUrl === undefined) {
     log.error({ runId }, 'PR bundle fields missing at merge time, transitioning to blocked');
-    transitionPhase(db, {
+    const blockResult = transitionPhase(db, {
       runId,
       toPhase: 'blocked',
       triggeredBy: 'webhook:pr.merged',
       blockedReason: 'PR bundle fields missing at merge time',
       blockedContext: { error: 'PR bundle fields missing', prior_phase: run.phase, prior_step: run.step },
     });
+    if (blockResult.success) {
+      publishTransitionEvent(run.projectId, runId, run.phase, 'blocked');
+    }
     return;
   }
 
@@ -66,13 +70,16 @@ export async function handlePrMerged(
   });
   if (!updated) {
     log.error({ runId }, 'Failed to update PR state to merged, transitioning to blocked');
-    transitionPhase(db, {
+    const blockResult = transitionPhase(db, {
       runId,
       toPhase: 'blocked',
       triggeredBy: 'webhook:pr.merged',
       blockedReason: 'Failed to update PR state to merged',
       blockedContext: { error: 'Failed to update PR state', prior_phase: run.phase, prior_step: run.step },
     });
+    if (blockResult.success) {
+      publishTransitionEvent(run.projectId, runId, run.phase, 'blocked');
+    }
     return;
   }
 
@@ -90,6 +97,7 @@ export async function handlePrMerged(
     log.warn({ runId, error: result.error }, 'CAS transition to completed failed (stale job)');
     return;
   }
+  publishTransitionEvent(run.projectId, runId, run.phase, 'completed');
 
   // Schedule cleanup in BullMQ (crash-resilient)
   try {
