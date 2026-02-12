@@ -4,7 +4,18 @@ import {
   publishTransitionEvent,
   initPublisher,
   _resetPublisher,
+  persistAndPublish,
+  insertStreamEvent,
+  queryStreamEventsForReplay,
+  rowToStreamEventV2,
+  pruneStreamEvents,
+  publishGateEvaluatedEvent,
+  publishOperatorActionEvent,
+  publishAgentInvocationEvent,
+  publishRunUpdatedEvent,
+  publishProjectUpdatedEvent,
   type StreamEvent,
+  type StreamEventV2,
 } from './index.ts';
 
 // ---------------------------------------------------------------------------
@@ -63,7 +74,7 @@ describe('pubsub', () => {
   });
 
   // -------------------------------------------------------------------------
-  // publishTransitionEvent — with init
+  // publishTransitionEvent — with init (legacy path, no db)
   // -------------------------------------------------------------------------
 
   it('publishTransitionEvent calls redis.publish with correct channel and payload after init', async () => {
@@ -157,5 +168,166 @@ describe('pubsub', () => {
     initPublisher('redis://localhost:6380'); // Should be ignored
     // Only one connect call
     expect(mockConnect).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // V2 StreamEventV2 serialization round-trip
+  // -------------------------------------------------------------------------
+
+  it('StreamEventV2 run.phase_changed round-trip preserves all fields', () => {
+    const event: StreamEventV2 = {
+      id: 42,
+      kind: 'run.phase_changed',
+      projectId: 'proj_1',
+      runId: 'run_1',
+      fromPhase: 'pending',
+      toPhase: 'planning',
+      timestamp: '2025-01-01T00:00:00.000Z',
+    };
+
+    const serialized = JSON.stringify(event);
+    const deserialized = JSON.parse(serialized) as StreamEventV2;
+
+    expect(deserialized).toEqual(event);
+    expect(deserialized.kind).toBe('run.phase_changed');
+  });
+
+  it('StreamEventV2 gate.evaluated round-trip', () => {
+    const event: StreamEventV2 = {
+      kind: 'gate.evaluated',
+      projectId: 'proj_1',
+      runId: 'run_1',
+      gateId: 'gate_plan',
+      gateKind: 'plan_review',
+      status: 'passed',
+      timestamp: '2025-01-01T00:00:00.000Z',
+    };
+
+    const serialized = JSON.stringify(event);
+    const deserialized = JSON.parse(serialized) as StreamEventV2;
+    expect(deserialized).toEqual(event);
+  });
+
+  // -------------------------------------------------------------------------
+  // persistAndPublish skips empty projectId
+  // -------------------------------------------------------------------------
+
+  it('persistAndPublish skips empty projectId', () => {
+    initPublisher('redis://localhost:6379');
+
+    // Create a minimal mock db
+    const mockDb = {
+      prepare: vi.fn().mockReturnValue({ run: vi.fn().mockReturnValue({ lastInsertRowid: 1 }) }),
+    };
+
+    persistAndPublish(mockDb as never, '', {
+      kind: 'run.phase_changed',
+      projectId: '',
+      runId: 'run_1',
+      fromPhase: 'pending',
+      toPhase: 'planning',
+      timestamp: new Date().toISOString(),
+    });
+
+    // Should not have attempted any db or publish operations
+    expect(mockDb.prepare).not.toHaveBeenCalled();
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // persistAndPublish publishes even if db fails
+  // -------------------------------------------------------------------------
+
+  it('persistAndPublish publishes to Redis even when db INSERT fails', async () => {
+    initPublisher('redis://localhost:6379');
+
+    const mockDb = {
+      prepare: vi.fn().mockReturnValue({
+        run: vi.fn().mockImplementation(() => {
+          throw new Error('DB error');
+        }),
+      }),
+    };
+
+    persistAndPublish(mockDb as never, 'proj_1', {
+      kind: 'gate.evaluated',
+      projectId: 'proj_1',
+      runId: 'run_1',
+      gateId: 'gate_1',
+      gateKind: 'plan_review',
+      status: 'passed',
+      timestamp: new Date().toISOString(),
+    });
+
+    await vi.waitFor(() => {
+      expect(mockPublish).toHaveBeenCalledOnce();
+    });
+
+    // Event should NOT have an id field since db failed
+    const [, payload] = mockPublish.mock.calls[0]!;
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    expect(parsed['id']).toBeUndefined();
+    expect(parsed['kind']).toBe('gate.evaluated');
+  });
+
+  // -------------------------------------------------------------------------
+  // persistAndPublish includes id when db succeeds
+  // -------------------------------------------------------------------------
+
+  it('persistAndPublish includes id when db INSERT succeeds', async () => {
+    initPublisher('redis://localhost:6379');
+
+    const mockDb = {
+      prepare: vi.fn().mockReturnValue({
+        run: vi.fn().mockReturnValue({ lastInsertRowid: 99 }),
+      }),
+    };
+
+    persistAndPublish(mockDb as never, 'proj_1', {
+      kind: 'run.updated',
+      projectId: 'proj_1',
+      runId: 'run_1',
+      fields: ['prUrl'],
+      timestamp: new Date().toISOString(),
+    });
+
+    await vi.waitFor(() => {
+      expect(mockPublish).toHaveBeenCalledOnce();
+    });
+
+    const [, payload] = mockPublish.mock.calls[0]!;
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    expect(parsed['id']).toBe(99);
+    expect(parsed['kind']).toBe('run.updated');
+  });
+
+  // -------------------------------------------------------------------------
+  // publishTransitionEvent with db uses V2 path
+  // -------------------------------------------------------------------------
+
+  it('publishTransitionEvent with db publishes V2 event via persistAndPublish', async () => {
+    initPublisher('redis://localhost:6379');
+
+    const mockDb = {
+      prepare: vi.fn().mockReturnValue({
+        run: vi.fn().mockReturnValue({ lastInsertRowid: 5 }),
+      }),
+    };
+
+    publishTransitionEvent('proj_1', 'run_1', 'planning', 'executing', mockDb as never);
+
+    await vi.waitFor(() => {
+      expect(mockPublish).toHaveBeenCalledOnce();
+    });
+
+    const [channel, payload] = mockPublish.mock.calls[0]!;
+    expect(channel).toBe('conductor:events:proj_1');
+
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    expect(parsed['kind']).toBe('run.phase_changed');
+    expect(parsed['type']).toBeUndefined(); // V1 type field removed
+    expect(parsed['id']).toBe(5);
+    expect(parsed['fromPhase']).toBe('planning');
+    expect(parsed['toPhase']).toBe('executing');
   });
 });

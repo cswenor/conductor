@@ -28,6 +28,7 @@ import { Rocket, RefreshCw, Play, AlertTriangle, Search, Info, Github } from 'lu
 import { toast } from 'sonner';
 import { timeAgo } from '@/lib/phase-config';
 import { startWork } from '@/lib/actions/start-actions';
+import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { StartableTask } from '@conductor/shared';
 
 interface StartWorkContentProps {
@@ -58,6 +59,12 @@ export function StartWorkContent({
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
+
+  useLiveRefresh({
+    filter: (e) => e.kind === 'project.updated' || e.kind === 'run.phase_changed',
+    debounceMs: 1000,
+  });
+
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [labelFilter, setLabelFilter] = useState('all');

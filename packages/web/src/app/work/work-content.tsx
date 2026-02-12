@@ -32,6 +32,7 @@ import {
   timeAgo,
 } from '@/lib/phase-config';
 import { cancelRun } from '@/lib/actions/run-actions';
+import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { RunSummary, ProjectOption } from '@/lib/types';
 
 const TAB_LABELS: Record<WorkTab, string> = {
@@ -179,6 +180,10 @@ export function WorkContent({
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
+
+  useLiveRefresh({
+    filter: (e) => e.kind === 'run.phase_changed' || e.kind === 'run.updated',
+  });
 
   const activeTab = (searchParams.get('tab') as WorkTab) ?? initialTab;
   const filterProjectId = searchParams.get('projectId') ?? initialProjectId;

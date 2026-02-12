@@ -51,7 +51,7 @@ export interface AgentJobData {
 }
 
 export interface CleanupJobData {
-  type: 'worktree' | 'expired_leases' | 'old_jobs' | 'mirror_flush';
+  type: 'worktree' | 'expired_leases' | 'old_jobs' | 'mirror_flush' | 'stream_events';
   targetId?: string;
 }
 

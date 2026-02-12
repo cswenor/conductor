@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 import { getPhaseLabel, getPhaseVariant, timeAgo } from '@/lib/phase-config';
 import type { RunSummary } from '@/lib/types';
 import { retryRun, cancelRun } from '@/lib/actions/run-actions';
+import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { ProjectOverviewData } from '@/lib/data/project-overview';
 
 function StatCard({ title, value, icon }: {
@@ -40,9 +41,13 @@ function StatCard({ title, value, icon }: {
   );
 }
 
-export function ProjectOverviewTab({ data }: { data: ProjectOverviewData }) {
+export function ProjectOverviewTab({ data, projectId }: { data: ProjectOverviewData; projectId: string }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+
+  useLiveRefresh({
+    filter: (e) => e.projectId === projectId && (e.kind === 'run.phase_changed' || e.kind === 'run.updated' || e.kind === 'operator.action'),
+  });
 
   function handleAction(runId: string, action: string) {
     startTransition(async () => {

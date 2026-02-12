@@ -51,6 +51,7 @@ import {
 import { ProjectWorkTab } from '@/components/projects/project-work-tab';
 import { ProjectWorkflowTab } from '@/components/projects/project-workflow-tab';
 import { ProjectOverviewTab } from '@/components/projects/project-overview-tab';
+import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import { deleteProject } from '@/lib/actions/project-actions';
 import { timeAgo } from '@/lib/phase-config';
 import type { Project, Repo, StartableTask } from '@conductor/shared';
@@ -213,6 +214,11 @@ function SettingsTab({ project }: { project: Project }) {
 function BacklogTab({ data, projectId }: { data: BacklogData; projectId: string }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+
+  useLiveRefresh({
+    filter: (e) => e.projectId === projectId && e.kind === 'project.updated',
+    debounceMs: 2000,
+  });
 
   function handleRefresh() {
     startTransition(() => {
@@ -419,7 +425,7 @@ export function ProjectDetailContent({
           </TabsList>
 
           <TabsContent value="overview">
-            <ProjectOverviewTab data={overviewData} />
+            <ProjectOverviewTab data={overviewData} projectId={project.projectId} />
           </TabsContent>
 
           <TabsContent value="backlog">

@@ -42,6 +42,7 @@ import {
   grantPolicyException,
   denyPolicyException,
 } from '@/lib/actions/run-actions';
+import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { ApprovalItem, ApprovalsResponse } from '@/lib/types';
 
 interface CommentDialogConfig {
@@ -278,6 +279,12 @@ export function ApprovalsContent({
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+
+  useLiveRefresh({
+    filter: (e) => e.kind === 'run.phase_changed' || e.kind === 'operator.action' || e.kind === 'gate.evaluated',
+    debounceMs: 300,
+  });
+
   const [commentDialog, setCommentDialog] = useState<CommentDialogConfig | null>(null);
   const [commentText, setCommentText] = useState('');
   const [scopeSelection, setScopeSelection] = useState('this_run');

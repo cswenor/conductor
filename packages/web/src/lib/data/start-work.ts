@@ -6,6 +6,7 @@ import {
   upsertTaskFromIssue,
   createGitHubClient,
   createLogger,
+  publishProjectUpdatedEvent,
   type Database,
   type StartableTask,
   type Repo,
@@ -74,6 +75,9 @@ async function syncOneRepo(
   db.prepare(
     'UPDATE repos SET last_fetched_at = ?, updated_at = ? WHERE repo_id = ?',
   ).run(now, now, repo.repoId);
+
+  // Emit project.updated at checkpoint level (once per repo, not per-upsert)
+  publishProjectUpdatedEvent(db, repo.projectId, 'issue_sync_complete');
 
   // 500 is the max (5 pages * 100 per page) — if we hit it, data may be truncated
   const truncated = issues.length >= 500;

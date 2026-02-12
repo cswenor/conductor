@@ -95,6 +95,7 @@ import {
   initPublisher,
   closePublisher,
   publishTransitionEvent,
+  pruneStreamEvents,
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
 import { cleanOldJobs } from './old-jobs-cleanup.ts';
@@ -426,7 +427,7 @@ async function handleRunStart(
       log.warn({ runId, error: result.error }, 'Phase transition failed (idempotency — may already be advanced)');
       return;
     }
-    publishTransitionEvent(run.projectId, runId, run.phase, 'planning');
+    publishTransitionEvent(run.projectId, runId, run.phase, 'planning', db);
     try { mirrorPhaseTransition(getMirrorCtx(), transitionInput, result); } catch { /* non-fatal */ }
     // Enqueue planner agent
     await enqueueAgentJob(runId, 'planner', 'create_plan');
@@ -507,7 +508,7 @@ async function handleRunStart(
     return;
   }
 
-  publishTransitionEvent(run.projectId, runId, run.phase, 'planning');
+  publishTransitionEvent(run.projectId, runId, run.phase, 'planning', db);
   try { mirrorPhaseTransition(getMirrorCtx(), startTransitionInput, result); } catch { /* non-fatal */ }
 
   // 9. Enqueue planner agent
@@ -545,7 +546,7 @@ function handleRunCancel(
     return;
   }
 
-  publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
+  publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled', db);
   try { mirrorPhaseTransition(getMirrorCtx(), cancelInput, result); } catch { /* non-fatal */ }
 
   // Best-effort worktree cleanup
@@ -588,7 +589,7 @@ function handleRunTimeout(
     return;
   }
 
-  publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
+  publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled', db);
   try { mirrorPhaseTransition(getMirrorCtx(), timeoutInput, result); } catch { /* non-fatal */ }
 
   // Best-effort worktree cleanup
@@ -630,7 +631,9 @@ function markRunFailed(
     return;
   }
 
-  publishTransitionEvent(currentRun?.projectId ?? '', runId, priorPhase, 'blocked');
+  if (currentRun !== null && currentRun !== undefined && currentRun.projectId !== '') {
+    publishTransitionEvent(currentRun.projectId, runId, priorPhase, 'blocked', db);
+  }
   try {
     const ctx = getMirrorCtx();
     mirrorPhaseTransition(ctx, failedInput, result);
@@ -680,7 +683,7 @@ async function handleRunResume(
       return;
     }
 
-    publishTransitionEvent(run.projectId, runId, run.phase, 'executing');
+    publishTransitionEvent(run.projectId, runId, run.phase, 'executing', db);
     try {
       mirrorPhaseTransition(getMirrorCtx(), {
         runId,
@@ -796,7 +799,7 @@ async function handlePlanReviewerAgent(
     if (!result.success) {
       log.error({ runId, error: result.error }, 'Failed to transition to awaiting_plan_approval');
     } else {
-      publishTransitionEvent(run.projectId, runId, run.phase, 'awaiting_plan_approval');
+      publishTransitionEvent(run.projectId, runId, run.phase, 'awaiting_plan_approval', db);
       try {
         const ctx = getMirrorCtx();
         mirrorPhaseTransition(ctx, planApprovalInput, result);
@@ -945,7 +948,7 @@ async function handleImplementerAgent(
       };
       const blockResult = transitionPhase(db, blockInput);
       if (blockResult.success) {
-        publishTransitionEvent(run.projectId, runId, run.phase, 'blocked');
+        publishTransitionEvent(run.projectId, runId, run.phase, 'blocked', db);
         log.info(
           { runId, gate: failedGate, status: gateResult?.status, escalate: gateResult?.escalate },
           'Run blocked — gate failed with escalation'
@@ -979,7 +982,7 @@ async function handleImplementerAgent(
     log.error({ runId, error: result.error }, 'Failed to transition to awaiting_review');
     return;
   }
-  publishTransitionEvent(run.projectId, runId, run.phase, 'awaiting_review');
+  publishTransitionEvent(run.projectId, runId, run.phase, 'awaiting_review', db);
   try { mirrorPhaseTransition(getMirrorCtx(), reviewTransitionInput, result); } catch { /* non-fatal */ }
 
   // Enqueue code reviewer
@@ -1047,7 +1050,7 @@ async function handleCodeReviewerAgent(
       log.error({ runId, error: result.error }, 'Failed to transition back to executing');
       return;
     }
-    publishTransitionEvent(run.projectId, runId, run.phase, 'executing');
+    publishTransitionEvent(run.projectId, runId, run.phase, 'executing', db);
     try { mirrorPhaseTransition(getMirrorCtx(), rejectInput, result); } catch { /* non-fatal */ }
 
     await enqueueAgentJob(runId, 'implementer', 'apply_changes');
@@ -1253,6 +1256,11 @@ async function processCleanup(job: Job<CleanupJobData>): Promise<void> {
       log.info(result, 'Old jobs cleanup completed');
       break;
     }
+    case 'stream_events': {
+      const pruned = pruneStreamEvents(db);
+      log.info({ pruned }, 'Stream events pruning completed');
+      break;
+    }
     case 'mirror_flush': {
       // Flush stale deferred mirroring events for runs that haven't had a mirror call
       const flushed = flushStaleDeferredEvents(db, (runId) => {
@@ -1359,6 +1367,7 @@ const workers: Worker[] = [];
 let mirrorFlushTimer: ReturnType<typeof setInterval> | undefined;
 let leaseCleanupTimer: ReturnType<typeof setInterval> | undefined;
 let oldJobsCleanupTimer: ReturnType<typeof setInterval> | undefined;
+let streamEventsCleanupTimer: ReturnType<typeof setInterval> | undefined;
 
 /** Flag to track shutdown state */
 let isShuttingDown = false;
@@ -1384,6 +1393,9 @@ async function shutdown(signal: string): Promise<void> {
   }
   if (oldJobsCleanupTimer !== undefined) {
     clearInterval(oldJobsCleanupTimer);
+  }
+  if (streamEventsCleanupTimer !== undefined) {
+    clearInterval(streamEventsCleanupTimer);
   }
 
   // Close all workers (waits for current jobs to complete)
@@ -1518,6 +1530,13 @@ async function main(): Promise<void> {
   oldJobsCleanupTimer = setInterval(() => {
     void queueManager.addJob('cleanup', `cleanup:old_jobs:${Date.now()}`, {
       type: 'old_jobs',
+    });
+  }, 21_600_000);
+
+  // Schedule periodic stream_events pruning (every 6 hours, 14-day retention)
+  streamEventsCleanupTimer = setInterval(() => {
+    void queueManager.addJob('cleanup', `cleanup:stream_events:${Date.now()}`, {
+      type: 'stream_events',
     });
   }, 21_600_000);
 

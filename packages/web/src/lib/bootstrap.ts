@@ -12,6 +12,7 @@ import {
   getDatabase,
   getQueueManager,
   healthCheck,
+  initPublisher,
   type BootstrapResult,
   type HealthCheckResult,
   type Database,
@@ -38,12 +39,14 @@ let bootstrapPromise: Promise<BootstrapResult> | null = null;
  */
 export async function ensureBootstrap(): Promise<void> {
   if (isBootstrapped()) {
+    initPublisher(getConfig().redisUrl); // idempotent — no-ops after first call
     return;
   }
 
   // If bootstrap is in progress, wait for it
   if (bootstrapPromise !== null) {
     await bootstrapPromise;
+    initPublisher(getConfig().redisUrl); // cover in-flight bootstrap path
     return;
   }
 
@@ -64,6 +67,7 @@ export async function ensureBootstrap(): Promise<void> {
 
   try {
     await bootstrapPromise;
+    initPublisher(config.redisUrl);
     log.info('Lazy bootstrap complete');
   } catch (err) {
     // Clear promise so we can retry

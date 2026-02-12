@@ -22,6 +22,7 @@ import {
 import { toast } from 'sonner';
 import { getPhaseLabel, getPhaseVariant, timeAgo, formatWaitDuration } from '@/lib/phase-config';
 import { approvePlan } from '@/lib/actions/run-actions';
+import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { DashboardData } from '@/lib/data/dashboard';
 import type { RunSummary, ApprovalItem } from '@/lib/types';
 
@@ -131,6 +132,10 @@ function ApprovalRow({
 export function DashboardContent({ data }: { data: DashboardData }) {
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
+
+  useLiveRefresh({
+    filter: (e) => e.kind === 'run.phase_changed' || e.kind === 'operator.action' || e.kind === 'run.updated',
+  });
 
   function handleQuickApprove(runId: string) {
     startTransition(async () => {

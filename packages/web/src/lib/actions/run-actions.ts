@@ -13,11 +13,10 @@ import {
   createOverride,
   isValidOverrideScope,
   type OverrideScope,
-  initPublisher,
   publishTransitionEvent,
+  publishOperatorActionEvent,
 } from '@conductor/shared';
 import { getDb, getQueues } from '@/lib/bootstrap';
-import { getConfig } from '@/lib/config';
 import { requireServerUser } from '@/lib/auth/session';
 
 const log = createLogger({ name: 'conductor:actions:run' });
@@ -37,7 +36,6 @@ function revalidateRunPaths(runId: string) {
 async function getAuthorizedRun(runId: string) {
   const user = await requireServerUser();
   const db = await getDb();
-  initPublisher(getConfig().redisUrl);
   const run = getRun(db, runId);
   if (run === null) throw new Error('Run not found');
   const project = getProject(db, run.projectId);
@@ -74,7 +72,7 @@ export async function approvePlan(runId: string, comment?: string): Promise<Acti
       return { success: false, error: txnResult?.error ?? 'Failed to approve plan' };
     }
 
-    publishTransitionEvent(run.projectId, runId, run.phase, 'executing');
+    publishTransitionEvent(run.projectId, runId, run.phase, 'executing', db);
 
     recordOperatorAction(db, {
       runId,
@@ -85,6 +83,7 @@ export async function approvePlan(runId: string, comment?: string): Promise<Acti
       fromPhase: run.phase,
       toPhase: 'executing',
     });
+    publishOperatorActionEvent(db, run.projectId, runId, 'approve_plan', user.userId);
 
     log.info({ runId, userId: user.userId }, 'Plan approved by operator');
     revalidateRunPaths(runId);
@@ -138,7 +137,7 @@ export async function revisePlan(runId: string, comment: string): Promise<Action
         return { success: false, error: blockResult.error ?? 'Failed to block run' };
       }
 
-      publishTransitionEvent(run.projectId, runId, run.phase, 'blocked');
+      publishTransitionEvent(run.projectId, runId, run.phase, 'blocked', db);
       log.info({ runId, userId: user.userId, revisions: updatedRun.planRevisions }, 'Plan revision limit exceeded');
       revalidateRunPaths(runId);
       return { success: true };
@@ -156,7 +155,8 @@ export async function revisePlan(runId: string, comment: string): Promise<Action
       return { success: false, error: result.error ?? 'Failed to revise plan' };
     }
 
-    publishTransitionEvent(run.projectId, runId, run.phase, 'planning');
+    publishTransitionEvent(run.projectId, runId, run.phase, 'planning', db);
+    publishOperatorActionEvent(db, run.projectId, runId, 'revise_plan', user.userId);
     log.info({ runId, userId: user.userId }, 'Plan revision requested');
     revalidateRunPaths(runId);
     return { success: true };
@@ -202,7 +202,8 @@ export async function rejectRun(runId: string, comment: string): Promise<ActionR
       return { success: false, error: result.error ?? 'Failed to reject run' };
     }
 
-    publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
+    publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled', db);
+    publishOperatorActionEvent(db, run.projectId, runId, 'reject_run', user.userId);
 
     const queues = await getQueues();
     await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
@@ -246,6 +247,7 @@ export async function retryRun(runId: string, comment?: string): Promise<ActionR
       comment,
       fromPhase: run.phase,
     });
+    publishOperatorActionEvent(db, run.projectId, runId, 'retry', user.userId);
 
     log.info({ runId, userId: user.userId }, 'Run retry enqueued');
     revalidateRunPaths(runId);
@@ -285,6 +287,7 @@ export async function cancelRun(runId: string, comment?: string): Promise<Action
       fromPhase: run.phase,
       toPhase: 'cancelled',
     });
+    publishOperatorActionEvent(db, run.projectId, runId, 'cancel', user.userId);
 
     log.info({ runId, userId: user.userId }, 'Run cancel enqueued');
     revalidateRunPaths(runId);
@@ -384,7 +387,8 @@ export async function grantPolicyException(
       return { success: false, error: result.error ?? 'Failed to grant exception' };
     }
 
-    publishTransitionEvent(run.projectId, runId, run.phase, priorPhase);
+    publishTransitionEvent(run.projectId, runId, run.phase, priorPhase, db);
+    publishOperatorActionEvent(db, run.projectId, runId, 'grant_policy_exception', user.userId);
 
     db.prepare(
       'UPDATE runs SET blocked_reason = NULL, blocked_context_json = NULL WHERE run_id = ?'
@@ -439,7 +443,8 @@ export async function denyPolicyException(runId: string, comment: string): Promi
       return { success: false, error: result.error ?? 'Failed to deny exception' };
     }
 
-    publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
+    publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled', db);
+    publishOperatorActionEvent(db, run.projectId, runId, 'deny_policy_exception', user.userId);
 
     const queues = await getQueues();
     await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {

@@ -49,6 +49,7 @@ import {
   grantPolicyException,
   denyPolicyException,
 } from '@/lib/actions/run-actions';
+import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { RunDetailData } from '@/lib/data/run-detail';
 
 function gateStatusBadgeVariant(status: string): 'default' | 'secondary' | 'destructive' | 'success' | 'warning' {
@@ -100,6 +101,13 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
   const { run, task, repo, events, gates, gateEvaluations, operatorActions, agentInvocations, requiredGates, optionalGates } = data;
   const phaseEvents = events.filter(e => e.type === 'phase.transitioned');
   const isTerminal = TERMINAL_PHASES.has(run.phase);
+
+  useLiveRefresh({
+    filter: (e) => 'runId' in e && e.runId === run.runId,
+    debounceMs: 300,
+    enabled: !isTerminal,
+  });
+
   const blockedContext = run.blockedContextJson !== undefined
     ? JSON.parse(run.blockedContextJson) as Record<string, unknown>
     : null;

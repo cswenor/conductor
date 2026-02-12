@@ -1,53 +1,42 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import type { StreamEvent } from '@conductor/shared';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
+import type { StreamEventV2 } from '@conductor/shared';
+import {
+  subscribe,
+  getSnapshot,
+  getServerSnapshot,
+  subscribeReadyState,
+} from '@/lib/event-source-manager';
 
 /**
- * SSE connection manager.
+ * SSE connection hook — thin wrapper around singleton EventSource manager.
  *
- * Creates an EventSource to /api/events/stream and dispatches parsed
- * events to the provided callback. Automatically reconnects on error
- * (EventSource default behavior).
+ * Delivers StreamEventV2 events to the provided callback.
+ * One EventSource per tab — all hooks share the same connection.
  */
 export function useEventStream(
-  onEvent: (event: StreamEvent) => void,
+  onEvent: (event: StreamEventV2) => void,
 ): { readyState: number } {
-  const [readyState, setReadyState] = useState<number>(EventSource.CONNECTING);
-  const esRef = useRef<EventSource | null>(null);
   const callbackRef = useRef(onEvent);
 
-  // Keep callback ref up to date without re-creating EventSource
+  // Keep callback ref up to date without re-subscribing
   useEffect(() => {
     callbackRef.current = onEvent;
   });
 
   useEffect(() => {
-    const es = new EventSource('/api/events/stream');
-    esRef.current = es;
-
-    es.onopen = () => {
-      setReadyState(EventSource.OPEN);
-    };
-
-    es.onmessage = (msg) => {
-      try {
-        const event = JSON.parse(msg.data as string) as StreamEvent;
-        callbackRef.current(event);
-      } catch {
-        // Ignore parse errors (e.g. heartbeat comments won't trigger onmessage)
-      }
-    };
-
-    es.onerror = () => {
-      setReadyState(es.readyState);
-    };
-
-    return () => {
-      es.close();
-      esRef.current = null;
-    };
+    const unsub = subscribe((event: StreamEventV2) => {
+      callbackRef.current(event);
+    });
+    return unsub;
   }, []);
+
+  const readyState = useSyncExternalStore(
+    subscribeReadyState,
+    getSnapshot,
+    getServerSnapshot,
+  );
 
   return { readyState };
 }

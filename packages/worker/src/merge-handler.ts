@@ -54,7 +54,7 @@ export async function handlePrMerged(
       blockedContext: { error: 'PR bundle fields missing', prior_phase: run.phase, prior_step: run.step },
     });
     if (blockResult.success) {
-      publishTransitionEvent(run.projectId, runId, run.phase, 'blocked');
+      publishTransitionEvent(run.projectId, runId, run.phase, 'blocked', db);
     }
     return;
   }
@@ -78,7 +78,7 @@ export async function handlePrMerged(
       blockedContext: { error: 'Failed to update PR state', prior_phase: run.phase, prior_step: run.step },
     });
     if (blockResult.success) {
-      publishTransitionEvent(run.projectId, runId, run.phase, 'blocked');
+      publishTransitionEvent(run.projectId, runId, run.phase, 'blocked', db);
     }
     return;
   }
@@ -97,7 +97,7 @@ export async function handlePrMerged(
     log.warn({ runId, error: result.error }, 'CAS transition to completed failed (stale job)');
     return;
   }
-  publishTransitionEvent(run.projectId, runId, run.phase, 'completed');
+  publishTransitionEvent(run.projectId, runId, run.phase, 'completed', db);
 
   // Schedule cleanup in BullMQ (crash-resilient)
   try {

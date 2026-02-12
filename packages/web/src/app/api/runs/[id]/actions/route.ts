@@ -18,12 +18,11 @@ import {
   createOverride,
   isValidOverrideScope,
   mirrorApprovalDecision,
-  initPublisher,
   publishTransitionEvent,
+  publishOperatorActionEvent,
 } from '@conductor/shared';
 import type { OverrideScope } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
-import { getConfig } from '@/lib/config';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:api:run-actions' });
@@ -52,7 +51,6 @@ export const POST = withAuth(async (
 ): Promise<NextResponse> => {
   try {
     await ensureBootstrap();
-    initPublisher(getConfig().redisUrl);
     const db = await getDb();
     const queues = await getQueues();
     const { id: runId } = await params;
@@ -128,7 +126,7 @@ export const POST = withAuth(async (
           );
         }
 
-        publishTransitionEvent(run.projectId, runId, run.phase, 'executing');
+        publishTransitionEvent(run.projectId, runId, run.phase, 'executing', db);
 
         // Record operator action only after successful gate check + transition
         const approveAction = recordOperatorAction(db, {
@@ -148,6 +146,7 @@ export const POST = withAuth(async (
           );
         } catch { /* non-fatal */ }
 
+        publishOperatorActionEvent(db, run.projectId, runId, 'approve_plan', userId);
         log.info({ runId, userId }, 'Plan approved by operator');
         return NextResponse.json({ success: true, run: txnResult.run });
       }
@@ -212,7 +211,7 @@ export const POST = withAuth(async (
             );
           }
 
-          publishTransitionEvent(run.projectId, runId, run.phase, 'blocked');
+          publishTransitionEvent(run.projectId, runId, run.phase, 'blocked', db);
           log.info({ runId, userId, revisions: updatedRun.planRevisions }, 'Plan revision limit exceeded');
           return NextResponse.json({ success: true, run: blockResult.run });
         }
@@ -233,7 +232,8 @@ export const POST = withAuth(async (
           );
         }
 
-        publishTransitionEvent(run.projectId, runId, run.phase, 'planning');
+        publishTransitionEvent(run.projectId, runId, run.phase, 'planning', db);
+        publishOperatorActionEvent(db, run.projectId, runId, 'revise_plan', userId);
         log.info({ runId, userId }, 'Plan revision requested');
         return NextResponse.json({ success: true, run: result.run });
       }
@@ -293,7 +293,8 @@ export const POST = withAuth(async (
           );
         }
 
-        publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
+        publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled', db);
+        publishOperatorActionEvent(db, run.projectId, runId, 'reject_run', userId);
 
         await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
           type: 'worktree',
@@ -332,6 +333,7 @@ export const POST = withAuth(async (
           comment: body.comment,
           fromPhase: run.phase,
         });
+        publishOperatorActionEvent(db, run.projectId, runId, 'retry', userId);
 
         log.info({ runId, userId }, 'Run retry enqueued');
         return NextResponse.json({ success: true, run: getRun(db, runId) });
@@ -456,7 +458,8 @@ export const POST = withAuth(async (
           );
         }
 
-        publishTransitionEvent(run.projectId, runId, run.phase, priorPhase);
+        publishTransitionEvent(run.projectId, runId, run.phase, priorPhase, db);
+        publishOperatorActionEvent(db, run.projectId, runId, 'grant_policy_exception', userId);
 
         // Clear blocked state
         db.prepare(
@@ -526,7 +529,8 @@ export const POST = withAuth(async (
           );
         }
 
-        publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled');
+        publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled', db);
+        publishOperatorActionEvent(db, run.projectId, runId, 'deny_policy_exception', userId);
 
         await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
           type: 'worktree',
@@ -575,6 +579,7 @@ export const POST = withAuth(async (
           );
         } catch { /* non-fatal */ }
 
+        publishOperatorActionEvent(db, run.projectId, runId, 'cancel', userId);
         log.info({ runId, userId }, 'Run cancel enqueued');
         return NextResponse.json({ success: true, status: 'cancel_enqueued' });
       }

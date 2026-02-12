@@ -166,7 +166,7 @@ export async function handleBlockedRetry(
     return { retried: false, priorPhase, priorStep, error: result.error ?? 'Transition failed' };
   }
 
-  publishTransitionEvent(run.projectId, runId, 'blocked', priorPhase);
+  publishTransitionEvent(run.projectId, runId, 'blocked', priorPhase, db);
 
   // Mirror (non-fatal)
   try { deps.mirror(retryInput, result); } catch { /* non-fatal */ }
@@ -203,7 +203,7 @@ export async function handleBlockedRetry(
       blockedContext,
     });
     if (rollback.success) {
-      publishTransitionEvent(run.projectId, runId, priorPhase, 'blocked');
+      publishTransitionEvent(run.projectId, runId, priorPhase, 'blocked', db);
     } else {
       log.error({ runId, error: rollback.error }, 'Rollback to blocked also failed — run may be stranded');
     }

@@ -27,8 +27,8 @@ vi.mock('@conductor/shared', () => ({
   evaluateGatesAndTransition: vi.fn(),
   createOverride: vi.fn(),
   isValidOverrideScope: vi.fn(),
-  initPublisher: vi.fn(),
   publishTransitionEvent: vi.fn(),
+  publishOperatorActionEvent: vi.fn(),
 }));
 
 vi.mock('next/cache', () => ({

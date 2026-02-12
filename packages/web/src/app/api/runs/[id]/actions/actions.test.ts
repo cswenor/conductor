@@ -29,8 +29,8 @@ vi.mock('@conductor/shared', () => ({
   createOverride: vi.fn(),
   isValidOverrideScope: vi.fn(),
   mirrorApprovalDecision: vi.fn(),
-  initPublisher: vi.fn(),
   publishTransitionEvent: vi.fn(),
+  publishOperatorActionEvent: vi.fn(),
 }));
 
 vi.mock('@/lib/bootstrap', () => ({
