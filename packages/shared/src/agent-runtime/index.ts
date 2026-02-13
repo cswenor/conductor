@@ -140,3 +140,15 @@ export {
   type ExecutorInput,
   type ExecutorResult,
 } from './executor.ts';
+
+// Agent messages CRUD
+export {
+  type AgentMessage,
+  type CreateAgentMessageInput,
+  generateAgentMessageId,
+  createAgentMessage,
+  listAgentMessages,
+  listAgentMessagesByRun,
+  getAgentMessageCountsByRun,
+  pruneAgentMessages,
+} from './agent-messages.ts';

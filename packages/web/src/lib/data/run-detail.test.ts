@@ -68,6 +68,7 @@ const mockListGateEvaluations = vi.fn().mockReturnValue([]);
 const mockListOperatorActions = vi.fn().mockReturnValue([]);
 const mockListAgentInvocations = vi.fn().mockReturnValue(mockInvocations);
 const mockGetRunGateConfig = vi.fn().mockReturnValue({ requiredGates: [], optionalGates: [] });
+const mockGetAgentMessageCountsByRun = vi.fn().mockReturnValue({});
 
 vi.mock('@conductor/shared', () => ({
   getRun: (...args: unknown[]) => mockGetRun(...args) as unknown,
@@ -81,6 +82,7 @@ vi.mock('@conductor/shared', () => ({
   listOperatorActions: (...args: unknown[]) => mockListOperatorActions(...args) as unknown,
   listAgentInvocations: (...args: unknown[]) => mockListAgentInvocations(...args) as unknown,
   getRunGateConfig: (...args: unknown[]) => mockGetRunGateConfig(...args) as unknown,
+  getAgentMessageCountsByRun: (...args: unknown[]) => mockGetAgentMessageCountsByRun(...args) as unknown,
 }));
 
 // ---- Import after mocks ----
@@ -148,6 +150,7 @@ describe('fetchRunDetail', () => {
     expect(result).toHaveProperty('gateEvaluations');
     expect(result).toHaveProperty('operatorActions');
     expect(result).toHaveProperty('agentInvocations');
+    expect(result).toHaveProperty('messageCounts');
     expect(result).toHaveProperty('requiredGates');
     expect(result).toHaveProperty('optionalGates');
   });

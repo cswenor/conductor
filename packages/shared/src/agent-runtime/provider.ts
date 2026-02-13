@@ -18,6 +18,7 @@ import {
   failAgentInvocation,
 } from './invocations.ts';
 import { publishAgentInvocationEvent } from '../pubsub/index.ts';
+import { createAgentMessage } from './agent-messages.ts';
 
 const log = createLogger({ name: 'conductor:agent-runtime' });
 
@@ -331,6 +332,28 @@ export async function executeAgent(
   markAgentRunning(db, invocation.agentInvocationId);
   publishAgentInvocationEvent(db, input.projectId, input.runId, invocation.agentInvocationId, input.agent, input.action, 'running');
 
+  // Persist system + user prompts before invoke (non-fatal)
+  try {
+    createAgentMessage(db, {
+      agentInvocationId: invocation.agentInvocationId,
+      turnIndex: 0,
+      role: 'system',
+      contentJson: JSON.stringify(input.systemPrompt),
+    });
+  } catch (msgErr) {
+    log.warn({ err: msgErr }, 'Failed to persist system prompt message');
+  }
+  try {
+    createAgentMessage(db, {
+      agentInvocationId: invocation.agentInvocationId,
+      turnIndex: 1,
+      role: 'user',
+      contentJson: JSON.stringify(input.userPrompt),
+    });
+  } catch (msgErr) {
+    log.warn({ err: msgErr }, 'Failed to persist user prompt message');
+  }
+
   try {
     // Check for pre-cancellation before doing any work
     if (input.abortSignal?.aborted === true) {
@@ -371,6 +394,21 @@ export async function executeAgent(
       runId: input.runId,
     });
 
+    // Persist assistant response (non-fatal)
+    try {
+      createAgentMessage(db, {
+        agentInvocationId: invocation.agentInvocationId,
+        turnIndex: 2,
+        role: 'assistant',
+        contentJson: JSON.stringify(output.rawContentBlocks ?? [{ type: 'text', text: output.content }]),
+        tokensInput: output.tokensInput,
+        tokensOutput: output.tokensOutput,
+        stopReason: output.stopReason,
+      });
+    } catch (msgErr) {
+      log.warn({ err: msgErr }, 'Failed to persist assistant message');
+    }
+
     // 5. Record success
     completeAgentInvocation(db, invocation.agentInvocationId, {
       tokensInput: output.tokensInput,
@@ -402,6 +440,16 @@ export async function executeAgent(
     // Handle cancellation — record failure and re-throw with correct metadata
     if (err instanceof AgentCancelledError) {
       try {
+        createAgentMessage(db, {
+          agentInvocationId: invocation.agentInvocationId,
+          turnIndex: 2,
+          role: 'assistant',
+          contentJson: JSON.stringify([{ type: 'text', text: `Error: ${err.message}` }]),
+          stopReason: 'cancelled',
+        });
+      } catch { /* non-fatal */ }
+
+      try {
         failAgentInvocation(db, invocation.agentInvocationId, {
           errorCode: 'cancelled',
           errorMessage: err.message,
@@ -426,6 +474,16 @@ export async function executeAgent(
     // Re-throw timeout with correct agent/action metadata
     if (err instanceof AgentTimeoutError && err.agent !== input.agent) {
       const corrected = new AgentTimeoutError(err.timeoutMs, input.agent, input.action);
+
+      try {
+        createAgentMessage(db, {
+          agentInvocationId: invocation.agentInvocationId,
+          turnIndex: 2,
+          role: 'assistant',
+          contentJson: JSON.stringify([{ type: 'text', text: `Error: ${corrected.message}` }]),
+          stopReason: 'timeout',
+        });
+      } catch { /* non-fatal */ }
 
       try {
         failAgentInvocation(db, invocation.agentInvocationId, {
@@ -455,6 +513,16 @@ export async function executeAgent(
     // Record failure
     const errorCode = err instanceof AgentError ? err.code : 'unknown';
     const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+
+    try {
+      createAgentMessage(db, {
+        agentInvocationId: invocation.agentInvocationId,
+        turnIndex: 2,
+        role: 'assistant',
+        contentJson: JSON.stringify([{ type: 'text', text: `Error: ${errorMessage}` }]),
+        stopReason: errorCode,
+      });
+    } catch { /* non-fatal */ }
 
     try {
       failAgentInvocation(db, invocation.agentInvocationId, {

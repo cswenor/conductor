@@ -24,6 +24,7 @@ import {
   blockToolInvocation,
 } from './tool-invocations.ts';
 import { ensureBuiltInPolicyDefinitions } from './policy-definitions.ts';
+import { createAgentMessage } from './agent-messages.ts';
 
 const log = createLogger({ name: 'conductor:executor' });
 
@@ -298,6 +299,29 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
     { role: 'user', content: input.userPrompt },
   ];
 
+  // Persist system and user prompts (non-fatal)
+  let turnIndex = 0;
+  try {
+    createAgentMessage(input.db, {
+      agentInvocationId: input.context.agentInvocationId,
+      turnIndex: turnIndex++,
+      role: 'system',
+      contentJson: JSON.stringify(input.systemPrompt),
+    });
+  } catch (err) {
+    log.warn({ err }, 'Failed to persist system prompt message');
+  }
+  try {
+    createAgentMessage(input.db, {
+      agentInvocationId: input.context.agentInvocationId,
+      turnIndex: turnIndex++,
+      role: 'user',
+      contentJson: JSON.stringify(input.userPrompt),
+    });
+  } catch (err) {
+    log.warn({ err }, 'Failed to persist user prompt message');
+  }
+
   for (let i = 0; i < maxIterations; i++) {
     // Check abort signal (in-process cancellation)
     if (input.abortSignal?.aborted === true) {
@@ -331,6 +355,21 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
       lastContent = response.content;
     }
 
+    // Persist assistant response (non-fatal)
+    try {
+      createAgentMessage(input.db, {
+        agentInvocationId: input.context.agentInvocationId,
+        turnIndex: turnIndex++,
+        role: 'assistant',
+        contentJson: JSON.stringify(response.rawContentBlocks ?? [{ type: 'text', text: response.content }]),
+        tokensInput: response.tokensInput,
+        tokensOutput: response.tokensOutput,
+        stopReason: response.stopReason,
+      });
+    } catch (err) {
+      log.warn({ err }, 'Failed to persist assistant message');
+    }
+
     // If no tool use, we're done
     if (response.stopReason !== 'tool_use' || response.toolCalls === undefined || response.toolCalls.length === 0) {
       return {
@@ -359,6 +398,18 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
       }
       const result = await executeToolCall(toolCall, input);
       toolResults.push(result);
+    }
+
+    // Persist tool results (non-fatal)
+    try {
+      createAgentMessage(input.db, {
+        agentInvocationId: input.context.agentInvocationId,
+        turnIndex: turnIndex++,
+        role: 'tool_result',
+        contentJson: JSON.stringify(toolResults),
+      });
+    } catch (err) {
+      log.warn({ err }, 'Failed to persist tool result message');
     }
 
     // Append user message with tool results

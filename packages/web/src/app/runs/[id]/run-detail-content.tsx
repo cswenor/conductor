@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { Fragment, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { Route } from 'next';
@@ -29,6 +29,7 @@ import {
   ArrowLeft, XCircle, GitBranch, Clock, Hash,
   CheckCircle, AlertTriangle, Circle, RefreshCw,
   ThumbsUp, ThumbsDown, Pencil, ShieldAlert,
+  ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
@@ -51,6 +52,7 @@ import {
 } from '@/lib/actions/run-actions';
 import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { RunDetailData } from '@/lib/data/run-detail';
+import { AgentConversation } from './agent-conversation';
 
 function gateStatusBadgeVariant(status: string): 'default' | 'secondary' | 'destructive' | 'success' | 'warning' {
   switch (status) {
@@ -95,10 +97,11 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
     confirmVariant: 'default' | 'destructive';
   } | null>(null);
   const [commentText, setCommentText] = useState('');
+  const [expandedInvocation, setExpandedInvocation] = useState<string | null>(null);
 
   const commentOptional = commentDialog?.action === 'approve_plan' || commentDialog?.action === 'cancel';
 
-  const { run, task, repo, events, gates, gateEvaluations, operatorActions, agentInvocations, requiredGates, optionalGates } = data;
+  const { run, task, repo, events, gates, gateEvaluations, operatorActions, agentInvocations, messageCounts, requiredGates, optionalGates } = data;
   const phaseEvents = events.filter(e => e.type === 'phase.transitioned');
   const isTerminal = TERMINAL_PHASES.has(run.phase);
 
@@ -471,6 +474,7 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-8"></TableHead>
                       <TableHead>Agent</TableHead>
                       <TableHead>Action</TableHead>
                       <TableHead>Status</TableHead>
@@ -480,33 +484,72 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {agentInvocations.map((inv) => (
-                      <TableRow key={inv.agentInvocationId}>
-                        <TableCell className="font-medium">{inv.agent}</TableCell>
-                        <TableCell>{getActionLabel(inv.action)}</TableCell>
-                        <TableCell>
-                          <Badge variant={
-                            inv.status === 'failed' ? 'destructive'
-                              : inv.status === 'completed' ? 'success'
-                              : inv.status === 'timed_out' ? 'warning'
-                              : 'secondary'
-                          }>
-                            {inv.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {inv.durationMs !== undefined ? formatDuration(inv.durationMs) : '—'}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm max-w-[300px] truncate">
-                          {(inv.status === 'failed' || inv.status === 'timed_out')
-                            ? [inv.errorCode, inv.errorMessage].filter(Boolean).join(': ') || '—'
-                            : '—'}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
-                          {formatTimestamp(inv.startedAt)}
-                        </TableCell>
-                      </TableRow>
-                    ))}
+                    {agentInvocations.map((inv) => {
+                      const msgCount = messageCounts[inv.agentInvocationId] ?? 0;
+                      const isExpanded = expandedInvocation === inv.agentInvocationId;
+                      const canExpand = msgCount > 0;
+
+                      return (
+                        <Fragment key={inv.agentInvocationId}>
+                          <TableRow
+                            className={canExpand ? 'cursor-pointer hover:bg-muted/50' : ''}
+                            onClick={() => {
+                              if (canExpand) {
+                                setExpandedInvocation(isExpanded ? null : inv.agentInvocationId);
+                              }
+                            }}
+                          >
+                            <TableCell className="w-8 px-2">
+                              {canExpand ? (
+                                isExpanded
+                                  ? <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                  : <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                              ) : null}
+                            </TableCell>
+                            <TableCell className="font-medium">
+                              {inv.agent}
+                              {msgCount > 0 && (
+                                <Badge variant="secondary" className="ml-2 text-xs">
+                                  {msgCount} turns
+                                </Badge>
+                              )}
+                            </TableCell>
+                            <TableCell>{getActionLabel(inv.action)}</TableCell>
+                            <TableCell>
+                              <Badge variant={
+                                inv.status === 'failed' ? 'destructive'
+                                  : inv.status === 'completed' ? 'success'
+                                  : inv.status === 'timed_out' ? 'warning'
+                                  : 'secondary'
+                              }>
+                                {inv.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="text-muted-foreground">
+                              {inv.durationMs !== undefined ? formatDuration(inv.durationMs) : '—'}
+                            </TableCell>
+                            <TableCell className="text-muted-foreground text-sm max-w-[300px] truncate">
+                              {(inv.status === 'failed' || inv.status === 'timed_out')
+                                ? [inv.errorCode, inv.errorMessage].filter(Boolean).join(': ') || '—'
+                                : '—'}
+                            </TableCell>
+                            <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
+                              {formatTimestamp(inv.startedAt)}
+                            </TableCell>
+                          </TableRow>
+                          {isExpanded && (
+                            <TableRow>
+                              <TableCell colSpan={7} className="p-0">
+                                <AgentConversation
+                                  agentInvocationId={inv.agentInvocationId}
+                                  runId={run.runId}
+                                />
+                              </TableCell>
+                            </TableRow>
+                          )}
+                        </Fragment>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>

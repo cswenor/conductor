@@ -10,6 +10,7 @@ import {
   listOperatorActions,
   getRunGateConfig,
   listAgentInvocations,
+  getAgentMessageCountsByRun,
   type Database,
   type Run,
 } from '@conductor/shared';
@@ -35,6 +36,7 @@ export interface RunDetailData {
   gateEvaluations: ReturnType<typeof listGateEvaluations>;
   operatorActions: ReturnType<typeof listOperatorActions>;
   agentInvocations: ReturnType<typeof listAgentInvocations>;
+  messageCounts: Record<string, number>;
   requiredGates: string[];
   optionalGates: string[];
 }
@@ -57,6 +59,7 @@ export function fetchRunDetail(
   const gateEvaluations = listGateEvaluations(db, run.runId);
   const operatorActions = listOperatorActions(db, run.runId);
   const agentInvocations = listAgentInvocations(db, run.runId);
+  const messageCounts = getAgentMessageCountsByRun(db, run.runId);
   const { requiredGates, optionalGates } = getRunGateConfig(db, run.runId);
 
   return {
@@ -79,6 +82,7 @@ export function fetchRunDetail(
     gateEvaluations,
     operatorActions,
     agentInvocations,
+    messageCounts,
     requiredGates,
     optionalGates,
   };

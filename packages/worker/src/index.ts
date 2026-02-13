@@ -96,6 +96,7 @@ import {
   closePublisher,
   publishTransitionEvent,
   pruneStreamEvents,
+  pruneAgentMessages,
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
 import { cleanOldJobs } from './old-jobs-cleanup.ts';
@@ -1261,6 +1262,11 @@ async function processCleanup(job: Job<CleanupJobData>): Promise<void> {
       log.info({ pruned }, 'Stream events pruning completed');
       break;
     }
+    case 'agent_messages': {
+      const pruned = pruneAgentMessages(db, 30);
+      log.info({ pruned }, 'Agent messages pruning completed');
+      break;
+    }
     case 'mirror_flush': {
       // Flush stale deferred mirroring events for runs that haven't had a mirror call
       const flushed = flushStaleDeferredEvents(db, (runId) => {
@@ -1368,6 +1374,7 @@ let mirrorFlushTimer: ReturnType<typeof setInterval> | undefined;
 let leaseCleanupTimer: ReturnType<typeof setInterval> | undefined;
 let oldJobsCleanupTimer: ReturnType<typeof setInterval> | undefined;
 let streamEventsCleanupTimer: ReturnType<typeof setInterval> | undefined;
+let agentMessagesCleanupTimer: ReturnType<typeof setInterval> | undefined;
 
 /** Flag to track shutdown state */
 let isShuttingDown = false;
@@ -1396,6 +1403,9 @@ async function shutdown(signal: string): Promise<void> {
   }
   if (streamEventsCleanupTimer !== undefined) {
     clearInterval(streamEventsCleanupTimer);
+  }
+  if (agentMessagesCleanupTimer !== undefined) {
+    clearInterval(agentMessagesCleanupTimer);
   }
 
   // Close all workers (waits for current jobs to complete)
@@ -1537,6 +1547,13 @@ async function main(): Promise<void> {
   streamEventsCleanupTimer = setInterval(() => {
     void queueManager.addJob('cleanup', `cleanup:stream_events:${Date.now()}`, {
       type: 'stream_events',
+    });
+  }, 21_600_000);
+
+  // Schedule periodic agent_messages pruning (every 6 hours, 30-day retention)
+  agentMessagesCleanupTimer = setInterval(() => {
+    void queueManager.addJob('cleanup', `cleanup:agent_messages:${Date.now()}`, {
+      type: 'agent_messages',
     });
   }, 21_600_000);
 

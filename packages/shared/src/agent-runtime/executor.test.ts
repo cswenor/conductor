@@ -17,6 +17,7 @@ import type { ToolDefinition, ToolExecutionContext } from './tools/types.ts';
 import { DEFAULT_POLICY_RULES } from './tools/policy.ts';
 import { runToolLoop, MAX_TOOL_ITERATIONS } from './executor.ts';
 import { listToolInvocations } from './tool-invocations.ts';
+import { listAgentMessages } from './agent-messages.ts';
 
 // =============================================================================
 // Test Helpers
@@ -579,5 +580,115 @@ describe('runToolLoop', () => {
         context: makeContext(),
       })
     ).rejects.toThrow(AgentCancelledError);
+  });
+
+  describe('message persistence', () => {
+    it('persists system + user + assistant for single-turn (3 messages)', async () => {
+      const provider = createMockProvider([
+        { content: 'Hello!', stopReason: 'end_turn' },
+      ]);
+      const registry = createToolRegistry();
+      await runToolLoop({
+        db, provider,
+        systemPrompt: 'You are helpful.',
+        userPrompt: 'Say hello.',
+        registry, policyRules: [],
+        context: makeContext(),
+      });
+      const msgs = listAgentMessages(db, agentInvocationId);
+      expect(msgs).toHaveLength(3);
+      expect(msgs[0]?.role).toBe('system');
+      expect(msgs[1]?.role).toBe('user');
+      expect(msgs[2]?.role).toBe('assistant');
+    });
+
+    it('persists 5 messages for multi-turn (system + user + assistant + tool_result + assistant)', async () => {
+      const provider = createMockProvider([
+        {
+          content: '',
+          stopReason: 'tool_use',
+          toolCalls: [{ id: 'tc_1', name: 'echo', input: { message: 'ping' } }],
+          rawContentBlocks: [
+            { type: 'tool_use' as const, id: 'tc_1', name: 'echo', input: { message: 'ping' } },
+          ],
+        },
+        { content: 'Done!', stopReason: 'end_turn' },
+      ]);
+      const registry = createToolRegistry();
+      registry.register(makeEchoTool());
+      await runToolLoop({
+        db, provider,
+        systemPrompt: 'System',
+        userPrompt: 'User',
+        registry, policyRules: [],
+        context: makeContext(),
+      });
+      const msgs = listAgentMessages(db, agentInvocationId);
+      expect(msgs).toHaveLength(5);
+      expect(msgs.map(m => m.role)).toEqual(['system', 'user', 'assistant', 'tool_result', 'assistant']);
+    });
+
+    it('has sequential turn indexes', async () => {
+      const provider = createMockProvider([
+        {
+          content: '',
+          stopReason: 'tool_use',
+          toolCalls: [{ id: 'tc_1', name: 'echo', input: { message: 'a' } }],
+          rawContentBlocks: [
+            { type: 'tool_use' as const, id: 'tc_1', name: 'echo', input: { message: 'a' } },
+          ],
+        },
+        { content: 'Done.', stopReason: 'end_turn' },
+      ]);
+      const registry = createToolRegistry();
+      registry.register(makeEchoTool());
+      await runToolLoop({
+        db, provider,
+        systemPrompt: 'S',
+        userPrompt: 'U',
+        registry, policyRules: [],
+        context: makeContext(),
+      });
+      const msgs = listAgentMessages(db, agentInvocationId);
+      expect(msgs.map(m => m.turnIndex)).toEqual([0, 1, 2, 3, 4]);
+    });
+
+    it('includes token counts on assistant messages', async () => {
+      const provider = createMockProvider([
+        { content: 'Hi', stopReason: 'end_turn' },
+      ]);
+      const registry = createToolRegistry();
+      await runToolLoop({
+        db, provider,
+        systemPrompt: 'S',
+        userPrompt: 'U',
+        registry, policyRules: [],
+        context: makeContext(),
+      });
+      const msgs = listAgentMessages(db, agentInvocationId);
+      const assistant = msgs.find(m => m.role === 'assistant');
+      expect(assistant?.tokensInput).toBe(100);
+      expect(assistant?.tokensOutput).toBe(50);
+      expect(assistant?.stopReason).toBe('end_turn');
+    });
+
+    it('persistence failure does not break tool loop', async () => {
+      // Corrupt the agent_messages table to force insert failures
+      db.exec('DROP TABLE agent_messages');
+      db.exec('CREATE TABLE agent_messages (agent_message_id TEXT PRIMARY KEY)');
+
+      const provider = createMockProvider([
+        { content: 'Still works!', stopReason: 'end_turn' },
+      ]);
+      const registry = createToolRegistry();
+      const result = await runToolLoop({
+        db, provider,
+        systemPrompt: 'S',
+        userPrompt: 'U',
+        registry, policyRules: [],
+        context: makeContext(),
+      });
+      expect(result.content).toBe('Still works!');
+    });
   });
 });
