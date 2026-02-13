@@ -205,6 +205,29 @@ describe('agent_messages cleanup wiring', () => {
   });
 });
 
+describe('scheduling configuration', () => {
+  it('worker index.ts schedules agent_messages cleanup with correct type', async () => {
+    // Read the worker source to verify the scheduling wiring matches
+    // the dispatch handler — catches type string mismatches
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const workerSrc = fs.readFileSync(
+      path.resolve(import.meta.dirname, 'index.ts'),
+      'utf-8',
+    );
+
+    // Verify the setInterval enqueues cleanup with type: 'agent_messages'
+    expect(workerSrc).toContain("type: 'agent_messages'");
+
+    // Verify it's scheduled as a cleanup job (not some other queue)
+    expect(workerSrc).toContain("queueManager.addJob('cleanup', `cleanup:agent_messages:");
+
+    // Verify the timer variable exists for proper shutdown cleanup
+    expect(workerSrc).toContain('agentMessagesCleanupTimer');
+    expect(workerSrc).toContain('clearInterval(agentMessagesCleanupTimer)');
+  });
+});
+
 describe('dispatchDbCleanup wiring', () => {
   it('dispatches agent_messages type to pruneAgentMessages with 30-day retention', () => {
     const { agentInvocationId } = seedTestData(db);

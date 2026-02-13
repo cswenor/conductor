@@ -436,6 +436,90 @@ describe('AgentConversation', () => {
     expect(secondCallUrl).toContain('afterTurnIndex=0');
   });
 
+  it('renders tool_use block with missing input without crashing', async () => {
+    mockFetch.mockResolvedValue(
+      mockMessagesResponse([
+        {
+          agentMessageId: 'am_1',
+          turnIndex: 0,
+          role: 'assistant',
+          contentJson: JSON.stringify([
+            { type: 'tool_use', name: 'read_file', id: 'tu_1' },
+          ]),
+          contentSizeBytes: 50,
+        },
+      ]),
+    );
+
+    render(
+      <AgentConversation agentInvocationId="ai_1" runId="run_1" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('read_file')).toBeDefined();
+    });
+
+    // Should render '{}' as fallback for missing input
+    expect(screen.getByText('{}')).toBeDefined();
+  });
+
+  it('renders tool_use block with non-object input without crashing', async () => {
+    mockFetch.mockResolvedValue(
+      mockMessagesResponse([
+        {
+          agentMessageId: 'am_1',
+          turnIndex: 0,
+          role: 'assistant',
+          contentJson: JSON.stringify([
+            { type: 'tool_use', name: 'run_cmd', id: 'tu_2', input: null },
+          ]),
+          contentSizeBytes: 55,
+        },
+      ]),
+    );
+
+    render(
+      <AgentConversation agentInvocationId="ai_1" runId="run_1" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('run_cmd')).toBeDefined();
+    });
+
+    // null input should be stringified
+    expect(screen.getByText('null')).toBeDefined();
+  });
+
+  it('renders assistant content array with non-object entries without crashing', async () => {
+    mockFetch.mockResolvedValue(
+      mockMessagesResponse([
+        {
+          agentMessageId: 'am_1',
+          turnIndex: 0,
+          role: 'assistant',
+          contentJson: JSON.stringify([
+            'just a string',
+            42,
+            null,
+            { type: 'text', text: 'valid block' },
+          ]),
+          contentSizeBytes: 80,
+        },
+      ]),
+    );
+
+    render(
+      <AgentConversation agentInvocationId="ai_1" runId="run_1" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('valid block')).toBeDefined();
+    });
+
+    // Non-object entries should be rendered as JSON strings
+    expect(screen.getByText('"just a string"')).toBeDefined();
+  });
+
   it('calls fetch with correct URL on mount', async () => {
     mockFetch.mockResolvedValue(mockMessagesResponse([]));
 
