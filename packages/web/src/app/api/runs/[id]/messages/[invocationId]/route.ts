@@ -12,7 +12,8 @@ import {
   getProject,
   canAccessProject,
   getAgentInvocation,
-  listAgentMessages,
+  listAgentMessagesPaginated,
+  countAgentMessages,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
@@ -84,33 +85,28 @@ export const GET = withAuth(async (
       );
     }
 
-    // Parse query params
+    // Parse query params with NaN handling
     const url = new URL(request.url);
-    const limit = Math.min(
-      Math.max(parseInt(url.searchParams.get('limit') ?? '50', 10) || 50, 1),
-      200,
-    );
-    const afterTurnIndex = parseInt(
-      url.searchParams.get('afterTurnIndex') ?? '-1',
-      10,
-    );
+    const rawLimit = parseInt(url.searchParams.get('limit') ?? '50', 10);
+    const limit = Math.min(Math.max(Number.isFinite(rawLimit) ? rawLimit : 50, 1), 200);
+    const rawAfterTurnIndex = parseInt(url.searchParams.get('afterTurnIndex') ?? '-1', 10);
+    const afterTurnIndex = Number.isFinite(rawAfterTurnIndex) ? rawAfterTurnIndex : -1;
 
-    // Fetch all messages for this invocation (already ordered by turn_index)
-    const allMessages = listAgentMessages(db, invocationId);
-    const total = allMessages.length;
+    // DB-backed pagination: fetch only the page we need + 1 to detect hasMore
+    const total = countAgentMessages(db, invocationId);
+    const fetchLimit = limit + 1; // fetch one extra to know if more exist
+    const fetched = listAgentMessagesPaginated(db, invocationId, afterTurnIndex, fetchLimit);
 
-    // Apply cursor: filter messages with turn_index > afterTurnIndex
-    const filtered = allMessages.filter((m) => m.turnIndex > afterTurnIndex);
+    // Check if there are more rows beyond the page
+    const hasExtraRow = fetched.length > limit;
+    const pageRows = hasExtraRow ? fetched.slice(0, limit) : fetched;
 
-    // Apply limit + budget
+    // Apply budget + large-message truncation
     const pageMessages: AgentMessageResponse[] = [];
     let cumulativeSize = 0;
     let truncatedByBudget = false;
 
-    for (let i = 0; i < Math.min(filtered.length, limit); i++) {
-      const msg = filtered[i];
-      if (msg === undefined) continue;
-
+    for (const msg of pageRows) {
       // Budget check (first-row guarantee: always include at least 1)
       if (
         pageMessages.length > 0 &&
@@ -153,16 +149,9 @@ export const GET = withAuth(async (
       }
     }
 
-    // Determine hasMore
+    // Determine hasMore: extra row exists OR budget was hit before all page rows processed
     const lastMsg = pageMessages[pageMessages.length - 1];
-    const lastIncludedTurnIndex =
-      lastMsg !== undefined
-        ? lastMsg.turnIndex
-        : afterTurnIndex;
-    const remainingAfterPage = allMessages.filter(
-      (m) => m.turnIndex > lastIncludedTurnIndex,
-    ).length;
-    const hasMore = remainingAfterPage > 0 || truncatedByBudget;
+    const hasMore = hasExtraRow || truncatedByBudget;
 
     const response: MessagesPageResponse = {
       messages: pageMessages,
@@ -174,8 +163,8 @@ export const GET = withAuth(async (
       response.truncatedByBudget = true;
     }
 
-    if (hasMore && pageMessages.length > 0) {
-      response.nextCursor = lastIncludedTurnIndex;
+    if (hasMore && lastMsg !== undefined) {
+      response.nextCursor = lastMsg.turnIndex;
     }
 
     return NextResponse.json(response);

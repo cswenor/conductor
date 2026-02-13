@@ -138,7 +138,16 @@ function AssistantMessage({ msg }: { msg: AgentMessageResponse }) {
             )}
           </div>
           <div className="space-y-2">
-            {parsed.map((block: Record<string, unknown>, idx: number) => {
+            {parsed.map((entry: unknown, idx: number) => {
+              // Guard: skip non-object entries (nulls, primitives, etc.)
+              if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+                return (
+                  <pre key={idx} className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
+                    {JSON.stringify(entry)}
+                  </pre>
+                );
+              }
+              const block = entry as Record<string, unknown>;
               if (block['type'] === 'text') {
                 return (
                   <pre key={idx} className="text-sm whitespace-pre-wrap break-words">
@@ -205,11 +214,21 @@ function ToolResultMessage({ msg }: { msg: AgentMessageResponse }) {
             <Badge variant="secondary" className="text-xs">Tool Results</Badge>
           </div>
           <div className="space-y-2">
-            {parsed.map((result: Record<string, unknown>, idx: number) => {
+            {parsed.map((entry: unknown, idx: number) => {
+              // Guard: skip non-object entries
+              if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+                return (
+                  <pre key={idx} className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
+                    {JSON.stringify(entry)}
+                  </pre>
+                );
+              }
+              const result = entry as Record<string, unknown>;
               const isError = result['is_error'] === true;
-              const content = typeof result['content'] === 'string'
-                ? result['content']
-                : JSON.stringify(result['content'], null, 2);
+              const rawContent = result['content'];
+              const content = typeof rawContent === 'string'
+                ? rawContent
+                : (rawContent !== undefined ? JSON.stringify(rawContent, null, 2) : '');
               const truncated = content.length > 300 ? `${content.substring(0, 300)}...` : content;
 
               return (

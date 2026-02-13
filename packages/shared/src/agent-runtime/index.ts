@@ -148,6 +148,8 @@ export {
   generateAgentMessageId,
   createAgentMessage,
   listAgentMessages,
+  listAgentMessagesPaginated,
+  countAgentMessages,
   listAgentMessagesByRun,
   getAgentMessageCountsByRun,
   pruneAgentMessages,

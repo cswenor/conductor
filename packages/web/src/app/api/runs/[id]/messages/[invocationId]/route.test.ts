@@ -16,7 +16,8 @@ const mockGetRun = vi.fn();
 const mockGetProject = vi.fn();
 const mockCanAccessProject = vi.fn();
 const mockGetAgentInvocation = vi.fn();
-const mockListAgentMessages = vi.fn();
+const mockListAgentMessagesPaginated = vi.fn();
+const mockCountAgentMessages = vi.fn();
 
 vi.mock('@conductor/shared', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -24,7 +25,8 @@ vi.mock('@conductor/shared', () => ({
   getProject: (...args: unknown[]) => mockGetProject(...args) as unknown,
   canAccessProject: (...args: unknown[]) => mockCanAccessProject(...args) as unknown,
   getAgentInvocation: (...args: unknown[]) => mockGetAgentInvocation(...args) as unknown,
-  listAgentMessages: (...args: unknown[]) => mockListAgentMessages(...args) as unknown,
+  listAgentMessagesPaginated: (...args: unknown[]) => mockListAgentMessagesPaginated(...args) as unknown,
+  countAgentMessages: (...args: unknown[]) => mockCountAgentMessages(...args) as unknown,
 }));
 
 vi.mock('@/lib/bootstrap', () => ({
@@ -82,13 +84,28 @@ function makeMockMessage(overrides: Record<string, unknown> = {}) {
 // Setup
 // ---------------------------------------------------------------------------
 
+/**
+ * Helper: set up the paginated mock to simulate DB-backed pagination.
+ * Stores messages in closure and filters/slices when called.
+ */
+function setupPaginatedMock(messages: ReturnType<typeof makeMockMessage>[]) {
+  mockCountAgentMessages.mockReturnValue(messages.length);
+  mockListAgentMessagesPaginated.mockImplementation(
+    (_db: unknown, _invId: unknown, afterTurnIndex: number, limit: number) => {
+      return messages
+        .filter((m) => m.turnIndex > afterTurnIndex)
+        .slice(0, limit);
+    },
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockGetRun.mockReturnValue({ runId: 'run_1', projectId: 'proj_1' });
   mockGetProject.mockReturnValue({ projectId: 'proj_1' });
   mockCanAccessProject.mockReturnValue(true);
   mockGetAgentInvocation.mockReturnValue({ agentInvocationId: 'ai_1', runId: 'run_1' });
-  mockListAgentMessages.mockReturnValue([]);
+  setupPaginatedMock([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -178,7 +195,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
       makeMockMessage({ agentMessageId: 'am_2', turnIndex: 1, role: 'user', contentJson: '"Hello"', contentSizeBytes: 7 }),
       makeMockMessage({ agentMessageId: 'am_3', turnIndex: 2, role: 'assistant', contentJson: '[{"type":"text","text":"Hi!"}]', contentSizeBytes: 30 }),
     ];
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1'),
@@ -201,7 +218,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
   });
 
   it('returns 200 with empty messages array when invocation has no messages', async () => {
-    mockListAgentMessages.mockReturnValue([]);
+    setupPaginatedMock([]);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1'),
@@ -232,7 +249,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
         contentSizeBytes: 20,
       }),
     );
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1', { afterTurnIndex: '5', limit: '3' }),
@@ -266,7 +283,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
         contentSizeBytes: 20,
       }),
     );
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1', { limit: '2' }),
@@ -295,7 +312,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
         contentSizeBytes: 20,
       }),
     );
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1'),
@@ -322,7 +339,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
         contentSizeBytes: 20,
       }),
     );
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1', { limit: '500' }),
@@ -340,12 +357,35 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
     expect(body.hasMore).toBe(true);
   });
 
+  it('coerces invalid afterTurnIndex to -1 instead of returning empty', async () => {
+    const messages = [
+      makeMockMessage({ agentMessageId: 'am_1', turnIndex: 0, role: 'user', contentSizeBytes: 20 }),
+      makeMockMessage({ agentMessageId: 'am_2', turnIndex: 1, role: 'assistant', contentSizeBytes: 20 }),
+    ];
+    setupPaginatedMock(messages);
+
+    const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
+      makeRequest('run_1', 'ai_1', { afterTurnIndex: 'abc' }),
+      makeContext('run_1', 'ai_1'),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      messages: Array<{ turnIndex: number }>;
+      total: number;
+      hasMore: boolean;
+    };
+    // NaN afterTurnIndex should be coerced to -1, returning all messages
+    expect(body.messages).toHaveLength(2);
+    expect(body.total).toBe(2);
+  });
+
   it('returns hasMore=false when all messages fit within limit', async () => {
     const messages = [
       makeMockMessage({ agentMessageId: 'am_1', turnIndex: 0 }),
       makeMockMessage({ agentMessageId: 'am_2', turnIndex: 1 }),
     ];
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1', { limit: '10' }),
@@ -391,7 +431,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
         contentSizeBytes: 100,
       }),
     ];
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1', { limit: '50' }),
@@ -422,7 +462,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
         contentSizeBytes: 3_000_000, // 3MB, exceeds 2MB budget
       }),
     ];
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1'),
@@ -454,7 +494,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
         contentSizeBytes: 150_000, // 150KB > LARGE_MESSAGE_THRESHOLD
       }),
     ];
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1'),
@@ -488,7 +528,7 @@ describe('GET /api/runs/[id]/messages/[invocationId]', () => {
         contentSizeBytes: 13,
       }),
     ];
-    mockListAgentMessages.mockReturnValue(messages);
+    setupPaginatedMock(messages);
 
     const response = await (GET as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest('run_1', 'ai_1'),

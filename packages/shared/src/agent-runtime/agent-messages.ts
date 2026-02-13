@@ -175,6 +175,44 @@ export function listAgentMessages(
   return rows.map(mapRow);
 }
 
+/**
+ * DB-backed paginated query for agent messages.
+ * Returns messages with turn_index > afterTurnIndex, ordered ascending, limited.
+ */
+export function listAgentMessagesPaginated(
+  db: Database,
+  agentInvocationId: string,
+  afterTurnIndex: number,
+  limit: number,
+): AgentMessage[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM agent_messages
+       WHERE agent_invocation_id = ? AND turn_index > ?
+       ORDER BY turn_index ASC
+       LIMIT ?`,
+    )
+    .all(agentInvocationId, afterTurnIndex, limit) as AgentMessageRow[];
+
+  return rows.map(mapRow);
+}
+
+/**
+ * Count total messages for an invocation (single scalar query).
+ */
+export function countAgentMessages(
+  db: Database,
+  agentInvocationId: string,
+): number {
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) as count FROM agent_messages WHERE agent_invocation_id = ?',
+    )
+    .get(agentInvocationId) as { count: number };
+
+  return row.count;
+}
+
 export function listAgentMessagesByRun(
   db: Database,
   runId: string,
