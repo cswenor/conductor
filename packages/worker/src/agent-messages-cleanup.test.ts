@@ -1,12 +1,11 @@
 /**
  * Tests for the agent_messages cleanup wiring.
  *
- * Since processCleanup is a local (non-exported) function in index.ts, we
- * verify the contract from the outside:
+ * Tests both:
  *   1. The CleanupJobData type accepts 'agent_messages'
- *   2. pruneAgentMessages is importable from @conductor/shared and works
- *   3. The 30-day default retention (matching the worker's hardcoded value)
- *      correctly prunes old messages and keeps recent ones
+ *   2. pruneAgentMessages works correctly via @conductor/shared
+ *   3. dispatchDbCleanup correctly routes 'agent_messages' to pruneAgentMessages
+ *      (verifies the switch-case wiring in the actual worker dispatch path)
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -20,6 +19,7 @@ import {
   pruneAgentMessages,
   type CleanupJobData,
 } from '@conductor/shared';
+import { dispatchDbCleanup } from './cleanup-dispatch.ts';
 
 type Db = ReturnType<typeof initDatabase>;
 let db: Db;
@@ -202,5 +202,55 @@ describe('agent_messages cleanup wiring', () => {
     // With 5-day retention, it SHOULD be pruned
     const prunedWith5 = pruneAgentMessages(db, 5);
     expect(prunedWith5).toBe(1);
+  });
+});
+
+describe('dispatchDbCleanup wiring', () => {
+  it('dispatches agent_messages type to pruneAgentMessages with 30-day retention', () => {
+    const { agentInvocationId } = seedTestData(db);
+
+    // Create a recent message and an old one
+    createAgentMessage(db, {
+      agentInvocationId,
+      turnIndex: 0,
+      role: 'user',
+      contentJson: '"recent"',
+    });
+    const oldMsg = createAgentMessage(db, {
+      agentInvocationId,
+      turnIndex: 1,
+      role: 'assistant',
+      contentJson: '"old"',
+    });
+    db.prepare(
+      `UPDATE agent_messages SET created_at = datetime('now', '-60 days') WHERE agent_message_id = ?`,
+    ).run(oldMsg.agentMessageId);
+
+    // Call through the actual dispatch path used by processCleanup
+    const result = dispatchDbCleanup(db, 'agent_messages');
+
+    expect(result).not.toBeNull();
+    expect(result?.type).toBe('agent_messages');
+    expect(result?.pruned).toBe(1);
+
+    // Verify only recent message remains
+    const remaining = db
+      .prepare('SELECT COUNT(*) as count FROM agent_messages')
+      .get() as { count: number };
+    expect(remaining.count).toBe(1);
+  });
+
+  it('dispatches stream_events type correctly', () => {
+    // No stream events to prune, but dispatch should succeed
+    const result = dispatchDbCleanup(db, 'stream_events');
+
+    expect(result).not.toBeNull();
+    expect(result?.type).toBe('stream_events');
+    expect(result?.pruned).toBe(0);
+  });
+
+  it('returns null for unknown cleanup types', () => {
+    const result = dispatchDbCleanup(db, 'worktree');
+    expect(result).toBeNull();
   });
 });

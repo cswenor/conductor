@@ -14,6 +14,8 @@ import {
   generateAgentMessageId,
   createAgentMessage,
   listAgentMessages,
+  listAgentMessagesPaginated,
+  countAgentMessages,
   listAgentMessagesByRun,
   getAgentMessageCountsByRun,
   pruneAgentMessages,
@@ -389,6 +391,119 @@ describe('listAgentMessages', () => {
     seedTestData(db);
     const messages = listAgentMessages(db, 'ai_nonexistent');
     expect(messages).toEqual([]);
+  });
+});
+
+// =============================================================================
+// listAgentMessagesPaginated
+// =============================================================================
+
+describe('listAgentMessagesPaginated', () => {
+  it('returns messages with turn_index > afterTurnIndex, ordered ascending', () => {
+    const { agentInvocationId } = seedTestData(db);
+
+    for (let i = 0; i < 5; i++) {
+      createAgentMessage(db, {
+        agentInvocationId,
+        turnIndex: i,
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        contentJson: `"msg ${i}"`,
+      });
+    }
+
+    // afterTurnIndex=1 should return turns 2, 3, 4
+    const result = listAgentMessagesPaginated(db, agentInvocationId, 1, 10);
+    expect(result).toHaveLength(3);
+    expect(result[0]?.turnIndex).toBe(2);
+    expect(result[1]?.turnIndex).toBe(3);
+    expect(result[2]?.turnIndex).toBe(4);
+  });
+
+  it('respects limit parameter', () => {
+    const { agentInvocationId } = seedTestData(db);
+
+    for (let i = 0; i < 5; i++) {
+      createAgentMessage(db, {
+        agentInvocationId,
+        turnIndex: i,
+        role: 'user',
+        contentJson: `"msg ${i}"`,
+      });
+    }
+
+    // afterTurnIndex=-1 with limit=2 should return turns 0, 1
+    const result = listAgentMessagesPaginated(db, agentInvocationId, -1, 2);
+    expect(result).toHaveLength(2);
+    expect(result[0]?.turnIndex).toBe(0);
+    expect(result[1]?.turnIndex).toBe(1);
+  });
+
+  it('returns empty array when afterTurnIndex is beyond last turn', () => {
+    const { agentInvocationId } = seedTestData(db);
+
+    createAgentMessage(db, {
+      agentInvocationId,
+      turnIndex: 0,
+      role: 'user',
+      contentJson: '"only message"',
+    });
+
+    const result = listAgentMessagesPaginated(db, agentInvocationId, 5, 10);
+    expect(result).toEqual([]);
+  });
+
+  it('returns empty array for unknown invocation', () => {
+    seedTestData(db);
+    const result = listAgentMessagesPaginated(db, 'ai_nonexistent', -1, 10);
+    expect(result).toEqual([]);
+  });
+
+  it('afterTurnIndex=-1 returns all messages from start', () => {
+    const { agentInvocationId } = seedTestData(db);
+
+    for (let i = 0; i < 3; i++) {
+      createAgentMessage(db, {
+        agentInvocationId,
+        turnIndex: i,
+        role: 'user',
+        contentJson: `"msg ${i}"`,
+      });
+    }
+
+    const result = listAgentMessagesPaginated(db, agentInvocationId, -1, 100);
+    expect(result).toHaveLength(3);
+    expect(result[0]?.turnIndex).toBe(0);
+  });
+});
+
+// =============================================================================
+// countAgentMessages
+// =============================================================================
+
+describe('countAgentMessages', () => {
+  it('returns correct count for an invocation', () => {
+    const { agentInvocationId } = seedTestData(db);
+
+    for (let i = 0; i < 4; i++) {
+      createAgentMessage(db, {
+        agentInvocationId,
+        turnIndex: i,
+        role: 'user',
+        contentJson: `"msg ${i}"`,
+      });
+    }
+
+    expect(countAgentMessages(db, agentInvocationId)).toBe(4);
+  });
+
+  it('returns 0 for unknown invocation', () => {
+    seedTestData(db);
+    expect(countAgentMessages(db, 'ai_nonexistent')).toBe(0);
+  });
+
+  it('returns 0 for invocation with no messages', () => {
+    const { agentInvocationId } = seedTestData(db);
+    expect(countAgentMessages(db, agentInvocationId)).toBe(0);
   });
 });
 

@@ -156,7 +156,7 @@ function AssistantMessage({ msg }: { msg: AgentMessageResponse }) {
                 );
               }
               if (block['type'] === 'tool_use') {
-                const inputStr = JSON.stringify(block['input'], null, 2);
+                const inputStr = block['input'] !== undefined ? JSON.stringify(block['input'], null, 2) : '{}';
                 const truncatedInput = inputStr.length > 200 ? `${inputStr.substring(0, 200)}...` : inputStr;
                 return (
                   <div key={idx} className="bg-muted/50 rounded p-2">

@@ -95,14 +95,13 @@ import {
   initPublisher,
   closePublisher,
   publishTransitionEvent,
-  pruneStreamEvents,
-  pruneAgentMessages,
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
 import { cleanOldJobs } from './old-jobs-cleanup.ts';
 import { casUpdateRunStep, isStaleRunJob } from './run-helpers.ts';
 import { dispatchPrWebhook } from './webhook-dispatch.ts';
 import { handleBlockedRetry } from './blocked-retry.ts';
+import { dispatchDbCleanup } from './cleanup-dispatch.ts';
 
 const log = createLogger({ name: 'conductor:worker' });
 
@@ -1257,14 +1256,12 @@ async function processCleanup(job: Job<CleanupJobData>): Promise<void> {
       log.info(result, 'Old jobs cleanup completed');
       break;
     }
-    case 'stream_events': {
-      const pruned = pruneStreamEvents(db);
-      log.info({ pruned }, 'Stream events pruning completed');
-      break;
-    }
+    case 'stream_events':
     case 'agent_messages': {
-      const pruned = pruneAgentMessages(db, 30);
-      log.info({ pruned }, 'Agent messages pruning completed');
+      const result = dispatchDbCleanup(db, type);
+      if (result !== null) {
+        log.info({ pruned: result.pruned, cleanupType: result.type }, `${result.type} pruning completed`);
+      }
       break;
     }
     case 'mirror_flush': {
