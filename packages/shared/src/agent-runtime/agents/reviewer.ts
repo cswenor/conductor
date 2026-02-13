@@ -14,6 +14,7 @@ import { executeAgent } from '../provider.ts';
 import { assembleContext, formatContextForPrompt } from '../context.ts';
 import { createArtifact } from '../artifacts.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
+import { getRun } from '../../runs/index.ts';
 
 // =============================================================================
 // Types
@@ -127,6 +128,9 @@ export async function runPlanReviewer(
   db: Database,
   input: ReviewerInput
 ): Promise<ReviewerResult> {
+  const run = getRun(db, input.runId);
+  if (run === null) throw new Error(`Run not found: ${input.runId}`);
+
   const context = assembleContext(db, {
     runId: input.runId,
     worktreePath: input.worktreePath,
@@ -136,6 +140,7 @@ export async function runPlanReviewer(
 
   const result = await executeAgent(db, {
     runId: input.runId,
+    projectId: run.projectId,
     agent: 'reviewer',
     action: 'review_plan',
     step: 'reviewer_review_plan',
@@ -171,6 +176,9 @@ export async function runCodeReviewer(
   db: Database,
   input: ReviewerInput
 ): Promise<ReviewerResult> {
+  const run = getRun(db, input.runId);
+  if (run === null) throw new Error(`Run not found: ${input.runId}`);
+
   // Get code diff if worktree available
   let diffContent = '';
   if (input.worktreePath !== undefined) {
@@ -199,6 +207,7 @@ export async function runCodeReviewer(
 
   const result = await executeAgent(db, {
     runId: input.runId,
+    projectId: run.projectId,
     agent: 'reviewer',
     action: 'review_code',
     step: 'reviewer_review_code',

@@ -15,6 +15,8 @@ import {
   getDatabase,
   createLogger,
   publishTransitionEvent,
+  publishRunUpdatedEvent,
+  RUN_UPDATED_PR_STATE_FIELDS,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker:merge-handler' });
@@ -68,6 +70,9 @@ export async function handlePrMerged(
     prState: 'merged',
     prSyncedAt: new Date().toISOString(),
   });
+  if (updated) {
+    publishRunUpdatedEvent(db, run.projectId, run.runId, [...RUN_UPDATED_PR_STATE_FIELDS]);
+  }
   if (!updated) {
     log.error({ runId }, 'Failed to update PR state to merged, transitioning to blocked');
     const blockResult = transitionPhase(db, {
@@ -157,6 +162,7 @@ export function handlePrStateChange(
     log.error({ runId, newState }, 'Failed to update PR state');
     return;
   }
+  publishRunUpdatedEvent(db, run.projectId, run.runId, [...RUN_UPDATED_PR_STATE_FIELDS]);
 
   log.info({ runId, prNodeId, newState }, 'PR state updated');
 }

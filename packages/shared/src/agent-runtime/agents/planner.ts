@@ -9,6 +9,7 @@ import { executeAgent } from '../provider.ts';
 import { assembleContext, formatContextForPrompt } from '../context.ts';
 import { createArtifact } from '../artifacts.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
+import { getRun } from '../../runs/index.ts';
 
 // =============================================================================
 // Types
@@ -76,6 +77,9 @@ export async function runPlanner(
   db: Database,
   input: PlannerInput
 ): Promise<PlannerResult> {
+  const run = getRun(db, input.runId);
+  if (run === null) throw new Error(`Run not found: ${input.runId}`);
+
   const context = assembleContext(db, {
     runId: input.runId,
     worktreePath: input.worktreePath,
@@ -85,6 +89,7 @@ export async function runPlanner(
 
   const result = await executeAgent(db, {
     runId: input.runId,
+    projectId: run.projectId,
     agent: 'planner',
     action: 'create_plan',
     step: 'planner_create_plan',

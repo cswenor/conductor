@@ -33,6 +33,8 @@ const log = createLogger({ name: 'conductor:api:events-stream' });
 interface Connection {
   writer: (data: string) => void;
   projectIds: Set<string>;
+  /** Dispose callback — clears heartbeat timer and removes connection from map. */
+  dispose: () => void;
 }
 
 let sharedSubscriber: Subscriber | undefined;
@@ -49,31 +51,15 @@ function ensureSharedSubscriber(redisUrl: string): void {
   if (sharedSubscriber !== undefined) return;
 
   sharedSubscriber = createSubscriber(redisUrl);
-}
-
-async function subscribeToChannels(
-  projectIds: string[],
-): Promise<void> {
-  if (sharedSubscriber === undefined) return;
-
-  const newChannels = projectIds.filter((pid) => !subscribedChannels.has(pid));
-  if (newChannels.length === 0) return;
-
-  for (const pid of newChannels) {
-    subscribedChannels.add(pid);
-  }
-
-  // Subscribe and set up message handler
-  await sharedSubscriber.subscribe(newChannels, (event) => {
+  sharedSubscriber.setHandler((event) => {
     // Fan out to all connections that care about this event's project
-    const eventAny = event as unknown as Record<string, unknown>;
-    const projectId = (eventAny['projectId'] as string) ?? '';
+    const projectId = event.projectId ?? '';
 
     for (const conn of connections.values()) {
       if (conn.projectIds.has(projectId)) {
         try {
           // Build SSE frame with id: field if present
-          const id = eventAny['id'] as number | undefined;
+          const id = event.id;
           let frame = '';
           if (typeof id === 'number') {
             frame += `id: ${id}\n`;
@@ -88,6 +74,39 @@ async function subscribeToChannels(
   });
 }
 
+/** Channels are never unsubscribed — shared subscriber stays connected for process lifetime. */
+async function subscribeToChannels(
+  projectIds: string[],
+): Promise<void> {
+  if (sharedSubscriber === undefined) return;
+
+  const newChannels = projectIds.filter((pid) => !subscribedChannels.has(pid));
+  if (newChannels.length === 0) return;
+
+  // Only commit to subscribedChannels after successful addChannels.
+  // On failure the IDs stay out, so the next connection retries them.
+  await sharedSubscriber.addChannels(newChannels);
+
+  for (const pid of newChannels) {
+    subscribedChannels.add(pid);
+  }
+}
+
+/** @internal — test-only reset of module state (full teardown including heartbeat timers) */
+export async function _resetForTest(): Promise<void> {
+  // Dispose all active connections (clears heartbeat timers)
+  for (const conn of connections.values()) {
+    conn.dispose();
+  }
+  if (sharedSubscriber !== undefined) {
+    await sharedSubscriber.close();
+  }
+  connections.clear();
+  subscribedChannels.clear();
+  connectionCounter = 0;
+  sharedSubscriber = undefined;
+}
+
 function removeConnection(connId: string): void {
   connections.delete(connId);
 
@@ -100,7 +119,7 @@ function removeConnection(connId: string): void {
 // Replay from stream_events
 // =============================================================================
 
-function buildReplayFrames(
+export function buildReplayFrames(
   db: Awaited<ReturnType<typeof getDb>>,
   lastEventId: number,
   projectIds: string[],
@@ -190,6 +209,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       connections.set(connId, {
         writer,
         projectIds: new Set(projectIds),
+        dispose: cleanup,
       });
 
       // Subscribe to project channels

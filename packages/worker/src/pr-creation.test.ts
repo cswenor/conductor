@@ -56,6 +56,8 @@ vi.mock('@conductor/shared', () => {
     getWrite: mockGetWrite,
     resetStalledWrite: mockResetStalledWrite,
     updateRunPrBundle: mockUpdateRunPrBundle,
+    publishRunUpdatedEvent: vi.fn(),
+    RUN_UPDATED_PR_CREATED_FIELDS: ['prUrl', 'prNumber', 'prState'],
   };
 });
 

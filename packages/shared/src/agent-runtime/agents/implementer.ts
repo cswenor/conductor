@@ -23,6 +23,8 @@ import { DEFAULT_POLICY_RULES } from '../tools/policy.ts';
 import { runToolLoop } from '../executor.ts';
 import { listToolInvocations } from '../tool-invocations.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
+import { getRun } from '../../runs/index.ts';
+import { publishAgentInvocationEvent } from '../../pubsub/index.ts';
 
 const log = createLogger({ name: 'conductor:implementer' });
 
@@ -205,6 +207,9 @@ export async function runImplementer(
   db: Database,
   input: ImplementerInput
 ): Promise<ImplementerResult> {
+  const run = getRun(db, input.runId);
+  if (run === null) throw new Error(`Run not found: ${input.runId}`);
+
   const context = assembleContext(db, {
     runId: input.runId,
     worktreePath: input.worktreePath,
@@ -214,6 +219,7 @@ export async function runImplementer(
 
   const result = await executeAgent(db, {
     runId: input.runId,
+    projectId: run.projectId,
     agent: 'implementer',
     action: 'apply_changes',
     step: 'implementer_apply_changes',
@@ -295,10 +301,9 @@ export async function runImplementerWithTools(
   const userPrompt = formatContextForPrompt(context);
 
   // Look up projectId from the run record
-  const runRow = db.prepare('SELECT project_id FROM runs WHERE run_id = ?').get(input.runId) as
-    | { project_id: string }
-    | undefined;
-  const projectId = runRow?.project_id ?? '';
+  const runRecord = getRun(db, input.runId);
+  if (runRecord === null) throw new Error(`Run not found: ${input.runId}`);
+  const projectId = runRecord.projectId;
 
   // Create agent invocation record
   const invocation = createAgentInvocation(db, {
@@ -307,7 +312,10 @@ export async function runImplementerWithTools(
     action: 'apply_changes',
     contextSummary: 'step=implementer_apply_changes (tool-use mode)',
   });
+  publishAgentInvocationEvent(db, projectId, input.runId, invocation.agentInvocationId, 'implementer', 'apply_changes', 'pending');
+
   markAgentRunning(db, invocation.agentInvocationId);
+  publishAgentInvocationEvent(db, projectId, input.runId, invocation.agentInvocationId, 'implementer', 'apply_changes', 'running');
 
   // Set up tool registry
   const registry = createToolRegistry();
@@ -355,6 +363,7 @@ export async function runImplementerWithTools(
       tokensOutput: result.totalTokensOutput,
       durationMs: result.totalDurationMs,
     });
+    publishAgentInvocationEvent(db, projectId, input.runId, invocation.agentInvocationId, 'implementer', 'apply_changes', 'completed');
 
     // Derive file operations from tool invocation records
     const toolInvocations = listToolInvocations(db, invocation.agentInvocationId);
@@ -412,6 +421,7 @@ export async function runImplementerWithTools(
     } catch {
       // Invocation may already be in terminal state
     }
+    publishAgentInvocationEvent(db, projectId, input.runId, invocation.agentInvocationId, 'implementer', 'apply_changes', 'failed', errorCode);
 
     throw err;
   }

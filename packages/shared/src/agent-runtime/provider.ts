@@ -17,6 +17,7 @@ import {
   completeAgentInvocation,
   failAgentInvocation,
 } from './invocations.ts';
+import { publishAgentInvocationEvent } from '../pubsub/index.ts';
 
 const log = createLogger({ name: 'conductor:agent-runtime' });
 
@@ -285,6 +286,7 @@ export function createProvider(provider: ApiKeyProvider, apiKey: string, model?:
 
 export interface ExecuteAgentInput {
   runId: string;
+  projectId: string;
   agent: string;
   action: string;
   systemPrompt: string;
@@ -323,9 +325,11 @@ export async function executeAgent(
     action: input.action,
     contextSummary: `step=${input.step}`,
   });
+  publishAgentInvocationEvent(db, input.projectId, input.runId, invocation.agentInvocationId, input.agent, input.action, 'pending');
 
   // 2. Mark running
   markAgentRunning(db, invocation.agentInvocationId);
+  publishAgentInvocationEvent(db, input.projectId, input.runId, invocation.agentInvocationId, input.agent, input.action, 'running');
 
   try {
     // Check for pre-cancellation before doing any work
@@ -373,6 +377,7 @@ export async function executeAgent(
       tokensOutput: output.tokensOutput,
       durationMs: output.durationMs,
     });
+    publishAgentInvocationEvent(db, input.projectId, input.runId, invocation.agentInvocationId, input.agent, input.action, 'completed');
 
     log.info(
       {
@@ -404,6 +409,7 @@ export async function executeAgent(
       } catch {
         // Invocation may already be in terminal state; ignore
       }
+      publishAgentInvocationEvent(db, input.projectId, input.runId, invocation.agentInvocationId, input.agent, input.action, 'failed', 'cancelled');
 
       log.info(
         {
@@ -430,6 +436,7 @@ export async function executeAgent(
       } catch {
         // Invocation may already be in terminal state; ignore
       }
+      publishAgentInvocationEvent(db, input.projectId, input.runId, invocation.agentInvocationId, input.agent, input.action, 'failed', corrected.code);
 
       log.error(
         {
@@ -457,6 +464,7 @@ export async function executeAgent(
     } catch {
       // Invocation may already be in terminal state; ignore
     }
+    publishAgentInvocationEvent(db, input.projectId, input.runId, invocation.agentInvocationId, input.agent, input.action, 'failed', errorCode);
 
     log.error(
       {

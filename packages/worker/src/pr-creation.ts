@@ -21,6 +21,8 @@ import {
   getWrite,
   resetStalledWrite,
   updateRunPrBundle,
+  publishRunUpdatedEvent,
+  RUN_UPDATED_PR_CREATED_FIELDS,
 } from '@conductor/shared';
 import { casUpdateRunStep } from './run-helpers.ts';
 
@@ -130,6 +132,7 @@ export async function handlePrCreation(
       markRunFailed(db, runId, 'Failed to update run PR bundle');
       return;
     }
+    publishRunUpdatedEvent(db, freshRun.projectId, runId, [...RUN_UPDATED_PR_CREATED_FIELDS]);
     const stepped = casUpdateRunStep(db, runId, 'awaiting_review', 'create_pr', 'wait_pr_merge');
     if (!stepped) {
       log.info({ runId }, 'CAS step failed after backfilling existing PR (stale job)');
@@ -188,6 +191,7 @@ export async function handlePrCreation(
           markRunFailed(db, runId, 'Failed to update run PR bundle');
           return;
         }
+        publishRunUpdatedEvent(db, freshRun.projectId, runId, [...RUN_UPDATED_PR_CREATED_FIELDS]);
         const stepped = casUpdateRunStep(db, runId, 'awaiting_review', 'create_pr', 'wait_pr_merge');
         if (!stepped) {
           log.info({ runId }, 'CAS step failed after crash-recovery backfill (stale job)');
@@ -199,7 +203,7 @@ export async function handlePrCreation(
       case 'failed': {
         // Previous attempt persisted but didn't finish — process directly
         const result = await processSingleWrite(db, write.githubWriteId, installationId);
-        handleWriteResult(db, runId, result, markRunFailed);
+        handleWriteResult(db, freshRun.projectId, runId, result, markRunFailed);
         return;
       }
 
@@ -208,7 +212,7 @@ export async function handlePrCreation(
         const wasReset = resetStalledWrite(db, write.githubWriteId);
         if (wasReset) {
           const result = await processSingleWrite(db, write.githubWriteId, installationId);
-          handleWriteResult(db, runId, result, markRunFailed);
+          handleWriteResult(db, freshRun.projectId, runId, result, markRunFailed);
         } else {
           // Write is too recent to be considered stalled — may be legitimately in-flight.
           // Schedule a delayed retry so the run doesn't get stranded.
@@ -240,7 +244,7 @@ export async function handlePrCreation(
 
   // New write — process directly
   const result = await processSingleWrite(db, enqueueResult.githubWriteId, installationId);
-  handleWriteResult(db, runId, result, markRunFailed);
+  handleWriteResult(db, freshRun.projectId, runId, result, markRunFailed);
 }
 
 /**
@@ -248,6 +252,7 @@ export async function handlePrCreation(
  */
 function handleWriteResult(
   db: Db,
+  projectId: string,
   runId: string,
   result: { success: boolean; githubUrl?: string; nodeId?: string; number?: number; error?: string },
   markRunFailed: MarkRunFailed
@@ -275,6 +280,7 @@ function handleWriteResult(
     markRunFailed(db, runId, 'Failed to update run PR bundle');
     return;
   }
+  publishRunUpdatedEvent(db, projectId, runId, [...RUN_UPDATED_PR_CREATED_FIELDS]);
 
   const stepped = casUpdateRunStep(db, runId, 'awaiting_review', 'create_pr', 'wait_pr_merge');
   if (!stepped) {

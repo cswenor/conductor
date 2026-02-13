@@ -13,6 +13,7 @@ import { createEvent, type EventRecord } from '../events/index.ts';
 import { createGateEvaluation, deriveGateState } from '../gates/gate-evaluations.ts';
 import { getGateDefinition } from '../gates/gate-definitions.ts';
 import { evaluateGatePure, type GateResult } from '../gates/evaluators/index.ts';
+import { publishGateEvaluatedEvent } from '../pubsub/index.ts';
 
 const log = createLogger({ name: 'conductor:orchestrator' });
 
@@ -290,6 +291,10 @@ function persistGateResult(
       details: result.details,
       causationEventId: event.eventId,
     });
+
+    // Best-effort: stream_events row participates in caller's transaction (rolls back on failure),
+    // but Redis publish is fire-and-forget. Reconciliation timer handles drift. Consistent with V1.
+    publishGateEvaluatedEvent(db, run.projectId, run.runId, gateId, gateDef.kind, result.status, result.reason);
   }
 }
 

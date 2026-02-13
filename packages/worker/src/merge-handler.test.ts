@@ -25,6 +25,8 @@ vi.mock('@conductor/shared', () => ({
   getDatabase: vi.fn(),
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
   publishTransitionEvent: vi.fn(),
+  publishRunUpdatedEvent: vi.fn(),
+  RUN_UPDATED_PR_STATE_FIELDS: ['prState'],
 }));
 
 import { handlePrMerged, handlePrStateChange } from './merge-handler.ts';

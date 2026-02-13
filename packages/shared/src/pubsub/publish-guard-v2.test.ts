@@ -40,6 +40,38 @@ const PROJECT_UPDATED_COUNTS: Record<string, number> = {
 const PROJECT_UPDATED_PATTERN = /publishProjectUpdatedEvent\([^)]/g;
 
 // =============================================================================
+// publishGateEvaluatedEvent guard
+// =============================================================================
+
+const GATE_EVALUATED_COUNTS: Record<string, number> = {
+  'packages/shared/src/orchestrator/index.ts': 1,
+};
+
+const GATE_EVALUATED_PATTERN = /publishGateEvaluatedEvent\([^)]/g;
+
+// =============================================================================
+// publishAgentInvocationEvent guard
+// =============================================================================
+
+const AGENT_INVOCATION_COUNTS: Record<string, number> = {
+  'packages/shared/src/agent-runtime/provider.ts': 6,
+  'packages/shared/src/agent-runtime/agents/implementer.ts': 4,
+};
+
+const AGENT_INVOCATION_PATTERN = /publishAgentInvocationEvent\([^)]/g;
+
+// =============================================================================
+// publishRunUpdatedEvent guard
+// =============================================================================
+
+const RUN_UPDATED_COUNTS: Record<string, number> = {
+  'packages/worker/src/pr-creation.ts': 3,
+  'packages/worker/src/merge-handler.ts': 2,
+};
+
+const RUN_UPDATED_PATTERN = /publishRunUpdatedEvent\([^)]/g;
+
+// =============================================================================
 // Utility
 // =============================================================================
 
@@ -147,6 +179,105 @@ describe('publish-guard: publishProjectUpdatedEvent allowlist', () => {
     expect(
       unlisted,
       `New file(s) have publishProjectUpdatedEvent calls — add to allowlist:\n${unlisted.join('\n')}`,
+    ).toEqual([]);
+  });
+});
+
+describe('publish-guard: publishGateEvaluatedEvent allowlist', () => {
+  for (const [file, expectedCount] of Object.entries(GATE_EVALUATED_COUNTS)) {
+    it(`${file} has exactly ${expectedCount} publishGateEvaluatedEvent calls`, () => {
+      const actual = countMatches(file, GATE_EVALUATED_PATTERN);
+      expect(
+        actual,
+        `Count changed in ${file}: expected ${expectedCount}, found ${actual} — update allowlist`,
+      ).toBe(expectedCount);
+    });
+  }
+
+  it('no unlisted production files contain publishGateEvaluatedEvent calls', () => {
+    const allFiles = getAllProductionFiles();
+    const unlisted: string[] = [];
+
+    for (const rel of allFiles) {
+      if (rel.endsWith('.test.ts') || rel.endsWith('.spec.ts')) continue;
+      if (rel.includes('pubsub/index.ts')) continue;
+      if (GATE_EVALUATED_COUNTS[rel] !== undefined) continue;
+
+      const count = countMatches(rel, GATE_EVALUATED_PATTERN);
+      if (count > 0) {
+        unlisted.push(`${rel} (${count} calls)`);
+      }
+    }
+
+    expect(
+      unlisted,
+      `New file(s) have publishGateEvaluatedEvent calls — add to allowlist:\n${unlisted.join('\n')}`,
+    ).toEqual([]);
+  });
+});
+
+describe('publish-guard: publishAgentInvocationEvent allowlist', () => {
+  for (const [file, expectedCount] of Object.entries(AGENT_INVOCATION_COUNTS)) {
+    it(`${file} has exactly ${expectedCount} publishAgentInvocationEvent calls`, () => {
+      const actual = countMatches(file, AGENT_INVOCATION_PATTERN);
+      expect(
+        actual,
+        `Count changed in ${file}: expected ${expectedCount}, found ${actual} — update allowlist`,
+      ).toBe(expectedCount);
+    });
+  }
+
+  it('no unlisted production files contain publishAgentInvocationEvent calls', () => {
+    const allFiles = getAllProductionFiles();
+    const unlisted: string[] = [];
+
+    for (const rel of allFiles) {
+      if (rel.endsWith('.test.ts') || rel.endsWith('.spec.ts')) continue;
+      if (rel.includes('pubsub/index.ts')) continue;
+      if (AGENT_INVOCATION_COUNTS[rel] !== undefined) continue;
+
+      const count = countMatches(rel, AGENT_INVOCATION_PATTERN);
+      if (count > 0) {
+        unlisted.push(`${rel} (${count} calls)`);
+      }
+    }
+
+    expect(
+      unlisted,
+      `New file(s) have publishAgentInvocationEvent calls — add to allowlist:\n${unlisted.join('\n')}`,
+    ).toEqual([]);
+  });
+});
+
+describe('publish-guard: publishRunUpdatedEvent allowlist', () => {
+  for (const [file, expectedCount] of Object.entries(RUN_UPDATED_COUNTS)) {
+    it(`${file} has exactly ${expectedCount} publishRunUpdatedEvent calls`, () => {
+      const actual = countMatches(file, RUN_UPDATED_PATTERN);
+      expect(
+        actual,
+        `Count changed in ${file}: expected ${expectedCount}, found ${actual} — update allowlist`,
+      ).toBe(expectedCount);
+    });
+  }
+
+  it('no unlisted production files contain publishRunUpdatedEvent calls', () => {
+    const allFiles = getAllProductionFiles();
+    const unlisted: string[] = [];
+
+    for (const rel of allFiles) {
+      if (rel.endsWith('.test.ts') || rel.endsWith('.spec.ts')) continue;
+      if (rel.includes('pubsub/index.ts')) continue;
+      if (RUN_UPDATED_COUNTS[rel] !== undefined) continue;
+
+      const count = countMatches(rel, RUN_UPDATED_PATTERN);
+      if (count > 0) {
+        unlisted.push(`${rel} (${count} calls)`);
+      }
+    }
+
+    expect(
+      unlisted,
+      `New file(s) have publishRunUpdatedEvent calls — add to allowlist:\n${unlisted.join('\n')}`,
     ).toEqual([]);
   });
 });

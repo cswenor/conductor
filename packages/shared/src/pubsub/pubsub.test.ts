@@ -128,22 +128,24 @@ describe('pubsub', () => {
     const { createSubscriber } = await import('./index.ts');
     const subscriber = createSubscriber('redis://localhost:6379');
 
-    const received: StreamEvent[] = [];
-    await subscriber.subscribe(['proj_1'], (event) => received.push(event));
+    const received: StreamEventV2[] = [];
+    subscriber.setHandler((event) => received.push(event));
+    await subscriber.addChannels(['proj_1']);
 
     // Verify redis.subscribe was called with the correct channel
     expect(mockSubscribe).toHaveBeenCalledWith('conductor:events:proj_1');
 
-    // Verify redis.on('message', handler) was registered
+    // Verify redis.on('message', handler) was registered exactly once
     expect(mockOn).toHaveBeenCalledWith('message', expect.any(Function));
+    expect(mockOn).toHaveBeenCalledTimes(1);
 
     // Simulate receiving a message
     const handler = mockOn.mock.calls.find(
       (call: unknown[]) => call[0] === 'message',
     )?.[1] as (channel: string, message: string) => void;
 
-    const testEvent: StreamEvent = {
-      type: 'run.phase_changed',
+    const testEvent: StreamEventV2 = {
+      kind: 'run.phase_changed',
       projectId: 'proj_1',
       runId: 'run_1',
       fromPhase: 'executing',
@@ -157,6 +159,47 @@ describe('pubsub', () => {
 
     await subscriber.close();
     expect(mockQuit).toHaveBeenCalled();
+  });
+
+  it('setHandler registers exactly one redis.on("message") call', async () => {
+    const { createSubscriber } = await import('./index.ts');
+    const subscriber = createSubscriber('redis://localhost:6379');
+
+    subscriber.setHandler(() => {});
+
+    const messageOnCalls = mockOn.mock.calls.filter(
+      (call: unknown[]) => call[0] === 'message',
+    );
+    expect(messageOnCalls).toHaveLength(1);
+
+    await subscriber.close();
+  });
+
+  it('addChannels calls redis.subscribe but NOT redis.on("message")', async () => {
+    const { createSubscriber } = await import('./index.ts');
+    const subscriber = createSubscriber('redis://localhost:6379');
+
+    subscriber.setHandler(() => {});
+    mockOn.mockClear(); // Clear the setHandler call
+
+    await subscriber.addChannels(['proj_2']);
+
+    expect(mockSubscribe).toHaveBeenCalledWith('conductor:events:proj_2');
+    expect(mockOn).not.toHaveBeenCalled();
+
+    await subscriber.close();
+  });
+
+  it('calling setHandler twice throws', async () => {
+    const { createSubscriber } = await import('./index.ts');
+    const subscriber = createSubscriber('redis://localhost:6379');
+
+    subscriber.setHandler(() => {});
+    expect(() => subscriber.setHandler(() => {})).toThrow(
+      'setHandler() called twice',
+    );
+
+    await subscriber.close();
   });
 
   // -------------------------------------------------------------------------
@@ -299,6 +342,101 @@ describe('pubsub', () => {
     const parsed = JSON.parse(payload) as Record<string, unknown>;
     expect(parsed['id']).toBe(99);
     expect(parsed['kind']).toBe('run.updated');
+  });
+
+  // -------------------------------------------------------------------------
+  // publishTransitionEvent with db uses V2 path
+  // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // Payload shape assertions for V2 publish helpers
+  // -------------------------------------------------------------------------
+
+  it('publishGateEvaluatedEvent publishes correct payload shape', async () => {
+    initPublisher('redis://localhost:6379');
+
+    const mockDb = {
+      prepare: vi.fn().mockReturnValue({
+        run: vi.fn().mockReturnValue({ lastInsertRowid: 10 }),
+      }),
+    };
+
+    publishGateEvaluatedEvent(mockDb as never, 'proj_1', 'run_1', 'gate_plan', 'plan_review', 'passed', 'Looks good');
+
+    await vi.waitFor(() => {
+      expect(mockPublish).toHaveBeenCalledOnce();
+    });
+
+    const [channel, payload] = mockPublish.mock.calls[0]!;
+    expect(channel).toBe('conductor:events:proj_1');
+
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    expect(parsed['kind']).toBe('gate.evaluated');
+    expect(parsed['projectId']).toBe('proj_1');
+    expect(parsed['runId']).toBe('run_1');
+    expect(parsed['gateId']).toBe('gate_plan');
+    expect(parsed['gateKind']).toBe('plan_review');
+    expect(parsed['status']).toBe('passed');
+    expect(parsed['reason']).toBe('Looks good');
+    expect(parsed['timestamp']).toBeTruthy();
+    expect(parsed['id']).toBe(10);
+  });
+
+  it('publishAgentInvocationEvent publishes correct payload shape with agentInvocationId', async () => {
+    initPublisher('redis://localhost:6379');
+
+    const mockDb = {
+      prepare: vi.fn().mockReturnValue({
+        run: vi.fn().mockReturnValue({ lastInsertRowid: 20 }),
+      }),
+    };
+
+    publishAgentInvocationEvent(mockDb as never, 'proj_1', 'run_1', 'inv_abc', 'planner', 'create_plan', 'running');
+
+    await vi.waitFor(() => {
+      expect(mockPublish).toHaveBeenCalledOnce();
+    });
+
+    const [channel, payload] = mockPublish.mock.calls[0]!;
+    expect(channel).toBe('conductor:events:proj_1');
+
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    expect(parsed['kind']).toBe('agent.invocation');
+    expect(parsed['projectId']).toBe('proj_1');
+    expect(parsed['runId']).toBe('run_1');
+    expect(parsed['agentInvocationId']).toBe('inv_abc');
+    expect(parsed['agent']).toBe('planner');
+    expect(parsed['action']).toBe('create_plan');
+    expect(parsed['status']).toBe('running');
+    expect(parsed['timestamp']).toBeTruthy();
+    expect(parsed['id']).toBe(20);
+  });
+
+  it('publishRunUpdatedEvent publishes correct payload shape', async () => {
+    initPublisher('redis://localhost:6379');
+
+    const mockDb = {
+      prepare: vi.fn().mockReturnValue({
+        run: vi.fn().mockReturnValue({ lastInsertRowid: 30 }),
+      }),
+    };
+
+    publishRunUpdatedEvent(mockDb as never, 'proj_1', 'run_1', ['prUrl', 'prNumber', 'prState']);
+
+    await vi.waitFor(() => {
+      expect(mockPublish).toHaveBeenCalledOnce();
+    });
+
+    const [channel, payload] = mockPublish.mock.calls[0]!;
+    expect(channel).toBe('conductor:events:proj_1');
+
+    const parsed = JSON.parse(payload) as Record<string, unknown>;
+    expect(parsed['kind']).toBe('run.updated');
+    expect(parsed['projectId']).toBe('proj_1');
+    expect(parsed['runId']).toBe('run_1');
+    expect(parsed['fields']).toEqual(['prUrl', 'prNumber', 'prState']);
+    expect(parsed['timestamp']).toBeTruthy();
+    expect(parsed['id']).toBe(30);
   });
 
   // -------------------------------------------------------------------------

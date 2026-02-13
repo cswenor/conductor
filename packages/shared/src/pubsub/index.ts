@@ -68,6 +68,7 @@ export interface OperatorActionEvent extends StreamEventBase {
 export interface AgentInvocationEvent extends StreamEventBase {
   kind: 'agent.invocation';
   runId: string;
+  agentInvocationId: string;
   agent: string;
   action: string;
   status: string;
@@ -155,7 +156,10 @@ export function createPublisher(redisUrl: string): Publisher {
 // =============================================================================
 
 export interface Subscriber {
-  subscribe(projectIds: string[], onMessage: (event: StreamEvent) => void): Promise<void>;
+  /** Register message handler exactly once. Must be called before addChannels. */
+  setHandler(onMessage: (event: StreamEventV2) => void): void;
+  /** Subscribe to additional project channels (idempotent, no handler re-registration). */
+  addChannels(projectIds: string[]): Promise<void>;
   unsubscribe(): Promise<void>;
   close(): Promise<void>;
 }
@@ -169,13 +173,14 @@ export function createSubscriber(redisUrl: string): Subscriber {
   let messageHandler: ((channel: string, message: string) => void) | undefined;
 
   return {
-    async subscribe(projectIds: string[], onMessage: (event: StreamEvent) => void): Promise<void> {
-      const channels = projectIds.map(projectChannel);
-      if (channels.length === 0) return;
+    setHandler(onMessage: (event: StreamEventV2) => void): void {
+      if (messageHandler !== undefined) {
+        throw new Error('setHandler() called twice — handler is already registered');
+      }
 
       messageHandler = (_channel: string, message: string) => {
         try {
-          const event = JSON.parse(message) as StreamEvent;
+          const event = JSON.parse(message) as StreamEventV2;
           onMessage(event);
         } catch {
           log.warn({ message }, 'Failed to parse pub/sub message');
@@ -183,6 +188,10 @@ export function createSubscriber(redisUrl: string): Subscriber {
       };
 
       redis.on('message', messageHandler);
+    },
+    async addChannels(projectIds: string[]): Promise<void> {
+      const channels = projectIds.map(projectChannel);
+      if (channels.length === 0) return;
       await redis.subscribe(...channels);
     },
     async unsubscribe(): Promise<void> {
@@ -439,6 +448,7 @@ export function publishAgentInvocationEvent(
   db: Database,
   projectId: string,
   runId: string,
+  agentInvocationId: string,
   agent: string,
   action: string,
   status: string,
@@ -448,6 +458,7 @@ export function publishAgentInvocationEvent(
     kind: 'agent.invocation',
     projectId,
     runId,
+    agentInvocationId,
     agent,
     action,
     status,
@@ -486,6 +497,15 @@ export function publishProjectUpdatedEvent(
   };
   persistAndPublish(db, projectId, event);
 }
+
+// =============================================================================
+// run.updated field constants
+// =============================================================================
+
+/** Fields set when a PR is created (handleWriteResult). */
+export const RUN_UPDATED_PR_CREATED_FIELDS = ['prUrl', 'prNumber', 'prState'] as const;
+/** Fields set when PR state changes (merge, close, reopen). */
+export const RUN_UPDATED_PR_STATE_FIELDS = ['prState'] as const;
 
 /** Reset singleton (for testing only) */
 export function _resetPublisher(): void {
