@@ -13,7 +13,7 @@ import { createArtifact, updateValidationStatus } from '../agent-runtime/artifac
 import { createToolInvocation, completeToolInvocation } from '../agent-runtime/tool-invocations.ts';
 import { ensureBuiltInPolicyDefinitions } from '../agent-runtime/policy-definitions.ts';
 import { ensureBuiltInGateDefinitions } from '../gates/gate-definitions.ts';
-import { getGateDecision } from '../gates/decisions.ts';
+import { getGateDecision, recordGateDecision } from '../gates/decisions.ts';
 import { transitionPhase } from '../orchestrator/index.ts';
 import { approvePlanCommand, rejectRunCommand, revisePlanCommand } from './index.ts';
 
@@ -708,6 +708,29 @@ describe('pre-check ordering', () => {
     expect(result.outcome).toBe('stale_run');
     expect(result.success).toBe(false);
     expect(result.error).toContain('refresh');
+  });
+
+  it('approve: durable decision exists but run still awaiting → retries Phase B and transitions', () => {
+    const { run, userId } = seedTestData(db);
+    createValidPlan(db, run.runId);
+    createValidReview(db, run.runId);
+
+    // Simulate a prior Phase A that succeeded but Phase B failed:
+    // Insert a gate decision directly without transitioning
+    recordGateDecision(db, {
+      runId: run.runId, gateId: 'plan_approval',
+      cycle: run.approvalCycle, decision: 'approved', actorId: userId,
+    });
+
+    // Run is still in awaiting_plan_approval with a durable approved decision
+    const stillAwaiting = getRun(db, run.runId);
+    expect(stillAwaiting?.phase).toBe('awaiting_plan_approval');
+
+    // Retry approve — should detect durable decision and retry Phase B
+    const result = approvePlanCommand({ db, run, actorId: userId, actorType: 'operator' });
+    expect(result.outcome).toBe('approved');
+    expect(result.success).toBe(true);
+    expect(result.run?.phase).toBe('executing');
   });
 
   it('revise: caller phase stale opposite direction → uses fresh run for phase check', () => {

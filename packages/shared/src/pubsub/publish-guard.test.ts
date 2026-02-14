@@ -17,13 +17,13 @@ const ROOT = resolve(import.meta.dirname, '../../../..');
 
 /**
  * Expected number of transitionPhase( / evaluateGatesAndTransition( call
- * sites per production file. Total: 23.
+ * sites per production file. Total: 24.
  */
 const EXPECTED_COUNTS: Record<string, number> = {
   'packages/worker/src/index.ts': 10,
   'packages/worker/src/merge-handler.ts': 3,
   'packages/worker/src/blocked-retry.ts': 2,
-  'packages/shared/src/run-commands/index.ts': 4,
+  'packages/shared/src/run-commands/index.ts': 5,
   'packages/web/src/lib/actions/run-actions.ts': 2,
   'packages/web/src/app/api/runs/[id]/actions/route.ts': 2,
 };

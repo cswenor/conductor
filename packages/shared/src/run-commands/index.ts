@@ -97,7 +97,35 @@ export function approvePlanCommand(input: PlanCommandInput): PlanCommandResult<A
   const existing = getGateDecision(db, run.runId, 'plan_approval', currentRun.approvalCycle);
   if (existing !== null) {
     if (existing.decision === 'approved') {
-      return { outcome: 'already_decided', success: true, run: currentRun };
+      if (currentRun.phase !== 'awaiting_plan_approval') {
+        // Run already transitioned — true double-click idempotency
+        return { outcome: 'already_decided', success: true, run: currentRun };
+      }
+      // Decision exists but run is still awaiting approval — Phase B never succeeded
+      // (e.g. prior evaluator bug, crash between Phase A and B). Retry Phase B.
+      const { gateCheck, transition: txnResult } = evaluateGatesAndTransition(
+        db, currentRun, 'awaiting_plan_approval',
+        {
+          runId: currentRun.runId, toPhase: 'executing', toStep: 'implementer_apply_changes',
+          triggeredBy: actorId, reason: 'Plan approved by operator',
+        },
+      );
+
+      if (!gateCheck.allPassed) {
+        return { outcome: 'accepted', success: true, run: currentRun };
+      }
+
+      if (txnResult?.success !== true) {
+        return {
+          outcome: 'transition_failed', success: false,
+          error: txnResult?.error ?? 'Failed to transition',
+        };
+      }
+
+      publishTransitionEvent(run.projectId, run.runId, currentRun.phase, 'executing', db);
+      publishOperatorActionEvent(db, run.projectId, run.runId, 'approve_plan', actorId);
+      log.info({ runId: run.runId, actorId, outcome: 'approved (retry)' }, 'Plan approved on retry');
+      return { outcome: 'approved', success: true, run: txnResult.run };
     }
     return { outcome: 'conflict', success: false, error: `Gate already has decision: ${existing.decision}` };
   }
