@@ -9,12 +9,14 @@ import {
   transitionPhase,
   TERMINAL_PHASES,
   recordOperatorAction,
-  evaluateGatesAndTransition,
   createOverride,
   isValidOverrideScope,
   type OverrideScope,
   publishTransitionEvent,
   publishOperatorActionEvent,
+  approvePlanCommand,
+  rejectRunCommand,
+  revisePlanCommand,
 } from '@conductor/shared';
 import { getDb, getQueues } from '@/lib/bootstrap';
 import { requireServerUser } from '@/lib/auth/session';
@@ -24,6 +26,7 @@ const log = createLogger({ name: 'conductor:actions:run' });
 interface ActionResult {
   success: boolean;
   error?: string;
+  outcome?: string;
 }
 
 function revalidateRunPaths(runId: string) {
@@ -48,49 +51,11 @@ async function getAuthorizedRun(runId: string) {
 export async function approvePlan(runId: string, comment?: string): Promise<ActionResult> {
   try {
     const { user, db, run } = await getAuthorizedRun(runId);
+    const result = approvePlanCommand({ db, run, actorId: user.userId, actorType: 'operator', comment });
 
-    if (run.phase !== 'awaiting_plan_approval') {
-      return { success: false, error: 'Run is not awaiting plan approval' };
-    }
-
-    // Record the operator action BEFORE evaluating gates, because the
-    // plan_approval gate evaluator checks for an existing approve_plan
-    // action to determine if the gate passes.
-    recordOperatorAction(db, {
-      runId,
-      action: 'approve_plan',
-      actorId: user.userId,
-      actorType: 'operator',
-      comment,
-      fromPhase: run.phase,
-      toPhase: 'executing',
-    });
-
-    const { gateCheck, transition: txnResult } = evaluateGatesAndTransition(
-      db, run, 'awaiting_plan_approval',
-      {
-        runId,
-        toPhase: 'executing',
-        toStep: 'implementer_apply_changes',
-        triggeredBy: user.userId,
-        reason: 'Plan approved by operator',
-      },
-    );
-
-    if (!gateCheck.allPassed) {
-      return { success: false, error: `Gate '${gateCheck.blockedBy ?? 'unknown'}' is not passed — cannot approve` };
-    }
-
-    if (txnResult?.success !== true) {
-      return { success: false, error: txnResult?.error ?? 'Failed to approve plan' };
-    }
-
-    publishTransitionEvent(run.projectId, runId, run.phase, 'executing', db);
-    publishOperatorActionEvent(db, run.projectId, runId, 'approve_plan', user.userId);
-
-    log.info({ runId, userId: user.userId }, 'Plan approved by operator');
+    log.info({ runId, userId: user.userId, outcome: result.outcome }, 'approvePlan completed');
     revalidateRunPaths(runId);
-    return { success: true };
+    return { success: result.success, error: result.error, outcome: result.outcome };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to approve plan';
     log.error({ runId, error: msg }, 'approvePlan failed');
@@ -102,67 +67,15 @@ export async function revisePlan(runId: string, comment: string): Promise<Action
   try {
     const { user, db, run } = await getAuthorizedRun(runId);
 
-    if (run.phase !== 'awaiting_plan_approval') {
-      return { success: false, error: 'Run is not awaiting plan approval' };
-    }
-
     if (comment.trim() === '') {
       return { success: false, error: 'Comment is required for plan revision' };
     }
 
-    recordOperatorAction(db, {
-      runId,
-      action: 'revise_plan',
-      actorId: user.userId,
-      actorType: 'operator',
-      comment,
-      fromPhase: run.phase,
-      toPhase: 'planning',
-    });
+    const result = revisePlanCommand({ db, run, actorId: user.userId, actorType: 'operator', comment });
 
-    db.prepare(
-      'UPDATE runs SET plan_revisions = plan_revisions + 1 WHERE run_id = ?'
-    ).run(runId);
-
-    const updatedRun = getRun(db, runId);
-    const maxRevisions = 3;
-    if (updatedRun !== null && updatedRun.planRevisions >= maxRevisions) {
-      const blockResult = transitionPhase(db, {
-        runId,
-        toPhase: 'blocked',
-        triggeredBy: user.userId,
-        reason: 'Plan revision limit exceeded',
-        blockedReason: 'retry_limit_exceeded',
-        blockedContext: { prior_phase: run.phase, revisions: updatedRun.planRevisions },
-      });
-
-      if (!blockResult.success) {
-        return { success: false, error: blockResult.error ?? 'Failed to block run' };
-      }
-
-      publishTransitionEvent(run.projectId, runId, run.phase, 'blocked', db);
-      log.info({ runId, userId: user.userId, revisions: updatedRun.planRevisions }, 'Plan revision limit exceeded');
-      revalidateRunPaths(runId);
-      return { success: true };
-    }
-
-    const result = transitionPhase(db, {
-      runId,
-      toPhase: 'planning',
-      toStep: 'planner_create_plan',
-      triggeredBy: user.userId,
-      reason: `Revision requested: ${comment}`,
-    });
-
-    if (!result.success) {
-      return { success: false, error: result.error ?? 'Failed to revise plan' };
-    }
-
-    publishTransitionEvent(run.projectId, runId, run.phase, 'planning', db);
-    publishOperatorActionEvent(db, run.projectId, runId, 'revise_plan', user.userId);
-    log.info({ runId, userId: user.userId }, 'Plan revision requested');
+    log.info({ runId, userId: user.userId, outcome: result.outcome }, 'revisePlan completed');
     revalidateRunPaths(runId);
-    return { success: true };
+    return { success: result.success, error: result.error, outcome: result.outcome };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to revise plan';
     log.error({ runId, error: msg }, 'revisePlan failed');
@@ -174,49 +87,23 @@ export async function rejectRun(runId: string, comment: string): Promise<ActionR
   try {
     const { user, db, run } = await getAuthorizedRun(runId);
 
-    if (run.phase !== 'awaiting_plan_approval') {
-      return { success: false, error: 'Run is not awaiting plan approval' };
-    }
-
     if (comment.trim() === '') {
       return { success: false, error: 'Comment is required for rejection' };
     }
 
-    recordOperatorAction(db, {
-      runId,
-      action: 'reject_run',
-      actorId: user.userId,
-      actorType: 'operator',
-      comment,
-      fromPhase: run.phase,
-      toPhase: 'cancelled',
-    });
+    const result = rejectRunCommand({ db, run, actorId: user.userId, actorType: 'operator', comment });
 
-    const result = transitionPhase(db, {
-      runId,
-      toPhase: 'cancelled',
-      toStep: 'cleanup',
-      triggeredBy: user.userId,
-      result: 'cancelled',
-      resultReason: 'Plan rejected by operator',
-    });
-
-    if (!result.success) {
-      return { success: false, error: result.error ?? 'Failed to reject run' };
+    if (result.outcome === 'rejected') {
+      const queues = await getQueues();
+      await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
+        type: 'worktree',
+        targetId: runId,
+      });
     }
 
-    publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled', db);
-    publishOperatorActionEvent(db, run.projectId, runId, 'reject_run', user.userId);
-
-    const queues = await getQueues();
-    await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
-      type: 'worktree',
-      targetId: runId,
-    });
-
-    log.info({ runId, userId: user.userId }, 'Run rejected by operator');
+    log.info({ runId, userId: user.userId, outcome: result.outcome }, 'rejectRun completed');
     revalidateRunPaths(runId);
-    return { success: true };
+    return { success: result.success, error: result.error, outcome: result.outcome };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to reject run';
     log.error({ runId, error: msg }, 'rejectRun failed');

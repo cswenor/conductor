@@ -546,6 +546,88 @@ describe('transitionPhase sequence floor', () => {
   });
 });
 
+describe('approval_cycle increment', () => {
+  it('increments approval_cycle when transitioning to awaiting_plan_approval', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    ensureBuiltInGateDefinitions(db);
+
+    expect(run.approvalCycle).toBe(0);
+
+    // pending → planning
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', triggeredBy: 'system' });
+    // planning → awaiting_plan_approval (should increment)
+    const result = transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', triggeredBy: 'system' });
+
+    expect(result.success).toBe(true);
+    expect(result.run?.approvalCycle).toBe(1);
+  });
+
+  it('increments again on second entry to awaiting_plan_approval', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    ensureBuiltInGateDefinitions(db);
+
+    // First cycle: pending → planning → awaiting_plan_approval
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', triggeredBy: 'system' });
+
+    const run1 = getRun(db, run.runId);
+    expect(run1?.approvalCycle).toBe(1);
+
+    // Second cycle: awaiting_plan_approval → planning → awaiting_plan_approval
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', triggeredBy: 'system' });
+    const result = transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', triggeredBy: 'system' });
+
+    expect(result.success).toBe(true);
+    expect(result.run?.approvalCycle).toBe(2);
+  });
+
+  it('does NOT increment approval_cycle for other phases', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // pending → planning
+    const result = transitionPhase(db, { runId: run.runId, toPhase: 'planning', triggeredBy: 'system' });
+    expect(result.success).toBe(true);
+    expect(result.run?.approvalCycle).toBe(0);
+
+    // planning → blocked
+    const result2 = transitionPhase(db, { runId: run.runId, toPhase: 'blocked', triggeredBy: 'system', blockedReason: 'test' });
+    expect(result2.success).toBe(true);
+    expect(result2.run?.approvalCycle).toBe(0);
+
+    // blocked → cancelled
+    const result3 = transitionPhase(db, { runId: run.runId, toPhase: 'cancelled', triggeredBy: 'system', result: 'cancelled' });
+    expect(result3.success).toBe(true);
+    expect(result3.run?.approvalCycle).toBe(0);
+  });
+
+  it('increments approval_cycle via evaluateGatesAndTransition inline SQL', () => {
+    const seed = seedTestData(db, '20');
+    const run = createTestRun(db, seed);
+    ensureBuiltInGateDefinitions(db);
+
+    // pending → planning (no gates for planning phase = auto-pass)
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', triggeredBy: 'system' });
+
+    const runObj = getRun(db, run.runId)!;
+    // Use evaluateGatesAndTransition to transition to awaiting_plan_approval
+    // (planning has no gates, so it auto-passes)
+    const { transition: txnResult } = evaluateGatesAndTransition(
+      db, runObj, 'planning',
+      {
+        runId: run.runId,
+        toPhase: 'awaiting_plan_approval',
+        triggeredBy: 'system',
+      },
+    );
+
+    expect(txnResult?.success).toBe(true);
+    expect(txnResult?.run?.approvalCycle).toBe(1);
+  });
+});
+
 describe('evaluateGatesAndTransition sequence floor', () => {
   it('uses sequence floor when worker events advance beyond nextSequence', () => {
     const seed = seedTestData(db, '12');

@@ -44,6 +44,7 @@ export interface Run {
   planRevisions: number;
   testFixAttempts: number;
   reviewRounds: number;
+  approvalCycle: number;
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
@@ -180,6 +181,7 @@ export function createRun(db: Database, input: CreateRunInput): Run {
     planRevisions: 0,
     testFixAttempts: 0,
     reviewRounds: 0,
+    approvalCycle: 0,
     startedAt: now,
     updatedAt: now,
   };
@@ -469,6 +471,7 @@ function rowToRun(row: Record<string, unknown>): Run {
     planRevisions: row['plan_revisions'] as number,
     testFixAttempts: row['test_fix_attempts'] as number,
     reviewRounds: row['review_rounds'] as number,
+    approvalCycle: (row['approval_cycle'] as number | null) ?? 0,
     startedAt: row['started_at'] as string,
     updatedAt: row['updated_at'] as string,
     completedAt: (row['completed_at'] as string | null) ?? undefined,

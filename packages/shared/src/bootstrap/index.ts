@@ -10,6 +10,7 @@ import { initDatabase, closeDatabase, getSchemaVersion } from '../db/index.ts';
 import { initQueueManager, closeQueueManager, type QueueManager } from '../queue/index.ts';
 import { createLogger } from '../logger/index.ts';
 import { initEncryption } from '../crypto/index.ts';
+import { ensureBuiltInGateDefinitions } from '../gates/gate-definitions.ts';
 
 const log = createLogger({ name: 'conductor:bootstrap' });
 
@@ -103,6 +104,10 @@ export async function bootstrap(config: BootstrapConfig): Promise<BootstrapResul
 
   const schemaVersion = getSchemaVersion(db);
   log.info({ schemaVersion }, 'Database initialized');
+
+  // Seed built-in gate definitions (idempotent — safe to call in both web and worker)
+  ensureBuiltInGateDefinitions(db);
+  log.info('Built-in gate definitions seeded');
 
   // Initialize queue manager
   log.info('Initializing queue manager');

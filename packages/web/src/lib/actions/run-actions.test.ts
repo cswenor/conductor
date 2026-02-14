@@ -29,6 +29,9 @@ vi.mock('@conductor/shared', () => ({
   isValidOverrideScope: vi.fn(),
   publishTransitionEvent: vi.fn(),
   publishOperatorActionEvent: vi.fn(),
+  approvePlanCommand: vi.fn().mockReturnValue({ outcome: 'approved', success: true }),
+  rejectRunCommand: vi.fn().mockReturnValue({ outcome: 'rejected', success: true }),
+  revisePlanCommand: vi.fn().mockReturnValue({ outcome: 'revised', success: true }),
 }));
 
 vi.mock('next/cache', () => ({

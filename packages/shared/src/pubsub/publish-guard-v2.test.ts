@@ -23,8 +23,9 @@ const ROOT = resolve(import.meta.dirname, '../../../..');
  * Every recordOperatorAction() call site should have a matching publish.
  */
 const OPERATOR_ACTION_COUNTS: Record<string, number> = {
-  'packages/web/src/lib/actions/run-actions.ts': 7,
-  'packages/web/src/app/api/runs/[id]/actions/route.ts': 7,
+  'packages/web/src/lib/actions/run-actions.ts': 4,
+  'packages/web/src/app/api/runs/[id]/actions/route.ts': 4,
+  'packages/shared/src/run-commands/index.ts': 5,
 };
 
 const OPERATOR_ACTION_PATTERN = /publishOperatorActionEvent\([^)]/g;

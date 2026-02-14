@@ -26,6 +26,17 @@ export {
   getRunsAwaitingGates,
 } from './gate-evaluations.ts';
 
+// Gate decisions (control state)
+export {
+  type GateDecisionType,
+  type GateDecision,
+  type RecordGateDecisionInput,
+  type RecordGateDecisionResult,
+  generateGateDecisionId,
+  recordGateDecision,
+  getGateDecision,
+} from './decisions.ts';
+
 // Gate evaluators
 export {
   type GateResult,

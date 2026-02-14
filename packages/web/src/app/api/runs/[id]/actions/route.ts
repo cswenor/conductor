@@ -14,12 +14,14 @@ import {
   transitionPhase,
   TERMINAL_PHASES,
   recordOperatorAction,
-  evaluateGatesAndTransition,
   createOverride,
   isValidOverrideScope,
   mirrorApprovalDecision,
   publishTransitionEvent,
   publishOperatorActionEvent,
+  approvePlanCommand,
+  rejectRunCommand,
+  revisePlanCommand,
 } from '@conductor/shared';
 import type { OverrideScope } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
@@ -88,80 +90,33 @@ export const POST = withAuth(async (
       // approve_plan
       // =====================================================================
       case 'approve_plan': {
-        if (run.phase !== 'awaiting_plan_approval') {
-          return NextResponse.json(
-            { error: 'Run is not awaiting plan approval' },
-            { status: 400 }
-          );
-        }
+        const result = approvePlanCommand({ db, run, actorId: userId, actorType: 'operator', comment: body.comment });
 
-        // Evaluate gate + transition atomically via orchestrator.
-        // This ensures: gate passes before transition, events persist atomically.
-        // Record the operator action AFTER the gate check passes to avoid
-        // recording an approval action when artifacts are incomplete.
-        const { gateCheck, transition: txnResult } = evaluateGatesAndTransition(
-          db, run, 'awaiting_plan_approval',
-          {
-            runId,
-            toPhase: 'executing',
-            toStep: 'implementer_apply_changes',
-            triggeredBy: userId,
-            reason: 'Plan approved by operator',
-          },
-        );
-
-        if (!gateCheck.allPassed) {
-          log.warn({ runId, blockedBy: gateCheck.blockedBy }, 'Approve blocked — gate not passed');
+        if (!result.success) {
           return NextResponse.json(
-            { error: `Gate '${gateCheck.blockedBy ?? 'unknown'}' is not passed — cannot approve` },
+            { error: result.error, outcome: result.outcome },
             { status: 409 }
           );
         }
 
-        if (txnResult?.success !== true) {
-          log.error({ runId, error: txnResult?.error }, 'Approve transition failed');
-          return NextResponse.json(
-            { error: txnResult?.error ?? 'Failed to approve plan' },
-            { status: 409 }
-          );
+        // Mirror to GitHub ONLY on 'approved' (actual transition), NOT on 'accepted' (pending).
+        if (result.outcome === 'approved' && result.operatorAction !== undefined) {
+          try {
+            mirrorApprovalDecision(
+              { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
+              { runId, operatorActionId: result.operatorAction.operatorActionId, action: 'approve_plan', actorId: userId, fromPhase: run.phase, toPhase: 'executing', comment: body.comment },
+            );
+          } catch { /* non-fatal */ }
         }
 
-        publishTransitionEvent(run.projectId, runId, run.phase, 'executing', db);
-
-        // Record operator action only after successful gate check + transition
-        const approveAction = recordOperatorAction(db, {
-          runId,
-          action: 'approve_plan',
-          actorId: userId,
-          actorType: 'operator',
-          comment: body.comment,
-          fromPhase: run.phase,
-          toPhase: 'executing',
-        });
-
-        try {
-          mirrorApprovalDecision(
-            { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
-            { runId, operatorActionId: approveAction.operatorActionId, action: 'approve_plan', actorId: userId, fromPhase: run.phase, toPhase: 'executing', comment: body.comment },
-          );
-        } catch { /* non-fatal */ }
-
-        publishOperatorActionEvent(db, run.projectId, runId, 'approve_plan', userId);
-        log.info({ runId, userId }, 'Plan approved by operator');
-        return NextResponse.json({ success: true, run: txnResult.run });
+        log.info({ runId, userId, outcome: result.outcome }, 'approve_plan completed');
+        return NextResponse.json({ success: true, outcome: result.outcome, run: result.run });
       }
 
       // =====================================================================
       // revise_plan
       // =====================================================================
       case 'revise_plan': {
-        if (run.phase !== 'awaiting_plan_approval') {
-          return NextResponse.json(
-            { error: 'Run is not awaiting plan approval' },
-            { status: 400 }
-          );
-        }
-
         if (body.comment === undefined || body.comment.trim() === '') {
           return NextResponse.json(
             { error: 'Comment is required for plan revision' },
@@ -169,86 +124,32 @@ export const POST = withAuth(async (
           );
         }
 
-        const reviseAction = recordOperatorAction(db, {
-          runId,
-          action: 'revise_plan',
-          actorId: userId,
-          actorType: 'operator',
-          comment: body.comment,
-          fromPhase: run.phase,
-          toPhase: 'planning',
-        });
-
-        try {
-          mirrorApprovalDecision(
-            { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
-            { runId, operatorActionId: reviseAction.operatorActionId, action: 'revise_plan', actorId: userId, fromPhase: run.phase, toPhase: 'planning', comment: body.comment },
-          );
-        } catch { /* non-fatal */ }
-
-        // Increment plan revisions
-        db.prepare(
-          'UPDATE runs SET plan_revisions = plan_revisions + 1 WHERE run_id = ?'
-        ).run(runId);
-
-        // Check plan revision limit (default 3)
-        const updatedRun = getRun(db, runId);
-        const maxRevisions = 3;
-        if (updatedRun !== null && updatedRun.planRevisions >= maxRevisions) {
-          const blockResult = transitionPhase(db, {
-            runId,
-            toPhase: 'blocked',
-            triggeredBy: userId,
-            reason: 'Plan revision limit exceeded',
-            blockedReason: 'retry_limit_exceeded',
-            blockedContext: { prior_phase: run.phase, revisions: updatedRun.planRevisions },
-          });
-
-          if (!blockResult.success) {
-            return NextResponse.json(
-              { error: blockResult.error ?? 'Failed to block run' },
-              { status: 409 }
-            );
-          }
-
-          publishTransitionEvent(run.projectId, runId, run.phase, 'blocked', db);
-          log.info({ runId, userId, revisions: updatedRun.planRevisions }, 'Plan revision limit exceeded');
-          return NextResponse.json({ success: true, run: blockResult.run });
-        }
-
-        const result = transitionPhase(db, {
-          runId,
-          toPhase: 'planning',
-          toStep: 'planner_create_plan',
-          triggeredBy: userId,
-          reason: `Revision requested: ${body.comment}`,
-        });
+        const result = revisePlanCommand({ db, run, actorId: userId, actorType: 'operator', comment: body.comment });
 
         if (!result.success) {
-          log.error({ runId, error: result.error }, 'Revise transition failed');
           return NextResponse.json(
-            { error: result.error ?? 'Failed to revise plan' },
+            { error: result.error, outcome: result.outcome },
             { status: 409 }
           );
         }
 
-        publishTransitionEvent(run.projectId, runId, run.phase, 'planning', db);
-        publishOperatorActionEvent(db, run.projectId, runId, 'revise_plan', userId);
-        log.info({ runId, userId }, 'Plan revision requested');
-        return NextResponse.json({ success: true, run: result.run });
+        if (result.operatorAction !== undefined) {
+          try {
+            mirrorApprovalDecision(
+              { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
+              { runId, operatorActionId: result.operatorAction.operatorActionId, action: 'revise_plan', actorId: userId, fromPhase: run.phase, toPhase: 'planning', comment: body.comment },
+            );
+          } catch { /* non-fatal */ }
+        }
+
+        log.info({ runId, userId, outcome: result.outcome }, 'revise_plan completed');
+        return NextResponse.json({ success: true, outcome: result.outcome, run: result.run });
       }
 
       // =====================================================================
       // reject_run
       // =====================================================================
       case 'reject_run': {
-        if (run.phase !== 'awaiting_plan_approval') {
-          return NextResponse.json(
-            { error: 'Run is not awaiting plan approval' },
-            { status: 400 }
-          );
-        }
-
         if (body.comment === undefined || body.comment.trim() === '') {
           return NextResponse.json(
             { error: 'Comment is required for rejection' },
@@ -256,53 +157,34 @@ export const POST = withAuth(async (
           );
         }
 
-        const rejectAction = recordOperatorAction(db, {
-          runId,
-          action: 'reject_run',
-          actorId: userId,
-          actorType: 'operator',
-          comment: body.comment,
-          fromPhase: run.phase,
-          toPhase: 'cancelled',
-        });
-
-        try {
-          mirrorApprovalDecision(
-            { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
-            { runId, operatorActionId: rejectAction.operatorActionId, action: 'reject_run', actorId: userId, fromPhase: run.phase, toPhase: 'cancelled', comment: body.comment },
-          );
-        } catch { /* non-fatal */ }
-
-        // No gate evaluation needed — rejection goes straight to cancelled.
-        // The operator action record above is the audit trail for this decision.
-
-        const result = transitionPhase(db, {
-          runId,
-          toPhase: 'cancelled',
-          toStep: 'cleanup',
-          triggeredBy: userId,
-          result: 'cancelled',
-          resultReason: 'Plan rejected by operator',
-        });
+        const result = rejectRunCommand({ db, run, actorId: userId, actorType: 'operator', comment: body.comment });
 
         if (!result.success) {
-          log.error({ runId, error: result.error }, 'Reject transition failed');
           return NextResponse.json(
-            { error: result.error ?? 'Failed to reject run' },
+            { error: result.error, outcome: result.outcome },
             { status: 409 }
           );
         }
 
-        publishTransitionEvent(run.projectId, runId, run.phase, 'cancelled', db);
-        publishOperatorActionEvent(db, run.projectId, runId, 'reject_run', userId);
+        // Mirror only on actual rejection (transition completed)
+        if (result.outcome === 'rejected' && result.operatorAction !== undefined) {
+          try {
+            mirrorApprovalDecision(
+              { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
+              { runId, operatorActionId: result.operatorAction.operatorActionId, action: 'reject_run', actorId: userId, fromPhase: run.phase, toPhase: 'cancelled', comment: body.comment },
+            );
+          } catch { /* non-fatal */ }
+        }
 
-        await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
-          type: 'worktree',
-          targetId: runId,
-        });
+        if (result.outcome === 'rejected') {
+          await queues.addJob('cleanup', `cleanup:worktree:${runId}`, {
+            type: 'worktree',
+            targetId: runId,
+          });
+        }
 
-        log.info({ runId, userId }, 'Run rejected by operator');
-        return NextResponse.json({ success: true, run: result.run });
+        log.info({ runId, userId, outcome: result.outcome }, 'reject_run completed');
+        return NextResponse.json({ success: true, outcome: result.outcome, run: result.run });
       }
 
       // =====================================================================
@@ -411,8 +293,6 @@ export const POST = withAuth(async (
         }
 
         // Enforce that constraint fields are present from blocked context.
-        // Overrides without targetId or constraintKind are overly permissive —
-        // they must be scoped to the specific policy/constraint that caused the block.
         if (targetId === undefined || constraintKind === undefined) {
           log.warn({ runId, targetId, constraintKind }, 'Grant exception: blocked context missing required fields');
           return NextResponse.json(
@@ -554,8 +434,6 @@ export const POST = withAuth(async (
 
         // Enqueue cancel job first — worker owns transition + signal + cleanup.
         // Stable job ID ensures repeated clicks are idempotent (BullMQ deduplicates).
-        // Audit + mirror are written only after enqueue succeeds to avoid
-        // recording a cancellation that was never actually queued.
         await queues.addJob('runs', `run-cancel-${runId}`, {
           runId,
           action: 'cancel',

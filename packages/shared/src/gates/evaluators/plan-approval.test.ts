@@ -10,7 +10,7 @@ import { createArtifact, updateValidationStatus } from '../../agent-runtime/arti
 import { createToolInvocation, completeToolInvocation } from '../../agent-runtime/tool-invocations.ts';
 import { ensureBuiltInPolicyDefinitions } from '../../agent-runtime/policy-definitions.ts';
 import { ensureBuiltInGateDefinitions } from '../gate-definitions.ts';
-import { recordOperatorAction } from '../../operator-actions/index.ts';
+import { recordGateDecision } from '../decisions.ts';
 import { evaluatePlanApproval } from './plan-approval.ts';
 
 let db: DatabaseType;
@@ -201,16 +201,17 @@ describe('evaluatePlanApproval', () => {
     expect(result.reason).toContain('operator approval');
   });
 
-  it('returns passed when both artifacts valid and approve_plan action exists', () => {
+  it('returns passed when both artifacts valid and approved gate decision exists for current cycle', () => {
     const { run } = seedTestData(db);
     createValidPlan(db, run.runId);
     createValidReview(db, run.runId);
 
-    recordOperatorAction(db, {
+    recordGateDecision(db, {
       runId: run.runId,
-      action: 'approve_plan',
+      gateId: 'plan_approval',
+      cycle: run.approvalCycle,
+      decision: 'approved',
       actorId: 'user_test',
-      actorType: 'operator',
       comment: 'Looks good',
     });
 
@@ -219,22 +220,46 @@ describe('evaluatePlanApproval', () => {
     expect(result.reason).toContain('approved');
   });
 
-  it('returns failed when reject_run action exists', () => {
+  it('returns failed when rejected gate decision exists for current cycle', () => {
     const { run } = seedTestData(db);
     createValidPlan(db, run.runId);
     createValidReview(db, run.runId);
 
-    recordOperatorAction(db, {
+    recordGateDecision(db, {
       runId: run.runId,
-      action: 'reject_run',
+      gateId: 'plan_approval',
+      cycle: run.approvalCycle,
+      decision: 'rejected',
       actorId: 'user_test',
-      actorType: 'operator',
       comment: 'Plan is inadequate',
     });
 
     const result = evaluatePlanApproval(db, run);
     expect(result.status).toBe('failed');
     expect(result.reason).toContain('inadequate');
+  });
+
+  it('returns pending when approved decision exists for old cycle (not current)', () => {
+    const { run } = seedTestData(db);
+    createValidPlan(db, run.runId);
+    createValidReview(db, run.runId);
+
+    // Decision for cycle 0, but run is on a higher cycle
+    recordGateDecision(db, {
+      runId: run.runId,
+      gateId: 'plan_approval',
+      cycle: 0,
+      decision: 'approved',
+      actorId: 'user_test',
+    });
+
+    // Simulate run being on cycle 1 (after revision)
+    db.prepare('UPDATE runs SET approval_cycle = 1 WHERE run_id = ?').run(run.runId);
+    const updatedRun = getRun(db, run.runId);
+
+    const result = evaluatePlanApproval(db, updatedRun!);
+    expect(result.status).toBe('pending');
+    expect(result.reason).toContain('operator approval');
   });
 
   it('returns pending when review verdict is changes_requested', () => {

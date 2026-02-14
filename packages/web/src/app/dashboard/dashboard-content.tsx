@@ -19,9 +19,9 @@ import {
 import {
   Play, Clock, AlertTriangle, CheckCircle, ThumbsUp, Eye, ExternalLink,
 } from 'lucide-react';
-import { toast } from 'sonner';
 import { getPhaseLabel, getPhaseVariant, timeAgo, formatWaitDuration } from '@/lib/phase-config';
 import { approvePlan } from '@/lib/actions/run-actions';
+import { toastActionResult } from '@/lib/action-toast';
 import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { DashboardData } from '@/lib/data/dashboard';
 import type { RunSummary, ApprovalItem } from '@/lib/types';
@@ -140,11 +140,9 @@ export function DashboardContent({ data }: { data: DashboardData }) {
   function handleQuickApprove(runId: string) {
     startTransition(async () => {
       const result = await approvePlan(runId);
+      toastActionResult(result, 'approve_plan');
       if (result.success) {
-        toast.success('Plan approved');
         router.refresh();
-      } else {
-        toast.error(result.error ?? 'Failed to approve plan');
       }
     });
   }

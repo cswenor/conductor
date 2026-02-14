@@ -129,6 +129,7 @@ export function transitionPhase(db: Database, input: TransitionInput): Transitio
     const toStep = input.toStep ?? run.step;
     const completedAt = TERMINAL_PHASES.has(toPhase) ? now : null;
 
+    // Keep in sync with evaluateGatesAndTransition SQL
     const updateResult = db.prepare(`
       UPDATE runs SET
         phase = ?,
@@ -140,7 +141,9 @@ export function transitionPhase(db: Database, input: TransitionInput): Transitio
         result = COALESCE(?, result),
         result_reason = COALESCE(?, result_reason),
         blocked_reason = ?,
-        blocked_context_json = ?
+        blocked_context_json = ?,
+        approval_cycle = CASE WHEN ? = 'awaiting_plan_approval'
+          THEN approval_cycle + 1 ELSE approval_cycle END
       WHERE run_id = ? AND phase = ?
     `).run(
       toPhase,
@@ -153,6 +156,7 @@ export function transitionPhase(db: Database, input: TransitionInput): Transitio
       input.resultReason ?? null,
       input.blockedReason ?? null,
       input.blockedContext !== undefined ? JSON.stringify(input.blockedContext) : null,
+      toPhase, // for CASE expression
       run.runId,
       fromPhase  // optimistic lock
     );
@@ -482,18 +486,22 @@ export function evaluateGatesAndTransition(
     const toStep = transition.toStep ?? currentRun.step;
     const completedAt = TERMINAL_PHASES.has(toPhase) ? now : null;
 
+    // Keep in sync with transitionPhase SQL
     const updateResult = db.prepare(`
       UPDATE runs SET
         phase = ?, step = ?, next_sequence = ?, last_event_sequence = ?,
         updated_at = ?, completed_at = COALESCE(?, completed_at),
         result = COALESCE(?, result), result_reason = COALESCE(?, result_reason),
-        blocked_reason = ?, blocked_context_json = ?
+        blocked_reason = ?, blocked_context_json = ?,
+        approval_cycle = CASE WHEN ? = 'awaiting_plan_approval'
+          THEN approval_cycle + 1 ELSE approval_cycle END
       WHERE run_id = ? AND phase = ?
     `).run(
       toPhase, toStep, sequence + 1, sequence, now,
       completedAt, transition.result ?? null, transition.resultReason ?? null,
       transition.blockedReason ?? null,
       transition.blockedContext !== undefined ? JSON.stringify(transition.blockedContext) : null,
+      toPhase, // for CASE expression
       currentRun.runId, fromPhase,
     );
 

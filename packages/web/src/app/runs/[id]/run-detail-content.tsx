@@ -31,7 +31,6 @@ import {
   ThumbsUp, ThumbsDown, Pencil, ShieldAlert,
   ChevronDown, ChevronRight,
 } from 'lucide-react';
-import { toast } from 'sonner';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import {
   Tooltip,
@@ -48,6 +47,7 @@ import {
   getOperatorActionLabel,
   getBlockedReasonLabel,
 } from '@/lib/labels';
+import { toastActionResult } from '@/lib/action-toast';
 import {
   approvePlan,
   revisePlan,
@@ -153,11 +153,9 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
         result = { success: false, error: `Unknown action: ${action}` };
     }
 
+    toastActionResult(result, action);
     if (result.success) {
-      toast.success(getOperatorActionLabel(action));
       router.refresh();
-    } else {
-      toast.error(result.error ?? `Failed to ${action}`);
     }
   }
 

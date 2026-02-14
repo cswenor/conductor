@@ -79,6 +79,9 @@ export * from './gates/index.ts';
 // Re-export operator-actions module
 export * from './operator-actions/index.ts';
 
+// Re-export run-commands module
+export * from './run-commands/index.ts';
+
 // Re-export overrides module
 export * from './overrides/index.ts';
 

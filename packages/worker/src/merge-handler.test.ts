@@ -59,6 +59,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     planRevisions: 0,
     testFixAttempts: 0,
     reviewRounds: 0,
+    approvalCycle: 0,
     startedAt: '2025-01-01T00:00:00.000Z',
     updatedAt: '2025-01-01T00:00:00.000Z',
     ...overrides,

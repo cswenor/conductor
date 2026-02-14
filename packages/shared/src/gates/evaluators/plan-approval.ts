@@ -12,7 +12,7 @@ import type { Database } from 'better-sqlite3';
 import type { Run } from '../../runs/index.ts';
 import { getValidArtifact } from '../../agent-runtime/artifacts.ts';
 import { getToolInvocation } from '../../agent-runtime/tool-invocations.ts';
-import { getOperatorAction } from '../../operator-actions/index.ts';
+import { getGateDecision } from '../decisions.ts';
 import type { GateResult } from './index.ts';
 
 /**
@@ -69,25 +69,18 @@ export function evaluatePlanApproval(db: Database, run: Run): GateResult {
     };
   }
 
-  // 4. Check for reject_run action (check before approve to respect operator intent)
-  const rejectAction = getOperatorAction(db, run.runId, 'reject_run');
-  if (rejectAction !== null) {
-    return {
-      status: 'failed',
-      reason: rejectAction.comment ?? 'Plan rejected by operator',
-    };
+  // 4. Check for gate decision for current cycle
+  const decision = getGateDecision(db, run.runId, 'plan_approval', run.approvalCycle);
+
+  if (decision !== null && decision.decision === 'rejected') {
+    return { status: 'failed', reason: decision.comment ?? 'Plan rejected by operator' };
   }
 
-  // 5. Check for approve_plan action
-  const approveAction = getOperatorAction(db, run.runId, 'approve_plan');
-  if (approveAction !== null) {
-    return {
-      status: 'passed',
-      reason: 'Plan approved by operator',
-    };
+  if (decision !== null && decision.decision === 'approved') {
+    return { status: 'passed', reason: 'Plan approved by operator' };
   }
 
-  // 6. No action yet — awaiting operator
+  // 5. No decision yet
   return {
     status: 'pending',
     reason: 'Awaiting operator approval',

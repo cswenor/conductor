@@ -96,6 +96,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     planRevisions: 0,
     testFixAttempts: 0,
     reviewRounds: 1,
+    approvalCycle: 0,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,

@@ -32,9 +32,8 @@ import {
   ThumbsUp, ThumbsDown, Pencil, RefreshCw, XCircle, Filter,
   ChevronDown, ChevronRight,
 } from 'lucide-react';
-import { toast } from 'sonner';
 import { formatWaitDuration } from '@/lib/phase-config';
-import { getOperatorActionLabel } from '@/lib/labels';
+import { toastActionResult } from '@/lib/action-toast';
 import {
   approvePlan,
   revisePlan,
@@ -332,11 +331,9 @@ export function ApprovalsContent({
         result = { success: false, error: `Unknown action: ${action}` };
     }
 
+    toastActionResult(result, action);
     if (result.success) {
-      toast.success(getOperatorActionLabel(action));
       router.refresh();
-    } else {
-      toast.error(result.error ?? `Failed to ${action}`);
     }
   }
 
