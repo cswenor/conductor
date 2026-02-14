@@ -176,7 +176,6 @@ function AssistantMessage({ msg }: { msg: AgentMessageResponse }) {
             }
             if (block['type'] === 'tool_use') {
               const inputStr = block['input'] !== undefined ? JSON.stringify(block['input'], null, 2) : '{}';
-              const truncatedInput = inputStr.length > 200 ? `${inputStr.substring(0, 200)}...` : inputStr;
               return (
                 <div key={idx} className="bg-muted/50 rounded p-2">
                   <div className="flex items-center gap-2 mb-1">
@@ -185,7 +184,7 @@ function AssistantMessage({ msg }: { msg: AgentMessageResponse }) {
                     </Badge>
                   </div>
                   <code className="text-xs block whitespace-pre-wrap break-words">
-                    {truncatedInput}
+                    {inputStr}
                   </code>
                 </div>
               );
@@ -242,7 +241,6 @@ function ToolResultMessage({ msg }: { msg: AgentMessageResponse }) {
             const content = typeof rawContent === 'string'
               ? rawContent
               : (rawContent !== undefined ? JSON.stringify(rawContent, null, 2) : '');
-            const truncated = content.length > 300 ? `${content.substring(0, 300)}...` : content;
 
             return (
               <div key={idx} className="rounded border p-2">
@@ -252,7 +250,7 @@ function ToolResultMessage({ msg }: { msg: AgentMessageResponse }) {
                     {isError ? 'error' : 'ok'}
                   </Badge>
                 </div>
-                <pre className="text-xs whitespace-pre-wrap break-words">{truncated}</pre>
+                <pre className="text-xs whitespace-pre-wrap break-words">{content}</pre>
               </div>
             );
           })}
