@@ -30,6 +30,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
   CheckCircle, AlertTriangle, ShieldAlert, Clock, ExternalLink,
   ThumbsUp, ThumbsDown, Pencil, RefreshCw, XCircle, Filter,
+  ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatWaitDuration } from '@/lib/phase-config';
@@ -68,6 +69,9 @@ function ApprovalCard({
   onCommentAction: (config: CommentDialogConfig) => void;
   busy: boolean;
 }) {
+  const [detailExpanded, setDetailExpanded] = useState(false);
+  const hasDetail = item.contextDetail !== undefined;
+
   return (
     <Card>
       <CardContent className="p-4">
@@ -84,12 +88,19 @@ function ApprovalCard({
               <span className="text-border">|</span>
               <span>{item.projectName}</span>
             </div>
-            {item.contextSummary !== undefined && (
-              <p className="mt-2 text-xs text-muted-foreground line-clamp-2">{item.contextSummary}</p>
-            )}
-            {item.contextSummary === undefined && item.latestGateReason !== undefined && (
+            {hasDetail ? (
+              <button
+                className="mt-2 flex items-center gap-1 text-xs text-primary hover:underline"
+                onClick={() => setDetailExpanded(!detailExpanded)}
+              >
+                {detailExpanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                {detailExpanded ? 'Hide plan' : 'View plan'}
+              </button>
+            ) : item.contextSummary !== undefined ? (
+              <p className="mt-2 text-xs text-muted-foreground">{item.contextSummary}</p>
+            ) : item.latestGateReason !== undefined ? (
               <p className="mt-2 text-xs text-muted-foreground">{item.latestGateReason}</p>
-            )}
+            ) : null}
           </div>
           <div className="flex items-center gap-2 shrink-0">
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -103,6 +114,12 @@ function ApprovalCard({
             </Link>
           </div>
         </div>
+
+        {detailExpanded && item.contextDetail !== undefined && (
+          <div className="mt-3 max-h-[400px] overflow-y-auto rounded border bg-muted/30 p-3">
+            <pre className="text-xs whitespace-pre-wrap break-words">{item.contextDetail}</pre>
+          </div>
+        )}
 
         <div className="mt-3 flex items-center gap-2">
           {item.gateType === 'plan_approval' && (

@@ -66,6 +66,7 @@ export function fetchApprovalsData(
           latestGateStatus,
           latestGateReason,
           contextSummary,
+          contextDetail: planArtifact?.contentMarkdown,
         });
       } else if (run.phase === 'blocked') {
         const blockedCtx = run.blockedContextJson !== undefined

@@ -51,6 +51,7 @@ export interface ApprovalItem {
   latestGateStatus?: string;
   latestGateReason?: string;
   contextSummary?: string;
+  contextDetail?: string;
   blockedContext?: Record<string, unknown>;
 }
 

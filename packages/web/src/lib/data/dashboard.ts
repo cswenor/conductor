@@ -101,6 +101,7 @@ export function fetchDashboardData(db: Database, userId: string): DashboardData 
           latestGateStatus: planGate?.status,
           latestGateReason: planGate?.reason,
           contextSummary,
+          contextDetail: planArtifact?.contentMarkdown,
         });
       } else if (run.phase === 'blocked') {
         const blockedCtx = run.blockedContextJson !== undefined
