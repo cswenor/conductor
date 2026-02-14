@@ -132,6 +132,41 @@ function createValidReview(
   updateValidationStatus(database, art.artifactId, 'valid');
 }
 
+/**
+ * Create a review artifact WITHOUT validating it (validation_status stays 'pending').
+ * Used to test decision-priority behavior where operator approval overrides validation.
+ */
+function createValidReviewUnvalidated(
+  database: DatabaseType,
+  runId: string,
+): void {
+  const agentInvId = `ai_test_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 6)}`;
+  const now = new Date().toISOString();
+  database.prepare(`
+    INSERT INTO agent_invocations (
+      agent_invocation_id, run_id, agent, action, status,
+      tokens_input, tokens_output, started_at
+    ) VALUES (?, ?, 'reviewer', 'review_plan', 'completed', 0, 0, ?)
+  `).run(agentInvId, runId, now);
+
+  const toolInv = createToolInvocation(database, {
+    agentInvocationId: agentInvId, runId,
+    tool: 'review_plan', argsRedactedJson: '{}', argsFieldsRemovedJson: '[]',
+    argsSecretsDetected: false, argsPayloadHash: 'test', argsPayloadHashScheme: 'sha256',
+    policyDecision: 'allow', policyId: 'worktree_boundary',
+  });
+
+  completeToolInvocation(database, toolInv.toolInvocationId, {
+    resultMeta: { verdict: 'approved' }, durationMs: 100,
+  });
+
+  createArtifact(database, {
+    runId, type: 'review', contentMarkdown: '# Review\n\nApproved.',
+    sourceToolInvocationId: toolInv.toolInvocationId, createdBy: 'reviewer',
+  });
+  // Note: NOT calling updateValidationStatus — stays at 'pending'
+}
+
 beforeEach(() => {
   db = initDatabase({ path: ':memory:' });
   ensureBuiltInGateDefinitions(db);
@@ -270,5 +305,106 @@ describe('evaluatePlanApproval', () => {
     const result = evaluatePlanApproval(db, run);
     expect(result.status).toBe('pending');
     expect(result.reason).toContain('changes');
+  });
+});
+
+// =============================================================================
+// Decision-priority behavior (operator decision overrides artifact validation)
+// =============================================================================
+
+describe('evaluatePlanApproval — decision-priority', () => {
+  it('approved + pending artifacts (both exist) → passed', () => {
+    const { run } = seedTestData(db);
+
+    // Create artifacts but do NOT validate them (validation_status stays 'pending')
+    createArtifact(db, { runId: run.runId, type: 'plan', contentMarkdown: '# Plan', createdBy: 'planner' });
+    createValidReviewUnvalidated(db, run.runId);
+
+    recordGateDecision(db, {
+      runId: run.runId, gateId: 'plan_approval',
+      cycle: run.approvalCycle, decision: 'approved', actorId: 'user_test',
+    });
+
+    const result = evaluatePlanApproval(db, run);
+    expect(result.status).toBe('passed');
+    expect(result.reason).toContain('approved');
+  });
+
+  it('approved + missing plan artifact → pending', () => {
+    const { run } = seedTestData(db);
+
+    // Only review artifact exists
+    createValidReviewUnvalidated(db, run.runId);
+
+    recordGateDecision(db, {
+      runId: run.runId, gateId: 'plan_approval',
+      cycle: run.approvalCycle, decision: 'approved', actorId: 'user_test',
+    });
+
+    const result = evaluatePlanApproval(db, run);
+    expect(result.status).toBe('pending');
+    expect(result.reason).toContain('plan artifact');
+  });
+
+  it('approved + missing review artifact → pending', () => {
+    const { run } = seedTestData(db);
+
+    // Only plan artifact exists
+    createArtifact(db, { runId: run.runId, type: 'plan', contentMarkdown: '# Plan', createdBy: 'planner' });
+
+    recordGateDecision(db, {
+      runId: run.runId, gateId: 'plan_approval',
+      cycle: run.approvalCycle, decision: 'approved', actorId: 'user_test',
+    });
+
+    const result = evaluatePlanApproval(db, run);
+    expect(result.status).toBe('pending');
+    expect(result.reason).toContain('review artifact');
+  });
+
+  it('approved + changes_requested review verdict → passed (operator overrides)', () => {
+    const { run } = seedTestData(db);
+    createValidPlan(db, run.runId);
+    createValidReview(db, run.runId, { verdict: 'changes_requested' });
+
+    recordGateDecision(db, {
+      runId: run.runId, gateId: 'plan_approval',
+      cycle: run.approvalCycle, decision: 'approved', actorId: 'user_test',
+    });
+
+    const result = evaluatePlanApproval(db, run);
+    expect(result.status).toBe('passed');
+    expect(result.reason).toContain('approved');
+  });
+
+  it('rejected + pending artifacts → failed', () => {
+    const { run } = seedTestData(db);
+
+    // Artifacts exist but are not validated
+    createArtifact(db, { runId: run.runId, type: 'plan', contentMarkdown: '# Plan', createdBy: 'planner' });
+    createValidReviewUnvalidated(db, run.runId);
+
+    recordGateDecision(db, {
+      runId: run.runId, gateId: 'plan_approval',
+      cycle: run.approvalCycle, decision: 'rejected', actorId: 'user_test',
+      comment: 'Not ready',
+    });
+
+    const result = evaluatePlanApproval(db, run);
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('Not ready');
+  });
+
+  it('rejected + missing artifacts → failed', () => {
+    const { run } = seedTestData(db);
+
+    // No artifacts at all
+    recordGateDecision(db, {
+      runId: run.runId, gateId: 'plan_approval',
+      cycle: run.approvalCycle, decision: 'rejected', actorId: 'user_test',
+    });
+
+    const result = evaluatePlanApproval(db, run);
+    expect(result.status).toBe('failed');
   });
 });

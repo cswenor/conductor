@@ -93,9 +93,10 @@ export const POST = withAuth(async (
         const result = approvePlanCommand({ db, run, actorId: userId, actorType: 'operator', comment: body.comment });
 
         if (!result.success) {
+          const status = result.outcome === 'wrong_phase' ? 400 : 409;
           return NextResponse.json(
             { error: result.error, outcome: result.outcome },
-            { status: 409 }
+            { status }
           );
         }
 
@@ -127,17 +128,19 @@ export const POST = withAuth(async (
         const result = revisePlanCommand({ db, run, actorId: userId, actorType: 'operator', comment: body.comment });
 
         if (!result.success) {
+          const status = result.outcome === 'wrong_phase' ? 400 : 409;
           return NextResponse.json(
             { error: result.error, outcome: result.outcome },
-            { status: 409 }
+            { status }
           );
         }
 
         if (result.operatorAction !== undefined) {
+          const toPhase = result.outcome === 'blocked' ? 'blocked' : 'planning';
           try {
             mirrorApprovalDecision(
               { db, queueManager: queues, conductorBaseUrl: process.env['CONDUCTOR_BASE_URL'] },
-              { runId, operatorActionId: result.operatorAction.operatorActionId, action: 'revise_plan', actorId: userId, fromPhase: run.phase, toPhase: 'planning', comment: body.comment },
+              { runId, operatorActionId: result.operatorAction.operatorActionId, action: 'revise_plan', actorId: userId, fromPhase: run.phase, toPhase, comment: body.comment },
             );
           } catch { /* non-fatal */ }
         }
@@ -160,9 +163,10 @@ export const POST = withAuth(async (
         const result = rejectRunCommand({ db, run, actorId: userId, actorType: 'operator', comment: body.comment });
 
         if (!result.success) {
+          const status = result.outcome === 'wrong_phase' ? 400 : 409;
           return NextResponse.json(
             { error: result.error, outcome: result.outcome },
-            { status: 409 }
+            { status }
           );
         }
 

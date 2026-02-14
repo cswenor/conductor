@@ -84,18 +84,26 @@ class StaleRunError extends Error {
 export function approvePlanCommand(input: PlanCommandInput): PlanCommandResult<ApproveOutcome> {
   const { db, run, actorId, actorType, comment } = input;
 
-  // 0. Check for existing decision FIRST (handles double-click after transition)
-  const existing = getGateDecision(db, run.runId, 'plan_approval', run.approvalCycle);
+  // 0. Read fresh run + cycle freshness gate
+  const currentRun = getRun(db, run.runId);
+  if (currentRun === null) {
+    return { outcome: 'stale_run', success: false, error: 'Run not found — please refresh and retry' };
+  }
+  if (currentRun.approvalCycle !== run.approvalCycle) {
+    return { outcome: 'stale_run', success: false, error: 'Run state changed — please refresh and retry' };
+  }
+
+  // 1. Same-cycle decision lookup — use currentRun.approvalCycle (fresh) for clarity
+  const existing = getGateDecision(db, run.runId, 'plan_approval', currentRun.approvalCycle);
   if (existing !== null) {
     if (existing.decision === 'approved') {
-      const latestRun = getRun(db, run.runId) ?? undefined;
-      return { outcome: 'already_decided', success: true, run: latestRun };
+      return { outcome: 'already_decided', success: true, run: currentRun };
     }
     return { outcome: 'conflict', success: false, error: `Gate already has decision: ${existing.decision}` };
   }
 
-  // 1. Phase check (after existing-decision check, so double-click works)
-  if (run.phase !== 'awaiting_plan_approval') {
+  // 2. Phase check — use currentRun (fresh), not run (caller's stale snapshot)
+  if (currentRun.phase !== 'awaiting_plan_approval') {
     return { outcome: 'wrong_phase', success: false, error: 'Run is not awaiting plan approval' };
   }
 
@@ -200,18 +208,26 @@ export function approvePlanCommand(input: PlanCommandInput): PlanCommandResult<A
 export function rejectRunCommand(input: PlanCommandInput & { comment: string }): PlanCommandResult<RejectOutcome> {
   const { db, run, actorId, actorType, comment } = input;
 
-  // 0. Check existing decision (idempotent case: run already cancelled)
-  const existing = getGateDecision(db, run.runId, 'plan_approval', run.approvalCycle);
+  // 0. Read fresh run + cycle freshness gate
+  const currentRun = getRun(db, run.runId);
+  if (currentRun === null) {
+    return { outcome: 'stale_run', success: false, error: 'Run not found — please refresh and retry' };
+  }
+  if (currentRun.approvalCycle !== run.approvalCycle) {
+    return { outcome: 'stale_run', success: false, error: 'Run state changed — please refresh and retry' };
+  }
+
+  // 1. Same-cycle decision lookup — use currentRun.approvalCycle (fresh) for clarity
+  const existing = getGateDecision(db, run.runId, 'plan_approval', currentRun.approvalCycle);
   if (existing !== null) {
     if (existing.decision === 'rejected') {
-      const latestRun = getRun(db, run.runId) ?? undefined;
-      return { outcome: 'already_decided', success: true, run: latestRun };
+      return { outcome: 'already_decided', success: true, run: currentRun };
     }
     return { outcome: 'conflict', success: false, error: `Gate already has decision: ${existing.decision}` };
   }
 
-  // 1. Phase check (fast path)
-  if (run.phase !== 'awaiting_plan_approval') {
+  // 2. Phase check — use currentRun (fresh), not run (caller's stale snapshot)
+  if (currentRun.phase !== 'awaiting_plan_approval') {
     return { outcome: 'wrong_phase', success: false, error: 'Run is not awaiting plan approval' };
   }
 
@@ -292,8 +308,17 @@ export function rejectRunCommand(input: PlanCommandInput & { comment: string }):
 export function revisePlanCommand(input: PlanCommandInput & { comment: string }): PlanCommandResult<ReviseOutcome> {
   const { db, run, actorId, actorType, comment } = input;
 
-  // Phase check (fast path, before transaction)
-  if (run.phase !== 'awaiting_plan_approval') {
+  // 0. Read fresh run + cycle freshness gate
+  const currentRun = getRun(db, run.runId);
+  if (currentRun === null) {
+    return { outcome: 'stale_run', success: false, error: 'Run not found — please refresh and retry' };
+  }
+  if (currentRun.approvalCycle !== run.approvalCycle) {
+    return { outcome: 'stale_run', success: false, error: 'Run state changed — please refresh and retry' };
+  }
+
+  // 1. Phase check — use currentRun (fresh), not run (caller's stale snapshot)
+  if (currentRun.phase !== 'awaiting_plan_approval') {
     return { outcome: 'wrong_phase', success: false, error: 'Run is not awaiting plan approval' };
   }
 

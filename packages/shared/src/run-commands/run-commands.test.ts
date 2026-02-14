@@ -280,7 +280,7 @@ describe('approvePlanCommand', () => {
     expect(decision).toBeNull();
   });
 
-  it('persists decision even when review has changes_requested verdict (accepted)', () => {
+  it('operator approval overrides changes_requested verdict (approved)', () => {
     const { run, userId } = seedTestData(db);
     createValidPlan(db, run.runId);
     createValidReview(db, run.runId, { verdict: 'changes_requested' });
@@ -289,9 +289,10 @@ describe('approvePlanCommand', () => {
       db, run, actorId: userId, actorType: 'operator',
     });
 
-    // Gate decision persisted but gates not all passed → accepted
-    expect(result.outcome).toBe('accepted');
+    // Operator decision is authoritative — overrides changes_requested verdict
+    expect(result.outcome).toBe('approved');
     expect(result.success).toBe(true);
+    expect(result.run?.phase).toBe('executing');
 
     const decision = getGateDecision(db, run.runId, 'plan_approval', run.approvalCycle);
     expect(decision).not.toBeNull();
@@ -624,5 +625,100 @@ describe('cross-command scenarios', () => {
     const decision = getGateDecision(db, run.runId, 'plan_approval', 0);
     expect(decision).not.toBeNull();
     expect(decision?.decision).toBe('approved');
+  });
+});
+
+// =============================================================================
+// Pre-check ordering (cycle-first, then decision)
+// =============================================================================
+
+describe('pre-check ordering', () => {
+  it('approve: double-click after transition (phase changed, same cycle) → already_decided', () => {
+    const { run, userId } = seedTestData(db);
+    createValidPlan(db, run.runId);
+    createValidReview(db, run.runId);
+
+    // First approve succeeds and transitions to executing
+    const first = approvePlanCommand({ db, run, actorId: userId, actorType: 'operator' });
+    expect(first.outcome).toBe('approved');
+    expect(first.run?.phase).toBe('executing');
+
+    // Second approve with stale run (phase=awaiting_plan_approval, but DB phase=executing, same cycle)
+    const second = approvePlanCommand({ db, run, actorId: userId, actorType: 'operator' });
+    expect(second.outcome).toBe('already_decided');
+    expect(second.success).toBe(true);
+  });
+
+  it('approve: old cycle, run on newer cycle → stale_run', () => {
+    const { run, userId } = seedTestData(db);
+
+    // Increment cycle in DB (simulates revise → re-enter approval)
+    db.prepare('UPDATE runs SET approval_cycle = approval_cycle + 1 WHERE run_id = ?').run(run.runId);
+
+    // Caller has old cycle
+    const result = approvePlanCommand({ db, run, actorId: userId, actorType: 'operator' });
+    expect(result.outcome).toBe('stale_run');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('refresh');
+  });
+
+  it('approve: caller phase stale opposite direction (caller=executing, DB=awaiting, same cycle) → proceeds', () => {
+    const { run, userId } = seedTestData(db);
+    createValidPlan(db, run.runId);
+    createValidReview(db, run.runId);
+
+    // Caller has stale phase (executing) but same cycle, DB is awaiting_plan_approval
+    const staleRun = { ...run, phase: 'executing' as Run['phase'] };
+    const result = approvePlanCommand({ db, run: staleRun, actorId: userId, actorType: 'operator' });
+
+    // Pre-check uses fresh run (currentRun.phase), so it should proceed to transaction
+    expect(result.outcome).toBe('approved');
+    expect(result.success).toBe(true);
+  });
+
+  it('reject: double-click after transition (phase changed, same cycle) → already_decided', () => {
+    const { run, userId } = seedTestData(db);
+
+    const first = rejectRunCommand({ db, run, actorId: userId, actorType: 'operator', comment: 'No' });
+    expect(first.outcome).toBe('rejected');
+
+    // Second reject with stale run
+    const second = rejectRunCommand({ db, run, actorId: userId, actorType: 'operator', comment: 'No' });
+    expect(second.outcome).toBe('already_decided');
+    expect(second.success).toBe(true);
+  });
+
+  it('reject: old cycle → stale_run', () => {
+    const { run, userId } = seedTestData(db);
+
+    db.prepare('UPDATE runs SET approval_cycle = approval_cycle + 1 WHERE run_id = ?').run(run.runId);
+
+    const result = rejectRunCommand({ db, run, actorId: userId, actorType: 'operator', comment: 'No' });
+    expect(result.outcome).toBe('stale_run');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('refresh');
+  });
+
+  it('revise: old cycle → stale_run', () => {
+    const { run, userId } = seedTestData(db);
+
+    db.prepare('UPDATE runs SET approval_cycle = approval_cycle + 1 WHERE run_id = ?').run(run.runId);
+
+    const result = revisePlanCommand({ db, run, actorId: userId, actorType: 'operator', comment: 'More' });
+    expect(result.outcome).toBe('stale_run');
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('refresh');
+  });
+
+  it('revise: caller phase stale opposite direction → uses fresh run for phase check', () => {
+    const { run, userId } = seedTestData(db);
+
+    // Caller has stale phase but same cycle
+    const staleRun = { ...run, phase: 'executing' as Run['phase'] };
+    const result = revisePlanCommand({ db, run: staleRun, actorId: userId, actorType: 'operator', comment: 'More' });
+
+    // Fresh run is in awaiting_plan_approval, so this should succeed
+    expect(result.outcome).toBe('revised');
+    expect(result.success).toBe(true);
   });
 });
