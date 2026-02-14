@@ -169,11 +169,20 @@ describe('AgentConversation', () => {
       <AgentConversation agentInvocationId="ai_1" runId="run_1" />,
     );
 
+    // Prompt (user) starts collapsed, assistant starts expanded
+    await waitFor(() => {
+      expect(screen.getByText('Prompt')).toBeDefined();
+    });
+
+    // Assistant content visible by default (defaultExpanded)
+    expect(screen.getByText('Hi there!')).toBeDefined();
+
+    // Prompt content hidden until expanded
+    expect(screen.queryByText('Hello, agent!')).toBeNull();
+    fireEvent.click(screen.getByText('Prompt'));
     await waitFor(() => {
       expect(screen.getByText('Hello, agent!')).toBeDefined();
     });
-
-    expect(screen.getByText('Hi there!')).toBeDefined();
   });
 
   it('shows empty state when no messages are returned', async () => {
@@ -373,7 +382,7 @@ describe('AgentConversation', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('Only message')).toBeDefined();
+      expect(screen.getByText('Prompt')).toBeDefined();
     });
 
     expect(screen.queryByText('Load more')).toBeNull();

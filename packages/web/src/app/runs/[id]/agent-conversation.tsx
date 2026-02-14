@@ -50,218 +50,228 @@ function parseContentSafe(contentJson: string): unknown {
   }
 }
 
-function SystemMessage({ content }: { content: string | null }) {
-  const [expanded, setExpanded] = useState(false);
-
-  if (content === null) return <TruncatedMessage role="system" sizeBytes={0} />;
-
-  const parsed = parseContentSafe(content);
-  const text = typeof parsed === 'string' ? parsed : content;
+/** Collapsible card used by all message types. Collapsed = fixed-height preview with fade. */
+function CollapsibleContent({
+  label,
+  badge,
+  extraBadges,
+  children,
+  defaultExpanded = false,
+  muted = false,
+}: {
+  label: string;
+  badge?: { variant: 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'outline'; text: string };
+  extraBadges?: React.ReactNode;
+  children: React.ReactNode;
+  defaultExpanded?: boolean;
+  muted?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
 
   return (
-    <Card className="bg-muted/50">
+    <Card className={muted ? 'bg-muted/50' : ''}>
       <CardContent className="p-3">
         <button
-          className="flex items-center gap-2 text-sm font-medium text-muted-foreground w-full text-left"
+          className="flex items-center gap-2 text-sm w-full text-left"
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          System Prompt
+          {expanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
+          <Badge variant={badge?.variant ?? 'secondary'} className="text-xs">
+            {badge?.text ?? label}
+          </Badge>
+          {extraBadges}
+          {!expanded && (
+            <span className="text-xs text-muted-foreground ml-auto">click to expand</span>
+          )}
         </button>
         {expanded && (
-          <pre className="mt-2 text-xs whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto">
-            {text}
-          </pre>
+          <div className="mt-2 max-h-[300px] overflow-y-auto">
+            {children}
+          </div>
         )}
       </CardContent>
     </Card>
   );
 }
 
-function UserMessage({ content }: { content: string | null }) {
-  const [expanded, setExpanded] = useState(false);
-
-  if (content === null) return <TruncatedMessage role="user" sizeBytes={0} />;
+function SystemMessage({ content }: { content: string | null }) {
+  if (content === null) return <TruncatedMessage role="System Prompt" sizeBytes={0} />;
 
   const parsed = parseContentSafe(content);
   const text = typeof parsed === 'string' ? parsed : content;
-  const isLong = text.length > 500;
 
   return (
-    <Card>
-      <CardContent className="p-3">
-        <div className="flex items-center gap-2 mb-1">
-          <Badge variant="secondary" className="text-xs">User</Badge>
-        </div>
-        <pre className="text-sm whitespace-pre-wrap break-words">
-          {isLong && !expanded ? `${text.substring(0, 500)}...` : text}
-        </pre>
-        {isLong && (
-          <button
-            className="text-xs text-primary mt-1"
-            onClick={() => setExpanded(!expanded)}
-          >
-            {expanded ? 'Show less' : 'Show more'}
-          </button>
-        )}
-      </CardContent>
-    </Card>
+    <CollapsibleContent label="System Prompt" muted>
+      <pre className="text-xs whitespace-pre-wrap break-words">
+        {text}
+      </pre>
+    </CollapsibleContent>
+  );
+}
+
+function UserMessage({ content }: { content: string | null }) {
+  if (content === null) return <TruncatedMessage role="Prompt" sizeBytes={0} />;
+
+  const parsed = parseContentSafe(content);
+  const text = typeof parsed === 'string' ? parsed : content;
+
+  return (
+    <CollapsibleContent label="Prompt" badge={{ variant: 'secondary', text: 'Prompt' }}>
+      <pre className="text-sm whitespace-pre-wrap break-words">
+        {text}
+      </pre>
+    </CollapsibleContent>
   );
 }
 
 function AssistantMessage({ msg }: { msg: AgentMessageResponse }) {
   if (msg.contentJson === null) {
-    return <TruncatedMessage role="assistant" sizeBytes={msg.contentSizeBytes} />;
+    return <TruncatedMessage role="Assistant" sizeBytes={msg.contentSizeBytes} />;
   }
 
   const parsed = parseContentSafe(msg.contentJson);
   const isError = msg.stopReason !== undefined && ['cancelled', 'timeout', 'auth_error', 'unknown'].includes(msg.stopReason);
 
+  const extraBadges = (
+    <>
+      {msg.stopReason !== undefined && (
+        <Badge variant="secondary" className="text-xs font-mono">
+          {msg.stopReason}
+        </Badge>
+      )}
+      {msg.tokensInput !== undefined && msg.tokensOutput !== undefined && (
+        <span className="text-xs text-muted-foreground">
+          {msg.tokensInput}in / {msg.tokensOutput}out
+        </span>
+      )}
+    </>
+  );
+
   // Parse as ContentBlock[] array
   if (Array.isArray(parsed)) {
     return (
-      <Card className={isError ? 'border-destructive/50' : ''}>
-        <CardContent className="p-3">
-          <div className="flex items-center gap-2 mb-1">
-            <Badge variant={isError ? 'destructive' : 'default'} className="text-xs">
-              Assistant
-            </Badge>
-            {msg.stopReason !== undefined && (
-              <Badge variant="secondary" className="text-xs font-mono">
-                {msg.stopReason}
-              </Badge>
-            )}
-            {msg.tokensInput !== undefined && msg.tokensOutput !== undefined && (
-              <span className="text-xs text-muted-foreground">
-                {msg.tokensInput}in / {msg.tokensOutput}out
-              </span>
-            )}
-          </div>
-          <div className="space-y-2">
-            {parsed.map((entry: unknown, idx: number) => {
-              // Guard: skip non-object entries (nulls, primitives, etc.)
-              if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-                return (
-                  <pre key={idx} className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
-                    {JSON.stringify(entry)}
-                  </pre>
-                );
-              }
-              const block = entry as Record<string, unknown>;
-              if (block['type'] === 'text') {
-                return (
-                  <pre key={idx} className="text-sm whitespace-pre-wrap break-words">
-                    {typeof block['text'] === 'string' ? block['text'] : ''}
-                  </pre>
-                );
-              }
-              if (block['type'] === 'tool_use') {
-                const inputStr = block['input'] !== undefined ? JSON.stringify(block['input'], null, 2) : '{}';
-                const truncatedInput = inputStr.length > 200 ? `${inputStr.substring(0, 200)}...` : inputStr;
-                return (
-                  <div key={idx} className="bg-muted/50 rounded p-2">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Badge variant="secondary" className="text-xs font-mono">
-                        {typeof block['name'] === 'string' ? block['name'] : 'tool'}
-                      </Badge>
-                    </div>
-                    <code className="text-xs block whitespace-pre-wrap break-words">
-                      {truncatedInput}
-                    </code>
-                  </div>
-                );
-              }
+      <CollapsibleContent
+        label="Assistant"
+        badge={{ variant: isError ? 'destructive' : 'default', text: 'Assistant' }}
+        extraBadges={extraBadges}
+        defaultExpanded
+      >
+        <div className="space-y-2">
+          {parsed.map((entry: unknown, idx: number) => {
+            // Guard: skip non-object entries (nulls, primitives, etc.)
+            if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
               return (
                 <pre key={idx} className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
-                  {JSON.stringify(block, null, 2)}
+                  {JSON.stringify(entry)}
                 </pre>
               );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+            }
+            const block = entry as Record<string, unknown>;
+            if (block['type'] === 'text') {
+              return (
+                <pre key={idx} className="text-sm whitespace-pre-wrap break-words">
+                  {typeof block['text'] === 'string' ? block['text'] : ''}
+                </pre>
+              );
+            }
+            if (block['type'] === 'tool_use') {
+              const inputStr = block['input'] !== undefined ? JSON.stringify(block['input'], null, 2) : '{}';
+              const truncatedInput = inputStr.length > 200 ? `${inputStr.substring(0, 200)}...` : inputStr;
+              return (
+                <div key={idx} className="bg-muted/50 rounded p-2">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Badge variant="secondary" className="text-xs font-mono">
+                      {typeof block['name'] === 'string' ? block['name'] : 'tool'}
+                    </Badge>
+                  </div>
+                  <code className="text-xs block whitespace-pre-wrap break-words">
+                    {truncatedInput}
+                  </code>
+                </div>
+              );
+            }
+            return (
+              <pre key={idx} className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
+                {JSON.stringify(block, null, 2)}
+              </pre>
+            );
+          })}
+        </div>
+      </CollapsibleContent>
     );
   }
 
   // Fallback: raw display with warning
   return (
-    <Card>
-      <CardContent className="p-3">
-        <div className="flex items-center gap-2 mb-1">
-          <Badge variant="default" className="text-xs">Assistant</Badge>
-          <Badge variant="warning" className="text-xs">Parse Error</Badge>
-        </div>
-        <pre className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
-          {msg.contentJson}
-        </pre>
-      </CardContent>
-    </Card>
+    <CollapsibleContent
+      label="Assistant"
+      badge={{ variant: 'default', text: 'Assistant' }}
+      extraBadges={<Badge variant="secondary" className="text-xs">Parse Error</Badge>}
+      defaultExpanded
+    >
+      <pre className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
+        {msg.contentJson}
+      </pre>
+    </CollapsibleContent>
   );
 }
 
 function ToolResultMessage({ msg }: { msg: AgentMessageResponse }) {
   if (msg.contentJson === null) {
-    return <TruncatedMessage role="tool_result" sizeBytes={msg.contentSizeBytes} />;
+    return <TruncatedMessage role="Tool Results" sizeBytes={msg.contentSizeBytes} />;
   }
 
   const parsed = parseContentSafe(msg.contentJson);
 
   if (Array.isArray(parsed)) {
     return (
-      <Card className="bg-muted/50">
-        <CardContent className="p-3">
-          <div className="flex items-center gap-2 mb-1">
-            <Badge variant="secondary" className="text-xs">Tool Results</Badge>
-          </div>
-          <div className="space-y-2">
-            {parsed.map((entry: unknown, idx: number) => {
-              // Guard: skip non-object entries
-              if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-                return (
-                  <pre key={idx} className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
-                    {JSON.stringify(entry)}
-                  </pre>
-                );
-              }
-              const result = entry as Record<string, unknown>;
-              const isError = result['is_error'] === true;
-              const rawContent = result['content'];
-              const content = typeof rawContent === 'string'
-                ? rawContent
-                : (rawContent !== undefined ? JSON.stringify(rawContent, null, 2) : '');
-              const truncated = content.length > 300 ? `${content.substring(0, 300)}...` : content;
-
+      <CollapsibleContent label="Tool Results" muted>
+        <div className="space-y-2">
+          {parsed.map((entry: unknown, idx: number) => {
+            // Guard: skip non-object entries
+            if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
               return (
-                <div key={idx} className="rounded border p-2">
-                  <div className="flex items-center gap-2 mb-1">
-                    <code className="text-xs text-muted-foreground">{typeof result['tool_use_id'] === 'string' ? result['tool_use_id'] : ''}</code>
-                    <Badge variant={isError ? 'destructive' : 'success'} className="text-xs">
-                      {isError ? 'error' : 'ok'}
-                    </Badge>
-                  </div>
-                  <pre className="text-xs whitespace-pre-wrap break-words">{truncated}</pre>
-                </div>
+                <pre key={idx} className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
+                  {JSON.stringify(entry)}
+                </pre>
               );
-            })}
-          </div>
-        </CardContent>
-      </Card>
+            }
+            const result = entry as Record<string, unknown>;
+            const isError = result['is_error'] === true;
+            const rawContent = result['content'];
+            const content = typeof rawContent === 'string'
+              ? rawContent
+              : (rawContent !== undefined ? JSON.stringify(rawContent, null, 2) : '');
+            const truncated = content.length > 300 ? `${content.substring(0, 300)}...` : content;
+
+            return (
+              <div key={idx} className="rounded border p-2">
+                <div className="flex items-center gap-2 mb-1">
+                  <code className="text-xs text-muted-foreground">{typeof result['tool_use_id'] === 'string' ? result['tool_use_id'] : ''}</code>
+                  <Badge variant={isError ? 'destructive' : 'success'} className="text-xs">
+                    {isError ? 'error' : 'ok'}
+                  </Badge>
+                </div>
+                <pre className="text-xs whitespace-pre-wrap break-words">{truncated}</pre>
+              </div>
+            );
+          })}
+        </div>
+      </CollapsibleContent>
     );
   }
 
   // Fallback
   return (
-    <Card className="bg-muted/50">
-      <CardContent className="p-3">
-        <div className="flex items-center gap-2 mb-1">
-          <Badge variant="secondary" className="text-xs">Tool Results</Badge>
-          <Badge variant="warning" className="text-xs">Parse Error</Badge>
-        </div>
-        <pre className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
-          {msg.contentJson}
-        </pre>
-      </CardContent>
-    </Card>
+    <CollapsibleContent
+      label="Tool Results"
+      muted
+      extraBadges={<Badge variant="secondary" className="text-xs">Parse Error</Badge>}
+    >
+      <pre className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
+        {msg.contentJson}
+      </pre>
+    </CollapsibleContent>
   );
 }
 
