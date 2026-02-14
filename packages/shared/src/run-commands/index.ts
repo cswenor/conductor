@@ -11,7 +11,7 @@ import { createLogger } from '../logger/index.ts';
 import type { ActorType } from '../types/index.ts';
 import { getRun, type Run } from '../runs/index.ts';
 import { transitionPhase, evaluateGatesAndTransition } from '../orchestrator/index.ts';
-import { recordOperatorAction, type OperatorAction } from '../operator-actions/index.ts';
+import { recordOperatorAction, getOperatorActionForDecision, type OperatorAction } from '../operator-actions/index.ts';
 import { recordGateDecision, getGateDecision } from '../gates/decisions.ts';
 import { publishTransitionEvent, publishOperatorActionEvent } from '../pubsub/index.ts';
 
@@ -123,9 +123,17 @@ export function approvePlanCommand(input: PlanCommandInput): PlanCommandResult<A
       }
 
       publishTransitionEvent(run.projectId, run.runId, currentRun.phase, 'executing', db);
-      publishOperatorActionEvent(db, run.projectId, run.runId, 'approve_plan', actorId);
+      // Do NOT re-publish operator action event — already published during original Phase A.
+      const originalAction = getOperatorActionForDecision(
+        db, run.runId, 'approve_plan', existing.actorId, existing.createdAt,
+      );
+      if (originalAction === null) {
+        log.warn({
+          runId: run.runId, decisionActorId: existing.actorId, decisionCreatedAt: existing.createdAt,
+        }, 'Retry: no matching operator action found for decision');
+      }
       log.info({ runId: run.runId, actorId, outcome: 'approved (retry)' }, 'Plan approved on retry');
-      return { outcome: 'approved', success: true, run: txnResult.run };
+      return { outcome: 'approved', success: true, run: txnResult.run, operatorAction: originalAction ?? undefined };
     }
     return { outcome: 'conflict', success: false, error: `Gate already has decision: ${existing.decision}` };
   }

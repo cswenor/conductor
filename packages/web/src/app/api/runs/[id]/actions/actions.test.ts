@@ -262,6 +262,24 @@ describe('POST /api/runs/[id]/actions — approve_plan', () => {
     expect(response.status).toBe(200);
     expect(mockMirrorApprovalDecision).not.toHaveBeenCalled();
   });
+
+  it('approved with operatorAction undefined (retry no-match) → mirrorApprovalDecision NOT called', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }),
+      operatorAction: undefined,
+    });
+
+    const response = await (POST as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
+      makeRequest({ action: 'approve_plan' }),
+      makeRouteContext('run_1'),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { success: boolean; outcome: string };
+    expect(body.outcome).toBe('approved');
+    expect(mockMirrorApprovalDecision).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

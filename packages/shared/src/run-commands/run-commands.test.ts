@@ -15,6 +15,7 @@ import { ensureBuiltInPolicyDefinitions } from '../agent-runtime/policy-definiti
 import { ensureBuiltInGateDefinitions } from '../gates/gate-definitions.ts';
 import { getGateDecision, recordGateDecision } from '../gates/decisions.ts';
 import { transitionPhase } from '../orchestrator/index.ts';
+import { recordOperatorAction } from '../operator-actions/index.ts';
 import { approvePlanCommand, rejectRunCommand, revisePlanCommand } from './index.ts';
 
 let db: DatabaseType;
@@ -710,27 +711,113 @@ describe('pre-check ordering', () => {
     expect(result.error).toContain('refresh');
   });
 
-  it('approve: durable decision exists but run still awaiting → retries Phase B and transitions', () => {
-    const { run, userId } = seedTestData(db);
+  it('approve: durable decision exists but run still awaiting → retries Phase B with correct attribution', () => {
+    const { run } = seedTestData(db);
     createValidPlan(db, run.runId);
     createValidReview(db, run.runId);
 
-    // Simulate a prior Phase A that succeeded but Phase B failed:
-    // Insert a gate decision directly without transitioning
-    recordGateDecision(db, {
+    const originalApprover = 'user_original';
+    const retryActor = 'user_retrier';
+
+    // Simulate Phase A: gate decision + operator action by original approver
+    const decisionResult = recordGateDecision(db, {
       runId: run.runId, gateId: 'plan_approval',
-      cycle: run.approvalCycle, decision: 'approved', actorId: userId,
+      cycle: run.approvalCycle, decision: 'approved', actorId: originalApprover,
     });
+    recordOperatorAction(db, {
+      runId: run.runId, action: 'approve_plan',
+      actorId: originalApprover, actorType: 'operator',
+      fromPhase: 'awaiting_plan_approval', toPhase: 'executing',
+    });
+
+    // Count stream events before retry
+    const eventsBefore = (db.prepare(
+      'SELECT COUNT(*) as cnt FROM stream_events WHERE run_id = ?'
+    ).get(run.runId) as { cnt: number }).cnt;
 
     // Run is still in awaiting_plan_approval with a durable approved decision
     const stillAwaiting = getRun(db, run.runId);
     expect(stillAwaiting?.phase).toBe('awaiting_plan_approval');
 
-    // Retry approve — should detect durable decision and retry Phase B
+    // Retry approve by a DIFFERENT actor
+    const result = approvePlanCommand({ db, run, actorId: retryActor, actorType: 'operator' });
+    expect(result.outcome).toBe('approved');
+    expect(result.success).toBe(true);
+    expect(result.run?.phase).toBe('executing');
+
+    // Operator action should be the original approver's, not the retrier's
+    expect(result.operatorAction).toBeDefined();
+    expect(result.operatorAction?.operator).toBe(originalApprover);
+
+    // Check stream events after retry
+    const eventsAfter = db.prepare(
+      "SELECT kind FROM stream_events WHERE run_id = ? AND id > ?"
+    ).all(run.runId, eventsBefore) as { kind: string }[];
+
+    const phaseChangedEvents = eventsAfter.filter(e => e.kind === 'run.phase_changed');
+    const operatorActionEvents = eventsAfter.filter(e => e.kind === 'operator.action');
+
+    // Should have exactly one phase transition event and zero operator action events
+    expect(phaseChangedEvents).toHaveLength(1);
+    expect(operatorActionEvents).toHaveLength(0);
+  });
+
+  it('approve: durable decision exists, no matching operator action → succeeds with undefined operatorAction', () => {
+    const { run, userId } = seedTestData(db);
+    createValidPlan(db, run.runId);
+    createValidReview(db, run.runId);
+
+    // Simulate Phase A: gate decision WITHOUT operator action (legacy/inconsistent data)
+    recordGateDecision(db, {
+      runId: run.runId, gateId: 'plan_approval',
+      cycle: run.approvalCycle, decision: 'approved', actorId: userId,
+    });
+
     const result = approvePlanCommand({ db, run, actorId: userId, actorType: 'operator' });
     expect(result.outcome).toBe('approved');
     expect(result.success).toBe(true);
     expect(result.run?.phase).toBe('executing');
+    expect(result.operatorAction).toBeUndefined();
+  });
+
+  it('approve: same actor cycle 0 and cycle 1 → retry picks cycle 1 operator action', () => {
+    const { run, userId } = seedTestData(db);
+    createValidPlan(db, run.runId);
+    createValidReview(db, run.runId);
+
+    // Cycle 0: full approve (Phase A + Phase B succeed)
+    const firstResult = approvePlanCommand({ db, run, actorId: userId, actorType: 'operator' });
+    expect(firstResult.outcome).toBe('approved');
+
+    // Simulate cycle 1: executing → blocked → planning → awaiting_plan_approval
+    transitionPhase(db, { runId: run.runId, toPhase: 'blocked', triggeredBy: 'system', blockedReason: 'test' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', triggeredBy: 'system' });
+
+    const cycle1Run = getRun(db, run.runId);
+    expect(cycle1Run).not.toBeNull();
+    expect(cycle1Run!.approvalCycle).toBeGreaterThan(run.approvalCycle);
+
+    // Create fresh artifacts for cycle 1
+    createValidPlan(db, run.runId);
+    createValidReview(db, run.runId);
+
+    // Cycle 1: Phase A succeeds (gate decision + operator action) but simulate Phase B failure
+    const cycle1Decision = recordGateDecision(db, {
+      runId: run.runId, gateId: 'plan_approval',
+      cycle: cycle1Run!.approvalCycle, decision: 'approved', actorId: userId,
+    });
+    const cycle1Action = recordOperatorAction(db, {
+      runId: run.runId, action: 'approve_plan',
+      actorId: userId, actorType: 'operator',
+      fromPhase: 'awaiting_plan_approval', toPhase: 'executing',
+    });
+
+    // Retry should pick cycle 1's operator action, not cycle 0's
+    const retryResult = approvePlanCommand({ db, run: cycle1Run!, actorId: userId, actorType: 'operator' });
+    expect(retryResult.outcome).toBe('approved');
+    expect(retryResult.operatorAction).toBeDefined();
+    expect(retryResult.operatorAction?.operatorActionId).toBe(cycle1Action.operatorActionId);
   });
 
   it('revise: caller phase stale opposite direction → uses fresh run for phase check', () => {

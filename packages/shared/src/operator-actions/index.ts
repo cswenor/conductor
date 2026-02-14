@@ -258,6 +258,32 @@ export function recordOperatorAction(
 }
 
 /**
+ * Get the operator action that corresponds to a specific gate decision.
+ *
+ * The operator action was written in the same transaction as the gate decision,
+ * so its created_at >= decision.createdAt. ORDER BY ASC LIMIT 1 picks the
+ * closest match. In the near-impossible case of millisecond collision,
+ * rowid ASC provides deterministic SQLite-level tiebreaking.
+ */
+export function getOperatorActionForDecision(
+  db: Database,
+  runId: string,
+  actionType: OperatorActionType,
+  actorId: string,
+  decisionCreatedAt: string,
+): OperatorAction | null {
+  const row = db.prepare(`
+    SELECT * FROM operator_actions
+    WHERE run_id = ? AND action = ? AND operator = ? AND created_at >= ?
+    ORDER BY created_at ASC, rowid ASC
+    LIMIT 1
+  `).get(runId, actionType, actorId, decisionCreatedAt) as OperatorActionRow | undefined;
+
+  if (row === undefined) return null;
+  return mapRow(row);
+}
+
+/**
  * Get the latest operator action of a given type for a run.
  */
 export function getOperatorAction(

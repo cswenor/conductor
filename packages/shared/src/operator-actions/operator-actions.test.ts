@@ -12,6 +12,7 @@ import {
   validateActionPhase,
   recordOperatorAction,
   getOperatorAction,
+  getOperatorActionForDecision,
   listOperatorActions,
 } from './index.ts';
 
@@ -426,5 +427,117 @@ describe('listOperatorActions', () => {
   it('returns empty array for run with no actions', () => {
     const { runId } = seedTestData(db);
     expect(listOperatorActions(db, runId)).toHaveLength(0);
+  });
+});
+
+// =============================================================================
+// getOperatorActionForDecision
+// =============================================================================
+
+describe('getOperatorActionForDecision', () => {
+  it('returns matching action when actor and createdAt match', () => {
+    const { runId } = seedTestData(db);
+    setRunPhase(db, runId, 'awaiting_plan_approval');
+
+    const action = recordOperatorAction(db, {
+      runId,
+      action: 'approve_plan',
+      actorId: 'user_test',
+      actorType: 'operator',
+      comment: 'Looks good',
+    });
+
+    const found = getOperatorActionForDecision(
+      db, runId, 'approve_plan', 'user_test', action.createdAt,
+    );
+
+    expect(found).not.toBeNull();
+    expect(found?.operatorActionId).toBe(action.operatorActionId);
+  });
+
+  it('multi-cycle same-actor: returns only the later action', () => {
+    const { runId } = seedTestData(db);
+    setRunPhase(db, runId, 'awaiting_plan_approval');
+
+    const first = recordOperatorAction(db, {
+      runId,
+      action: 'approve_plan',
+      actorId: 'user_test',
+      actorType: 'operator',
+      comment: 'Cycle 0',
+    });
+
+    // Simulate time passing
+    const laterTime = new Date(Date.now() + 1000).toISOString();
+    db.prepare(`
+      INSERT INTO operator_actions (
+        operator_action_id, run_id, action, operator,
+        actor_type, actor_display_name, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run('oa_cycle1', runId, 'approve_plan', 'user_test', 'operator', 'user_test', laterTime);
+
+    // Query with laterTime should return cycle 1's action, not cycle 0's
+    const found = getOperatorActionForDecision(
+      db, runId, 'approve_plan', 'user_test', laterTime,
+    );
+
+    expect(found).not.toBeNull();
+    expect(found?.operatorActionId).toBe('oa_cycle1');
+    expect(found?.operatorActionId).not.toBe(first.operatorActionId);
+  });
+
+  it('returns null for wrong actor', () => {
+    const { runId } = seedTestData(db);
+    setRunPhase(db, runId, 'awaiting_plan_approval');
+
+    const action = recordOperatorAction(db, {
+      runId,
+      action: 'approve_plan',
+      actorId: 'user_test',
+      actorType: 'operator',
+    });
+
+    const found = getOperatorActionForDecision(
+      db, runId, 'approve_plan', 'user_other', action.createdAt,
+    );
+
+    expect(found).toBeNull();
+  });
+
+  it('returns null when decisionCreatedAt is after all actions', () => {
+    const { runId } = seedTestData(db);
+    setRunPhase(db, runId, 'awaiting_plan_approval');
+
+    recordOperatorAction(db, {
+      runId,
+      action: 'approve_plan',
+      actorId: 'user_test',
+      actorType: 'operator',
+    });
+
+    const futureTime = new Date(Date.now() + 60000).toISOString();
+    const found = getOperatorActionForDecision(
+      db, runId, 'approve_plan', 'user_test', futureTime,
+    );
+
+    expect(found).toBeNull();
+  });
+
+  it('returns null for different action type', () => {
+    const { runId } = seedTestData(db);
+    setRunPhase(db, runId, 'awaiting_plan_approval');
+
+    const action = recordOperatorAction(db, {
+      runId,
+      action: 'approve_plan',
+      actorId: 'user_test',
+      actorType: 'operator',
+    });
+
+    const found = getOperatorActionForDecision(
+      db, runId, 'reject_run', 'user_test', action.createdAt,
+    );
+
+    expect(found).toBeNull();
   });
 });
