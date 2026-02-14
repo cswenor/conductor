@@ -60,6 +60,7 @@ import {
 import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { RunDetailData } from '@/lib/data/run-detail';
 import { AgentConversation } from './agent-conversation';
+import { ActiveAgentBanner, ElapsedTimer } from './active-agent-banner';
 
 function gateStatusBadgeVariant(status: string): 'default' | 'secondary' | 'destructive' | 'success' | 'warning' {
   switch (status) {
@@ -122,6 +123,21 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
   const showErrorAlert = latestInvocation !== null
     && (latestInvocation.status === 'failed' || latestInvocation.status === 'timed_out')
     && !isTerminal;
+
+  // Derive the most recently started running invocation for the activity banner.
+  const activeInvocation = agentInvocations
+    .filter(inv => inv.status === 'running')
+    .reduce<(typeof agentInvocations)[number] | undefined>(
+      (best, inv) => {
+        if (best === undefined) return inv;
+        const bestTime = new Date(best.startedAt).getTime();
+        const invTime = new Date(inv.startedAt).getTime();
+        if (Number.isNaN(invTime)) return best;
+        if (Number.isNaN(bestTime)) return inv;
+        return invTime > bestTime ? inv : best;
+      },
+      undefined,
+    );
 
   async function executeAction(action: string, commentOrJustification?: string) {
     const runId = run.runId;
@@ -274,6 +290,15 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
               )}
             </AlertDescription>
           </Alert>
+        )}
+
+        {/* Active Agent Banner */}
+        {activeInvocation !== undefined && run.phase === 'executing' && (
+          <ActiveAgentBanner
+            agent={activeInvocation.agent}
+            action={activeInvocation.action}
+            startedAt={activeInvocation.startedAt}
+          />
         )}
 
         {/* Blocked State Explanation */}
@@ -513,11 +538,16 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                                   : inv.status === 'timed_out' ? 'warning'
                                   : 'secondary'
                               }>
+                                {inv.status === 'running' && <RefreshCw className="h-3 w-3 mr-1 animate-spin" />}
                                 {getInvocationStatusLabel(inv.status)}
                               </Badge>
                             </TableCell>
                             <TableCell className="text-muted-foreground">
-                              {inv.durationMs !== undefined ? formatDuration(inv.durationMs) : '—'}
+                              {inv.durationMs !== undefined
+                                ? formatDuration(inv.durationMs)
+                                : inv.status === 'running'
+                                  ? <ElapsedTimer startedAt={inv.startedAt} />
+                                  : '—'}
                             </TableCell>
                             <TableCell className="text-muted-foreground text-sm max-w-[300px] truncate">
                               {(inv.status === 'failed' || inv.status === 'timed_out')
