@@ -53,6 +53,19 @@ export async function approvePlan(runId: string, comment?: string): Promise<Acti
       return { success: false, error: 'Run is not awaiting plan approval' };
     }
 
+    // Record the operator action BEFORE evaluating gates, because the
+    // plan_approval gate evaluator checks for an existing approve_plan
+    // action to determine if the gate passes.
+    recordOperatorAction(db, {
+      runId,
+      action: 'approve_plan',
+      actorId: user.userId,
+      actorType: 'operator',
+      comment,
+      fromPhase: run.phase,
+      toPhase: 'executing',
+    });
+
     const { gateCheck, transition: txnResult } = evaluateGatesAndTransition(
       db, run, 'awaiting_plan_approval',
       {
@@ -73,16 +86,6 @@ export async function approvePlan(runId: string, comment?: string): Promise<Acti
     }
 
     publishTransitionEvent(run.projectId, runId, run.phase, 'executing', db);
-
-    recordOperatorAction(db, {
-      runId,
-      action: 'approve_plan',
-      actorId: user.userId,
-      actorType: 'operator',
-      comment,
-      fromPhase: run.phase,
-      toPhase: 'executing',
-    });
     publishOperatorActionEvent(db, run.projectId, runId, 'approve_plan', user.userId);
 
     log.info({ runId, userId: user.userId }, 'Plan approved by operator');

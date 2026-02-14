@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatWaitDuration } from '@/lib/phase-config';
+import { getOperatorActionLabel } from '@/lib/labels';
 import {
   approvePlan,
   revisePlan,
@@ -277,16 +278,6 @@ function ApprovalSection({
   );
 }
 
-const ACTION_LABELS: Record<string, string> = {
-  approve_plan: 'Plan approved',
-  revise_plan: 'Revision requested',
-  reject_run: 'Run rejected',
-  cancel: 'Run cancelled',
-  retry: 'Run retried',
-  grant_policy_exception: 'Policy exception granted',
-  deny_policy_exception: 'Policy exception denied',
-};
-
 export function ApprovalsContent({
   data,
   initialProjectId,
@@ -342,7 +333,7 @@ export function ApprovalsContent({
     }
 
     if (result.success) {
-      toast.success(ACTION_LABELS[action] ?? `Action "${action}" completed`);
+      toast.success(getOperatorActionLabel(action));
       router.refresh();
     } else {
       toast.error(result.error ?? `Failed to ${action}`);

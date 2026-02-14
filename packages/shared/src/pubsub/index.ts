@@ -282,6 +282,76 @@ export function rowToStreamEventV2(row: StreamEventRow): StreamEventV2 {
 }
 
 /**
+ * Query recent stream_events for a set of projects.
+ * Returns events in descending id order (newest first), up to `limit` rows.
+ */
+export function queryRecentStreamEvents(
+  db: Database,
+  projectIds: string[],
+  limit: number = 20,
+): StreamEventV2[] {
+  if (projectIds.length === 0) return [];
+  const placeholders = projectIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT id, kind, project_id, run_id, payload_json, created_at
+    FROM stream_events
+    WHERE project_id IN (${placeholders})
+    ORDER BY id DESC
+    LIMIT ?
+  `).all(...projectIds, limit) as StreamEventRow[];
+  return rows.map(rowToStreamEventV2);
+}
+
+// =============================================================================
+// Enriched stream_events query (for inbox with project/task context)
+// =============================================================================
+
+export interface EnrichedStreamEventRow {
+  event: StreamEventV2;
+  projectName: string | null;
+  taskTitle: string | null;
+}
+
+interface EnrichedRawRow extends StreamEventRow {
+  project_name: string | null;
+  task_title: string | null;
+}
+
+/**
+ * Query recent stream_events with project name and task title context.
+ * Used by the inbox API to provide enriched notifications.
+ * Returns events in descending id order (newest first), up to `limit` rows.
+ */
+export function queryRecentStreamEventsEnriched(
+  db: Database,
+  projectIds: string[],
+  limit: number = 20,
+): EnrichedStreamEventRow[] {
+  if (projectIds.length === 0) return [];
+  const placeholders = projectIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT
+      se.id, se.kind, se.project_id, se.run_id,
+      se.payload_json, se.created_at,
+      p.name AS project_name,
+      t.github_title AS task_title
+    FROM stream_events se
+    LEFT JOIN projects p ON se.project_id = p.project_id
+    LEFT JOIN runs r ON se.run_id = r.run_id
+    LEFT JOIN tasks t ON r.task_id = t.task_id
+    WHERE se.project_id IN (${placeholders})
+    ORDER BY se.id DESC
+    LIMIT ?
+  `).all(...projectIds, limit) as EnrichedRawRow[];
+
+  return rows.map((row) => ({
+    event: rowToStreamEventV2(row),
+    projectName: row.project_name,
+    taskTitle: row.task_title,
+  }));
+}
+
+/**
  * Prune old stream_events rows. Called by worker cleanup queue.
  */
 export function pruneStreamEvents(db: Database, maxAgeDays: number = 14): number {

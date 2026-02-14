@@ -42,6 +42,13 @@ import {
 import { getPhaseLabel, getPhaseVariant, formatTimestamp, formatDuration } from '@/lib/phase-config';
 import { getActionLabel, getEventSummary } from '@/lib/run-detail-helpers';
 import {
+  getGateLabel,
+  getGateStatusLabel,
+  getInvocationStatusLabel,
+  getOperatorActionLabel,
+  getBlockedReasonLabel,
+} from '@/lib/labels';
+import {
   approvePlan,
   revisePlan,
   rejectRun,
@@ -75,10 +82,6 @@ function GateStatusIcon({ status }: { status: string }) {
     default:
       return <Circle className="h-4 w-4 text-muted-foreground" />;
   }
-}
-
-function formatGateId(gateId: string): string {
-  return gateId.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
 const TERMINAL_PHASES = new Set(['completed', 'cancelled']);
@@ -150,18 +153,8 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
         result = { success: false, error: `Unknown action: ${action}` };
     }
 
-    const labels: Record<string, string> = {
-      approve_plan: 'Plan approved',
-      revise_plan: 'Revision requested',
-      reject_run: 'Run rejected',
-      cancel: 'Run cancelled',
-      retry: 'Run retried',
-      grant_policy_exception: 'Policy exception granted',
-      deny_policy_exception: 'Policy exception denied',
-    };
-
     if (result.success) {
-      toast.success(labels[action] ?? `Action "${action}" completed`);
+      toast.success(getOperatorActionLabel(action));
       router.refresh();
     } else {
       toast.error(result.error ?? `Failed to ${action}`);
@@ -296,10 +289,10 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
-                <p className="text-sm font-medium">{run.blockedReason}</p>
+                <p className="text-sm font-medium">{getBlockedReasonLabel(run.blockedReason)}</p>
                 {blockedContext?.['gate_id'] !== undefined && (
                   <p className="text-xs text-muted-foreground">
-                    Failed gate: {formatGateId(blockedContext['gate_id'] as string)}
+                    Failed gate: {getGateLabel(blockedContext['gate_id'] as string)}
                   </p>
                 )}
                 {run.resultReason !== undefined && (
@@ -423,11 +416,11 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <GateStatusIcon status={status} />
-                            <span className="text-sm font-medium">{formatGateId(gateId)}</span>
+                            <span className="text-sm font-medium">{getGateLabel(gateId)}</span>
                             <Badge variant="secondary" className="text-xs">required</Badge>
                           </div>
                           <Badge variant={gateStatusBadgeVariant(status)}>
-                            {status}
+                            {getGateStatusLabel(status)}
                           </Badge>
                         </div>
                         {latestEval?.reason !== undefined && (
@@ -447,11 +440,11 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <GateStatusIcon status={status} />
-                            <span className="text-sm font-medium">{formatGateId(gateId)}</span>
+                            <span className="text-sm font-medium">{getGateLabel(gateId)}</span>
                             <Badge variant="secondary" className="text-xs">optional</Badge>
                           </div>
                           <Badge variant={gateStatusBadgeVariant(status)}>
-                            {status}
+                            {getGateStatusLabel(status)}
                           </Badge>
                         </div>
                       </CardContent>
@@ -522,7 +515,7 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                                   : inv.status === 'timed_out' ? 'warning'
                                   : 'secondary'
                               }>
-                                {inv.status}
+                                {getInvocationStatusLabel(inv.status)}
                               </Badge>
                             </TableCell>
                             <TableCell className="text-muted-foreground">
@@ -570,7 +563,7 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                     <div className="w-2 h-2 mt-2 rounded-full bg-blue-500 flex-shrink-0" />
                     <div>
                       <div className="flex items-center gap-2">
-                        <Badge variant="secondary">{getPhaseLabel(oa.action)}</Badge>
+                        <Badge variant="secondary">{getOperatorActionLabel(oa.action)}</Badge>
                         <span className="text-xs text-muted-foreground">by {oa.operator}</span>
                       </div>
                       {oa.comment !== undefined && (

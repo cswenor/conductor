@@ -15,6 +15,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { UserMenu } from './user-menu';
+import { InboxButton } from './inbox-button';
 import { Badge, Separator } from '@/components/ui';
 import { useApprovalsCount } from '@/hooks/use-approvals-count';
 
@@ -91,13 +92,13 @@ export function Nav() {
 
 export function NavHeader() {
   return (
-    <Link
-      href={'/dashboard' as Route}
-      className="flex items-center gap-2 px-3 py-4 hover:opacity-80 transition-opacity"
-    >
-      <Activity className="h-6 w-6 text-primary" />
-      <span className="text-lg font-semibold">Conductor Core</span>
-    </Link>
+    <div className="flex items-center justify-between px-3 py-4">
+      <Link href={'/dashboard' as Route} className="flex items-center gap-2 hover:opacity-80 transition-opacity">
+        <Activity className="h-6 w-6 text-primary" />
+        <span className="text-lg font-semibold">Conductor Core</span>
+      </Link>
+      <InboxButton />
+    </div>
   );
 }
 

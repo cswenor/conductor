@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { getPhaseLabel, getPhaseVariant, timeAgo } from '@/lib/phase-config';
+import { getBlockedReasonLabel } from '@/lib/labels';
 import type { RunSummary } from '@/lib/types';
 import { retryRun, cancelRun } from '@/lib/actions/run-actions';
 import { useLiveRefresh } from '@/hooks/use-live-refresh';
@@ -118,7 +119,7 @@ export function ProjectOverviewTab({ data, projectId }: { data: ProjectOverviewD
                   </div>
                   {run.blockedReason !== undefined && (
                     <p className="text-xs text-destructive mt-1 truncate">
-                      {run.blockedReason}
+                      {getBlockedReasonLabel(run.blockedReason)}
                     </p>
                   )}
                 </div>
