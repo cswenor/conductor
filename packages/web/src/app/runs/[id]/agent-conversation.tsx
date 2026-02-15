@@ -1,12 +1,11 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui';
-import { Button } from '@/components/ui';
-import { ScrollArea } from '@/components/ui/scroll-area';
+// Note: Radix ScrollArea doesn't work reliably inside table cells,
+// so we use a plain div with overflow-y-auto instead.
 import { Skeleton } from '@/components/ui/skeleton';
-import { Alert, AlertDescription } from '@/components/ui/alert';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 
 interface AgentMessageResponse {
@@ -34,6 +33,8 @@ interface MessagesPageResponse {
 interface AgentConversationProps {
   agentInvocationId: string;
   runId: string;
+  /** Live message count from parent (updated via SSE push). Triggers incremental fetch when it increases. */
+  messageCount?: number;
 }
 
 function formatBytes(bytes: number): string {
@@ -124,7 +125,7 @@ function UserMessage({ content }: { content: string | null }) {
   );
 }
 
-function AssistantMessage({ msg }: { msg: AgentMessageResponse }) {
+function AssistantMessage({ msg, defaultExpanded = false }: { msg: AgentMessageResponse; defaultExpanded?: boolean }) {
   if (msg.contentJson === null) {
     return <TruncatedMessage role="Assistant" sizeBytes={msg.contentSizeBytes} />;
   }
@@ -154,7 +155,7 @@ function AssistantMessage({ msg }: { msg: AgentMessageResponse }) {
         label="Assistant"
         badge={{ variant: isError ? 'destructive' : 'default', text: 'Assistant' }}
         extraBadges={extraBadges}
-        defaultExpanded
+        defaultExpanded={defaultExpanded}
       >
         <div className="space-y-2">
           {parsed.map((entry: unknown, idx: number) => {
@@ -206,7 +207,7 @@ function AssistantMessage({ msg }: { msg: AgentMessageResponse }) {
       label="Assistant"
       badge={{ variant: 'default', text: 'Assistant' }}
       extraBadges={<Badge variant="secondary" className="text-xs">Parse Error</Badge>}
-      defaultExpanded
+      defaultExpanded={defaultExpanded}
     >
       <pre className="text-xs whitespace-pre-wrap break-words text-muted-foreground">
         {msg.contentJson}
@@ -288,14 +289,14 @@ function TruncatedMessage({ role, sizeBytes }: { role: string; sizeBytes: number
   );
 }
 
-function MessageCard({ msg }: { msg: AgentMessageResponse }) {
+function MessageCard({ msg, isLatestAssistant = false }: { msg: AgentMessageResponse; isLatestAssistant?: boolean }) {
   switch (msg.role) {
     case 'system':
       return <SystemMessage content={msg.contentJson} />;
     case 'user':
       return <UserMessage content={msg.contentJson} />;
     case 'assistant':
-      return <AssistantMessage msg={msg} />;
+      return <AssistantMessage msg={msg} defaultExpanded={isLatestAssistant} />;
     case 'tool_result':
       return <ToolResultMessage msg={msg} />;
     default:
@@ -310,47 +311,74 @@ function MessageCard({ msg }: { msg: AgentMessageResponse }) {
   }
 }
 
-export function AgentConversation({ agentInvocationId, runId }: AgentConversationProps) {
+export function AgentConversation({ agentInvocationId, runId, messageCount = 0 }: AgentConversationProps) {
   const [messages, setMessages] = useState<AgentMessageResponse[]>([]);
   const [loading, setLoading] = useState(true);
-  const [hasMore, setHasMore] = useState(false);
-  const [nextCursor, setNextCursor] = useState<number | undefined>();
+  const [fetchingMore, setFetchingMore] = useState(false);
   const [total, setTotal] = useState(0);
-  const [loadingMore, setLoadingMore] = useState(false);
 
-  const fetchMessages = useCallback(async (afterTurnIndex: number = -1, append: boolean = false) => {
-    if (append) {
-      setLoadingMore(true);
-    } else {
+  // Track highest turn index fetched so incremental fetches only get new messages
+  const highWaterRef = useRef(-1);
+  const fetchingRef = useRef(false);
+
+  // Fetch all messages from a cursor, auto-paginating through all pages
+  const fetchNewMessages = useCallback(async () => {
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
+
+    const isInitial = highWaterRef.current === -1;
+    if (isInitial) {
       setLoading(true);
+    } else {
+      setFetchingMore(true);
     }
 
     try {
-      const url = `/api/runs/${runId}/messages/${agentInvocationId}?limit=50&afterTurnIndex=${afterTurnIndex}`;
-      const res = await fetch(url);
-      if (!res.ok) return;
+      let cursor = highWaterRef.current;
+      let hasMore = true;
 
-      const data = (await res.json()) as MessagesPageResponse;
+      while (hasMore) {
+        const url = `/api/runs/${runId}/messages/${agentInvocationId}?limit=50&afterTurnIndex=${cursor}`;
+        const res = await fetch(url);
+        if (!res.ok) break;
 
-      if (append) {
+        const data = (await res.json()) as MessagesPageResponse;
+        if (data.messages.length === 0) break;
+
+        const lastMsg = data.messages[data.messages.length - 1];
+        if (lastMsg) {
+          highWaterRef.current = lastMsg.turnIndex;
+        }
+
         setMessages(prev => [...prev, ...data.messages]);
-      } else {
-        setMessages(data.messages);
+        setTotal(data.total);
+
+        if (data.hasMore && data.nextCursor !== undefined) {
+          cursor = data.nextCursor;
+        } else {
+          hasMore = false;
+        }
       }
-      setTotal(data.total);
-      setHasMore(data.hasMore);
-      setNextCursor(data.nextCursor);
     } catch {
       // Silently fail
     } finally {
       setLoading(false);
-      setLoadingMore(false);
+      setFetchingMore(false);
+      fetchingRef.current = false;
     }
   }, [agentInvocationId, runId]);
 
+  // Initial load — fetch all available messages
   useEffect(() => {
-    void fetchMessages();
-  }, [fetchMessages]);
+    void fetchNewMessages();
+  }, [fetchNewMessages]);
+
+  // Incremental fetch when parent signals new messages via SSE push
+  useEffect(() => {
+    if (messageCount > total) {
+      void fetchNewMessages();
+    }
+  }, [messageCount, total, fetchNewMessages]);
 
   if (loading) {
     return (
@@ -370,40 +398,37 @@ export function AgentConversation({ agentInvocationId, runId }: AgentConversatio
     );
   }
 
+  // Find the latest assistant message index to auto-expand only that one
+  let latestAssistantId: string | undefined;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'assistant') {
+      latestAssistantId = messages[i]?.agentMessageId;
+      break;
+    }
+  }
+
   return (
     <div className="p-4">
-      {hasMore && messages.length < total && (
-        <Alert className="mb-3">
-          <AlertDescription className="text-sm">
-            Showing {messages.length} of {total} messages.
-          </AlertDescription>
-        </Alert>
-      )}
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs text-muted-foreground">
+          {total} {total === 1 ? 'message' : 'messages'}
+        </span>
+        {fetchingMore && (
+          <span className="text-xs text-muted-foreground animate-pulse">Loading new messages...</span>
+        )}
+      </div>
 
-      <ScrollArea className="max-h-[600px]">
+      <div className="max-h-[500px] overflow-y-auto">
         <div className="space-y-2">
           {messages.map((msg) => (
-            <MessageCard key={msg.agentMessageId} msg={msg} />
+            <MessageCard
+              key={msg.agentMessageId}
+              msg={msg}
+              isLatestAssistant={msg.agentMessageId === latestAssistantId}
+            />
           ))}
         </div>
-      </ScrollArea>
-
-      {hasMore && (
-        <div className="mt-3 text-center">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={loadingMore}
-            onClick={() => {
-              if (nextCursor !== undefined) {
-                void fetchMessages(nextCursor, true);
-              }
-            }}
-          >
-            {loadingMore ? 'Loading...' : 'Load more'}
-          </Button>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

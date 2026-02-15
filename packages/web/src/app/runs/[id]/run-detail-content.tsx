@@ -617,6 +617,7 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                                 <AgentConversation
                                   agentInvocationId={inv.agentInvocationId}
                                   runId={run.runId}
+                                  messageCount={msgCount}
                                 />
                               </TableCell>
                             </TableRow>

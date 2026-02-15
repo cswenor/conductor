@@ -4,7 +4,7 @@
  * Tests for the AgentConversation component.
  *
  * Verifies loading state, message rendering, empty state, truncation,
- * system prompt collapse, and "Load more" pagination.
+ * system prompt collapse, auto-pagination, and SSE-triggered incremental fetch.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -36,20 +36,6 @@ vi.mock('@/components/ui/card', () => ({
 vi.mock('@/components/ui', () => ({
   Badge: ({ children, variant, className }: { children: React.ReactNode; variant?: string; className?: string }) =>
     React.createElement('span', { 'data-testid': 'badge', 'data-variant': variant, className }, children),
-  Button: ({ children, onClick, disabled, variant, size }: {
-    children: React.ReactNode;
-    onClick?: () => void;
-    disabled?: boolean;
-    variant?: string;
-    size?: string;
-  }) =>
-    React.createElement('button', {
-      'data-testid': 'button',
-      onClick,
-      disabled,
-      'data-variant': variant,
-      'data-size': size,
-    }, children),
 }));
 
 vi.mock('@/components/ui/scroll-area', () => ({
@@ -302,8 +288,9 @@ describe('AgentConversation', () => {
     });
   });
 
-  it('shows "Load more" button when hasMore is true', async () => {
-    mockFetch.mockResolvedValue(
+  it('auto-paginates when first page has hasMore=true', async () => {
+    // First fetch: page 1 with hasMore
+    mockFetch.mockResolvedValueOnce(
       mockMessagesResponse(
         [
           {
@@ -315,7 +302,24 @@ describe('AgentConversation', () => {
           },
         ],
         true, // hasMore
-        5,    // total
+        3,    // total
+      ),
+    );
+
+    // Second fetch: page 2 (auto-triggered, no button click)
+    mockFetch.mockResolvedValueOnce(
+      mockMessagesResponse(
+        [
+          {
+            agentMessageId: 'am_2',
+            turnIndex: 1,
+            role: 'assistant',
+            contentJson: '[{"type":"text","text":"Second page"}]',
+            contentSizeBytes: 38,
+          },
+        ],
+        false,
+        3,
       ),
     );
 
@@ -323,12 +327,19 @@ describe('AgentConversation', () => {
       <AgentConversation agentInvocationId="ai_1" runId="run_1" />,
     );
 
+    // Both pages should be fetched automatically
     await waitFor(() => {
-      expect(screen.getByText('Load more')).toBeDefined();
+      expect(screen.getByText('Second page')).toBeDefined();
     });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const secondCall = mockFetch.mock.calls[1] as string[] | undefined;
+    expect(secondCall).toBeDefined();
+    const secondCallUrl = secondCall?.[0] ?? '';
+    expect(secondCallUrl).toContain('afterTurnIndex=0');
   });
 
-  it('shows banner with message count when hasMore and messages < total', async () => {
+  it('shows total message count in header', async () => {
     mockFetch.mockResolvedValue(
       mockMessagesResponse(
         [
@@ -347,8 +358,8 @@ describe('AgentConversation', () => {
             contentSizeBytes: 28,
           },
         ],
-        true, // hasMore
-        10,   // total
+        false,
+        10,
       ),
     );
 
@@ -357,39 +368,12 @@ describe('AgentConversation', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('Showing 2 of 10 messages.')).toBeDefined();
+      expect(screen.getByText('10 messages')).toBeDefined();
     });
   });
 
-  it('does not show "Load more" button when hasMore is false', async () => {
-    mockFetch.mockResolvedValue(
-      mockMessagesResponse(
-        [
-          {
-            agentMessageId: 'am_1',
-            turnIndex: 0,
-            role: 'user',
-            contentJson: '"Only message"',
-            contentSizeBytes: 14,
-          },
-        ],
-        false, // hasMore
-      ),
-    );
-
-    render(
-      <AgentConversation agentInvocationId="ai_1" runId="run_1" />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText('Prompt')).toBeDefined();
-    });
-
-    expect(screen.queryByText('Load more')).toBeNull();
-  });
-
-  it('fetches next page when "Load more" is clicked', async () => {
-    // First fetch: page 1
+  it('fetches new messages when messageCount prop increases', async () => {
+    // Initial fetch
     mockFetch.mockResolvedValueOnce(
       mockMessagesResponse(
         [
@@ -397,24 +381,26 @@ describe('AgentConversation', () => {
             agentMessageId: 'am_1',
             turnIndex: 0,
             role: 'user',
-            contentJson: '"Page one"',
-            contentSizeBytes: 10,
+            contentJson: '"Hello"',
+            contentSizeBytes: 7,
           },
         ],
-        true, // hasMore
-        3,    // total
+        false,
+        1,
       ),
     );
 
-    render(
-      <AgentConversation agentInvocationId="ai_1" runId="run_1" />,
+    const { rerender } = render(
+      <AgentConversation agentInvocationId="ai_1" runId="run_1" messageCount={1} />,
     );
 
     await waitFor(() => {
-      expect(screen.getByText('Load more')).toBeDefined();
+      expect(screen.getByText('Prompt')).toBeDefined();
     });
 
-    // Second fetch: page 2
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Simulate SSE push: messageCount increases from 1 to 3
     mockFetch.mockResolvedValueOnce(
       mockMessagesResponse(
         [
@@ -422,8 +408,15 @@ describe('AgentConversation', () => {
             agentMessageId: 'am_2',
             turnIndex: 1,
             role: 'assistant',
-            contentJson: '[{"type":"text","text":"Page two"}]',
-            contentSizeBytes: 34,
+            contentJson: '[{"type":"text","text":"New response"}]',
+            contentSizeBytes: 40,
+          },
+          {
+            agentMessageId: 'am_3',
+            turnIndex: 2,
+            role: 'tool_result',
+            contentJson: '[{"tool_use_id":"tu_1","content":"ok"}]',
+            contentSizeBytes: 40,
           },
         ],
         false,
@@ -431,16 +424,17 @@ describe('AgentConversation', () => {
       ),
     );
 
-    fireEvent.click(screen.getByText('Load more'));
+    rerender(
+      <AgentConversation agentInvocationId="ai_1" runId="run_1" messageCount={3} />,
+    );
 
     await waitFor(() => {
-      expect(screen.getByText('Page two')).toBeDefined();
+      expect(screen.getByText('New response')).toBeDefined();
     });
 
-    // Verify second fetch was called with cursor
+    // Should have made an incremental fetch from the high water mark
     expect(mockFetch).toHaveBeenCalledTimes(2);
     const secondCall = mockFetch.mock.calls[1] as string[] | undefined;
-    expect(secondCall).toBeDefined();
     const secondCallUrl = secondCall?.[0] ?? '';
     expect(secondCallUrl).toContain('afterTurnIndex=0');
   });
