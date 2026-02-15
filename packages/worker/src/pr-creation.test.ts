@@ -99,6 +99,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     approvalCycle: 0,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    implementerBackend: 'raw',
     ...overrides,
   };
 }

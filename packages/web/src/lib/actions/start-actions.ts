@@ -9,6 +9,7 @@ import {
   canAccessProject,
   createRun,
   generateRunId,
+  getDefaultImplementerBackend,
 } from '@conductor/shared';
 import { getDb, getQueues } from '@/lib/bootstrap';
 import { requireServerUser } from '@/lib/auth/session';
@@ -61,6 +62,7 @@ export async function startWork(taskIds: string[]): Promise<StartWorkResult> {
         projectId: input.projectId,
         repoId: input.repoId,
         baseBranch: input.baseBranch,
+        implementerBackend: getDefaultImplementerBackend(),
       });
 
       return true;

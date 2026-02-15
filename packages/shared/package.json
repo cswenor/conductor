@@ -26,7 +26,9 @@
     "tsx": "^4.7.0"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.42",
     "@anthropic-ai/sdk": "^0.74.0",
+    "zod": "^4.0.0",
     "@octokit/app": "^16.1.2",
     "@octokit/rest": "^22.0.1",
     "@octokit/webhooks": "^14.2.0",

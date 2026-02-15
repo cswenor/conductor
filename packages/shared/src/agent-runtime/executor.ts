@@ -76,7 +76,7 @@ function isAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
 }
 
-function redactToolArgs(
+export function redactToolArgs(
   toolName: string,
   args: Record<string, unknown>
 ): Record<string, unknown> {
@@ -90,7 +90,7 @@ function redactToolArgs(
   return args;
 }
 
-function emitToolEvent(
+export function emitToolEvent(
   db: Database,
   context: ToolExecutionContext,
   type: 'tool.invoked' | 'tool.policy_blocked',
@@ -122,23 +122,41 @@ function emitToolEvent(
   }
 }
 
-async function executeToolCall(
-  toolCall: ToolCall,
-  input: ExecutorInput
-): Promise<Anthropic.ToolResultBlockParam> {
-  const { db, registry, policyRules, context } = input;
-  const tool = registry.get(toolCall.name);
+// =============================================================================
+// Shared Audited Tool Call
+// =============================================================================
+
+export interface AuditedToolResult {
+  content: string;
+  isError?: boolean;
+}
+
+/**
+ * Execute a tool call with full audit trail: redaction, policy enforcement,
+ * tool_invocations CRUD, and event emission.
+ *
+ * Shared by both the raw tool loop (`runToolLoop`) and the Agent SDK MCP adapter.
+ */
+export async function executeAuditedToolCall(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+  registry: ToolRegistry,
+  policyRules: PolicyRule[],
+  context: ToolExecutionContext,
+  db: Database,
+): Promise<AuditedToolResult> {
+  const tool = registry.get(toolName);
 
   // Unknown tool → log invocation then error result
   if (tool === undefined) {
     const unknownStart = Date.now();
-    const argsForRedaction = redactToolArgs(toolCall.name, toolCall.input);
+    const argsForRedaction = redactToolArgs(toolName, toolInput);
     const redacted = redact(argsForRedaction);
 
     const invocation = createToolInvocation(db, {
       agentInvocationId: context.agentInvocationId,
       runId: context.runId,
-      tool: toolCall.name,
+      tool: toolName,
       argsRedactedJson: redacted.json,
       argsFieldsRemovedJson: JSON.stringify(redacted.fieldsRemoved),
       argsSecretsDetected: redacted.secretsDetected,
@@ -148,29 +166,27 @@ async function executeToolCall(
     });
 
     failToolInvocation(db, invocation.toolInvocationId, {
-      resultMeta: { errorCode: 'unknown_tool', toolName: toolCall.name },
+      resultMeta: { errorCode: 'unknown_tool', toolName },
       durationMs: Date.now() - unknownStart,
     });
 
     return {
-      type: 'tool_result',
-      tool_use_id: toolCall.id,
-      content: `Error: Unknown tool '${toolCall.name}'`,
-      is_error: true,
+      content: `Error: Unknown tool '${toolName}'`,
+      isError: true,
     };
   }
 
   const start = Date.now();
 
   // Redact args for logging
-  const argsForRedaction = redactToolArgs(toolCall.name, toolCall.input);
+  const argsForRedaction = redactToolArgs(toolName, toolInput);
   const redacted = redact(argsForRedaction);
 
   // Extract target
-  const target = tool.extractTarget?.(toolCall.input);
+  const target = tool.extractTarget?.(toolInput);
 
   // Evaluate policy
-  const policyResult = evaluatePolicy(policyRules, toolCall.name, toolCall.input, context);
+  const policyResult = evaluatePolicy(policyRules, toolName, toolInput, context);
 
   if (policyResult.decision === 'block') {
     const durationMs = Date.now() - start;
@@ -178,7 +194,7 @@ async function executeToolCall(
     const blockedInvocation = createToolInvocation(db, {
       agentInvocationId: context.agentInvocationId,
       runId: context.runId,
-      tool: toolCall.name,
+      tool: toolName,
       target,
       argsRedactedJson: redacted.json,
       argsFieldsRemovedJson: JSON.stringify(redacted.fieldsRemoved),
@@ -189,7 +205,6 @@ async function executeToolCall(
       policyId: policyResult.policyId,
     });
 
-    // Store completion metadata (policyId, reason) on the blocked invocation
     blockToolInvocation(db, blockedInvocation.toolInvocationId, {
       resultMeta: {
         policyId: policyResult.policyId,
@@ -198,17 +213,15 @@ async function executeToolCall(
       durationMs,
     });
 
-    emitToolEvent(db, context, 'tool.policy_blocked', toolCall.name, {
+    emitToolEvent(db, context, 'tool.policy_blocked', toolName, {
       policyId: policyResult.policyId,
       reason: policyResult.reason,
       durationMs,
     });
 
     return {
-      type: 'tool_result',
-      tool_use_id: toolCall.id,
       content: `Error: Policy blocked - ${policyResult.reason ?? 'access denied'}`,
-      is_error: true,
+      isError: true,
     };
   }
 
@@ -216,7 +229,7 @@ async function executeToolCall(
   const invocation = createToolInvocation(db, {
     agentInvocationId: context.agentInvocationId,
     runId: context.runId,
-    tool: toolCall.name,
+    tool: toolName,
     target,
     argsRedactedJson: redacted.json,
     argsFieldsRemovedJson: JSON.stringify(redacted.fieldsRemoved),
@@ -228,7 +241,7 @@ async function executeToolCall(
 
   // Execute tool
   try {
-    const result = await tool.execute(toolCall.input, context);
+    const result = await tool.execute(toolInput, context);
     const durationMs = Date.now() - start;
 
     if (result.isError === true) {
@@ -243,17 +256,15 @@ async function executeToolCall(
       });
     }
 
-    emitToolEvent(db, context, 'tool.invoked', toolCall.name, {
+    emitToolEvent(db, context, 'tool.invoked', toolName, {
       toolInvocationId: invocation.toolInvocationId,
       isError: result.isError ?? false,
       durationMs,
     });
 
     return {
-      type: 'tool_result',
-      tool_use_id: toolCall.id,
       content: result.content,
-      is_error: result.isError,
+      isError: result.isError,
     };
   } catch (err) {
     const durationMs = Date.now() - start;
@@ -264,7 +275,7 @@ async function executeToolCall(
       durationMs,
     });
 
-    emitToolEvent(db, context, 'tool.invoked', toolCall.name, {
+    emitToolEvent(db, context, 'tool.invoked', toolName, {
       toolInvocationId: invocation.toolInvocationId,
       isError: true,
       error: errorMessage,
@@ -272,12 +283,34 @@ async function executeToolCall(
     });
 
     return {
-      type: 'tool_result',
-      tool_use_id: toolCall.id,
       content: `Error: ${errorMessage}`,
-      is_error: true,
+      isError: true,
     };
   }
+}
+
+// =============================================================================
+// Private wrapper for raw tool loop (adds tool_use_id)
+// =============================================================================
+
+async function executeToolCall(
+  toolCall: ToolCall,
+  input: ExecutorInput
+): Promise<Anthropic.ToolResultBlockParam> {
+  const result = await executeAuditedToolCall(
+    toolCall.name,
+    toolCall.input,
+    input.registry,
+    input.policyRules,
+    input.context,
+    input.db,
+  );
+  return {
+    type: 'tool_result',
+    tool_use_id: toolCall.id,
+    content: result.content,
+    is_error: result.isError,
+  };
 }
 
 // =============================================================================

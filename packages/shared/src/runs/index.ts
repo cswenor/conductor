@@ -13,6 +13,24 @@ import { ensureDefaultPolicySet } from '../policy-sets/index.ts';
 const log = createLogger({ name: 'conductor:runs' });
 
 // =============================================================================
+// Implementer Backend
+// =============================================================================
+
+export type ImplementerBackend = 'raw' | 'agent_sdk';
+
+export const VALID_IMPLEMENTER_BACKENDS: ReadonlySet<string> = new Set<ImplementerBackend>(['raw', 'agent_sdk']);
+
+export function getDefaultImplementerBackend(): ImplementerBackend {
+  const value = process.env['IMPLEMENTER_RUNTIME'] ?? 'raw';
+  if (!VALID_IMPLEMENTER_BACKENDS.has(value)) {
+    throw new Error(
+      `Invalid IMPLEMENTER_RUNTIME='${value}'. Valid: ${[...VALID_IMPLEMENTER_BACKENDS].join(', ')}`
+    );
+  }
+  return value as ImplementerBackend;
+}
+
+// =============================================================================
 // Types
 // =============================================================================
 
@@ -50,6 +68,7 @@ export interface Run {
   completedAt?: string;
   result?: string;
   resultReason?: string;
+  implementerBackend: ImplementerBackend;
 }
 
 export interface RunSummary {
@@ -83,6 +102,7 @@ export interface CreateRunInput {
   supersedesRunId?: string;
   /** Optional pre-generated run ID. If omitted, one is generated automatically. */
   runId?: string;
+  implementerBackend?: ImplementerBackend;
 }
 
 export interface ListRunsOptions {
@@ -143,6 +163,8 @@ export function createRun(db: Database, input: CreateRunInput): Run {
   const policySet = ensureDefaultPolicySet(db, input.projectId);
   const runNumber = getRunCountForTask(db, input.taskId) + 1;
 
+  const implementerBackend = input.implementerBackend ?? 'raw';
+
   db.prepare(`
     INSERT INTO runs (
       run_id, task_id, project_id, repo_id, run_number,
@@ -150,14 +172,16 @@ export function createRun(db: Database, input: CreateRunInput): Run {
       phase, step, policy_set_id,
       last_event_sequence, next_sequence,
       base_branch, branch,
+      implementer_backend,
       started_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     runId, input.taskId, input.projectId, input.repoId, runNumber,
     input.parentRunId ?? null, input.supersedesRunId ?? null,
     'pending', 'setup_worktree', policySet.policySetId,
     0, 1,
     input.baseBranch, '',
+    implementerBackend,
     now, now
   );
 
@@ -184,6 +208,7 @@ export function createRun(db: Database, input: CreateRunInput): Run {
     approvalCycle: 0,
     startedAt: now,
     updatedAt: now,
+    implementerBackend,
   };
 }
 
@@ -477,5 +502,6 @@ function rowToRun(row: Record<string, unknown>): Run {
     completedAt: (row['completed_at'] as string | null) ?? undefined,
     result: (row['result'] as string | null) ?? undefined,
     resultReason: (row['result_reason'] as string | null) ?? undefined,
+    implementerBackend: (row['implementer_backend'] as ImplementerBackend | null) ?? 'raw',
   };
 }

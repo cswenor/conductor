@@ -57,6 +57,7 @@ const GATE_EVALUATED_PATTERN = /publishGateEvaluatedEvent\([^)]/g;
 const AGENT_INVOCATION_COUNTS: Record<string, number> = {
   'packages/shared/src/agent-runtime/provider.ts': 6,
   'packages/shared/src/agent-runtime/agents/implementer.ts': 4,
+  'packages/shared/src/agent-runtime/agents/implementer-sdk.ts': 5,
 };
 
 const AGENT_INVOCATION_PATTERN = /publishAgentInvocationEvent\([^)]/g;

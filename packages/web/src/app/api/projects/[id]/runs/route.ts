@@ -14,6 +14,7 @@ import {
   getTask,
   upsertTaskFromIssue,
   updateTaskActiveRun,
+  getDefaultImplementerBackend,
   type RunPhase,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
@@ -184,6 +185,7 @@ export const POST = withAuth(async (
         projectId,
         repoId,
         baseBranch,
+        implementerBackend: getDefaultImplementerBackend(),
       });
       updateTaskActiveRun(db, taskId, newRun.runId);
       return newRun;

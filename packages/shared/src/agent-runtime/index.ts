@@ -137,9 +137,17 @@ export {
 export {
   MAX_TOOL_ITERATIONS,
   runToolLoop,
+  executeAuditedToolCall,
+  type AuditedToolResult,
   type ExecutorInput,
   type ExecutorResult,
 } from './executor.ts';
+
+// Implementer — Agent SDK backend
+export {
+  runImplementerWithAgentSDK,
+  resolveImplementerBackend,
+} from './agents/implementer-sdk.ts';
 
 // Agent messages CRUD
 export {

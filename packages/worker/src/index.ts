@@ -66,6 +66,9 @@ import {
   runPlanReviewer,
   runCodeReviewer,
   runImplementerWithTools,
+  runImplementerWithAgentSDK,
+  resolveImplementerBackend,
+  getDefaultImplementerBackend,
   AgentError,
   AgentAuthError,
   AgentRateLimitError,
@@ -855,13 +858,26 @@ async function handleImplementerAgent(
     return;
   }
 
-  const provider = createProvider(creds.provider, creds.apiKey);
+  // Dispatch based on run's immutable backend selection
+  const backend = resolveImplementerBackend(run);
+  let implResult;
 
-  const implResult = await runImplementerWithTools(db, { runId, worktreePath, provider });
+  switch (backend) {
+    case 'agent_sdk':
+      implResult = await runImplementerWithAgentSDK(db, {
+        runId, worktreePath, apiKey: creds.apiKey,
+      });
+      break;
+    case 'raw': {
+      const provider = createProvider(creds.provider, creds.apiKey);
+      implResult = await runImplementerWithTools(db, { runId, worktreePath, provider });
+      break;
+    }
+  }
 
   log.info(
-    { runId, fileCount: implResult.files.length, artifactId: implResult.artifactId },
-    'Implementer completed (tool-use mode)'
+    { runId, fileCount: implResult.files.length, artifactId: implResult.artifactId, backend },
+    'Implementer completed'
   );
 
   // Tools already wrote files to disk — just git add + commit
@@ -1452,6 +1468,10 @@ async function main(): Promise<void> {
   ensureBuiltInGateDefinitions(getDatabase());
   ensureBuiltInPolicyDefinitions(getDatabase());
   log.info('Built-in gate and policy definitions seeded');
+
+  // Validate implementer backend env var at boot (fail-fast)
+  const defaultBackend = getDefaultImplementerBackend();
+  log.info({ implementerBackend: defaultBackend }, 'Implementer backend validated');
 
   // Initialize GitHub App (needed for processRun and processGitHubWrite)
   if (!isGitHubAppInitialized()) {
