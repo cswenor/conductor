@@ -26,6 +26,7 @@ import {
 import type { OverrideScope } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
+import { enqueueImplementerAfterApproval } from '@/lib/enqueue-implementer';
 
 const log = createLogger({ name: 'conductor:api:run-actions' });
 
@@ -100,7 +101,37 @@ export const POST = withAuth(async (
           );
         }
 
-        // Mirror to GitHub ONLY on 'approved' (actual transition), NOT on 'accepted' (pending).
+        // Enqueue implementer BEFORE mirroring
+        if (result.outcome === 'approved' || result.outcome === 'already_decided') {
+          const enqueueResult = await enqueueImplementerAfterApproval(db, queues, runId, run.projectId);
+
+          // approved: MUST enqueue — any other outcome is a failure, do NOT mirror
+          if (result.outcome === 'approved' && enqueueResult.outcome !== 'enqueued') {
+            const skipReason = enqueueResult.outcome === 'skipped' ? enqueueResult.reason : undefined;
+            log.error({ runId, helperOutcome: enqueueResult.outcome, skipReason }, 'approved but helper did not enqueue');
+            const error = 'error' in enqueueResult
+              ? enqueueResult.error
+              : 'Approval succeeded but implementer could not be dispatched';
+            return NextResponse.json(
+              { success: false, error, outcome: enqueueResult.outcome },
+              { status: 409 },
+            );
+          }
+
+          // already_decided: skipped is OK (log reason), errors are failures
+          if (enqueueResult.outcome === 'enqueue_failed' || enqueueResult.outcome === 'enqueue_and_block_failed') {
+            return NextResponse.json(
+              { success: false, error: enqueueResult.error, outcome: enqueueResult.outcome },
+              { status: 409 },
+            );
+          }
+
+          if (enqueueResult.outcome === 'skipped') {
+            log.info({ runId, commandOutcome: result.outcome, skipReason: enqueueResult.reason }, 'Enqueue skipped');
+          }
+        }
+
+        // Mirror to GitHub ONLY after successful enqueue
         if (result.outcome === 'approved' && result.operatorAction !== undefined) {
           try {
             mirrorApprovalDecision(

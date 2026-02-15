@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useState, useTransition } from 'react';
+import { Fragment, useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { Route } from 'next';
@@ -138,6 +138,30 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
       },
       undefined,
     );
+
+  // Timer-driven stale detection: warn when executing with no agent for 30s+.
+  // All setState calls are inside setTimeout to satisfy react-hooks/set-state-in-effect.
+  const [isStale, setIsStale] = useState(false);
+  useEffect(() => {
+    if (run.phase !== 'executing') {
+      const t = setTimeout(() => setIsStale(false), 0);
+      return () => clearTimeout(t);
+    }
+    const elapsed = Date.now() - new Date(run.updatedAt).getTime();
+    const delay = Math.max(0, 30_000 - elapsed);
+    const timer = setTimeout(() => setIsStale(true), delay);
+    return () => clearTimeout(timer);
+  }, [run.phase, run.updatedAt]);
+
+  const hasPendingInvocation = agentInvocations.some(i => i.status === 'pending');
+  const showStaleWarning = isStale
+    && activeInvocation === undefined
+    && !hasPendingInvocation
+    && !showErrorAlert;
+  const showPendingNote = run.phase === 'executing'
+    && activeInvocation === undefined
+    && hasPendingInvocation
+    && !showErrorAlert;
 
   async function executeAction(action: string, commentOrJustification?: string) {
     const runId = run.runId;
@@ -299,6 +323,28 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
             action={activeInvocation.action}
             startedAt={activeInvocation.startedAt}
           />
+        )}
+
+        {/* Stale executing warning — no agent activity for 30s+ */}
+        {showStaleWarning && (
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>No agent activity</AlertTitle>
+            <AlertDescription>
+              This run may be stuck. Use Cancel or wait for automatic recovery.
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Pending agent note — job queued but not yet picked up */}
+        {showPendingNote && (
+          <Alert>
+            <Clock className="h-4 w-4" />
+            <AlertTitle>Agent job queued</AlertTitle>
+            <AlertDescription>
+              Waiting to be picked up by worker.
+            </AlertDescription>
+          </Alert>
         )}
 
         {/* Blocked State Explanation */}

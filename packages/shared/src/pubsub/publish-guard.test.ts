@@ -26,6 +26,7 @@ const EXPECTED_COUNTS: Record<string, number> = {
   'packages/shared/src/run-commands/index.ts': 5,
   'packages/web/src/lib/actions/run-actions.ts': 2,
   'packages/web/src/app/api/runs/[id]/actions/route.ts': 2,
+  'packages/web/src/lib/enqueue-implementer.ts': 1,
 };
 
 /** Files with transition-related references that are NOT call sites. */

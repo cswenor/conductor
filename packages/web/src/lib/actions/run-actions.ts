@@ -20,6 +20,7 @@ import {
 } from '@conductor/shared';
 import { getDb, getQueues } from '@/lib/bootstrap';
 import { requireServerUser } from '@/lib/auth/session';
+import { enqueueImplementerAfterApproval } from '@/lib/enqueue-implementer';
 
 const log = createLogger({ name: 'conductor:actions:run' });
 
@@ -52,6 +53,39 @@ export async function approvePlan(runId: string, comment?: string): Promise<Acti
   try {
     const { user, db, run } = await getAuthorizedRun(runId);
     const result = approvePlanCommand({ db, run, actorId: user.userId, actorType: 'operator', comment });
+
+    if (!result.success) {
+      log.info({ runId, userId: user.userId, outcome: result.outcome }, 'approvePlan completed');
+      revalidateRunPaths(runId);
+      return { success: false, error: result.error, outcome: result.outcome };
+    }
+
+    // Enqueue implementer on approved (fresh) AND already_decided (self-heal)
+    if (result.outcome === 'approved' || result.outcome === 'already_decided') {
+      const queues = await getQueues();
+      const enqueueResult = await enqueueImplementerAfterApproval(db, queues, runId, run.projectId);
+
+      // approved: MUST enqueue — skipped means preconditions failed anomalously
+      if (result.outcome === 'approved' && enqueueResult.outcome !== 'enqueued') {
+        const skipReason = enqueueResult.outcome === 'skipped' ? enqueueResult.reason : undefined;
+        log.error({ runId, helperOutcome: enqueueResult.outcome, skipReason }, 'approved but helper did not enqueue');
+        const error = 'error' in enqueueResult
+          ? enqueueResult.error
+          : 'Approval succeeded but implementer could not be dispatched';
+        revalidateRunPaths(runId);
+        return { success: false, error, outcome: enqueueResult.outcome };
+      }
+
+      // already_decided: skipped is OK (idempotent), enqueued is self-heal, errors are failures
+      if (enqueueResult.outcome === 'enqueue_failed' || enqueueResult.outcome === 'enqueue_and_block_failed') {
+        revalidateRunPaths(runId);
+        return { success: false, error: enqueueResult.error, outcome: enqueueResult.outcome };
+      }
+
+      if (enqueueResult.outcome === 'skipped') {
+        log.info({ runId, commandOutcome: result.outcome, skipReason: enqueueResult.reason }, 'Enqueue skipped — preconditions not met');
+      }
+    }
 
     log.info({ runId, userId: user.userId, outcome: result.outcome }, 'approvePlan completed');
     revalidateRunPaths(runId);

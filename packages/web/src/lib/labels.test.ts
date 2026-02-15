@@ -112,7 +112,7 @@ describe('labels', () => {
       ['gate_failed', 'A required gate failed'],
       ['policy_exception_required', 'A policy exception is required'],
       ['retry_limit_exceeded', 'Revision limit exceeded'],
-      ['enqueue_failed', 'Failed to start run'],
+      ['enqueue_failed', 'Agent dispatch failed after approval'],
     ])('%s → %s', (reason, expected) => {
       expect(getBlockedReasonLabel(reason)).toBe(expected);
     });

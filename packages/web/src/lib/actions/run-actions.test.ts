@@ -1,6 +1,6 @@
 /**
- * Tests for retryRun server action — verifies the enqueue payload
- * includes fromPhase and fromSequence for staleness guarding.
+ * Tests for server actions — retryRun enqueue payload + approvePlan
+ * implementer enqueue behavior.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -15,6 +15,8 @@ const mockCanAccessProject = vi.fn();
 const mockRecordOperatorAction = vi.fn();
 const mockAddJob = vi.fn<(queue: string, jobId: string, data: Record<string, unknown>) => Promise<void>>()
   .mockResolvedValue(undefined);
+const mockApprovePlanCommand = vi.fn();
+const mockEnqueueImplementer = vi.fn();
 
 vi.mock('@conductor/shared', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -29,7 +31,7 @@ vi.mock('@conductor/shared', () => ({
   isValidOverrideScope: vi.fn(),
   publishTransitionEvent: vi.fn(),
   publishOperatorActionEvent: vi.fn(),
-  approvePlanCommand: vi.fn().mockReturnValue({ outcome: 'approved', success: true }),
+  approvePlanCommand: (...args: unknown[]) => mockApprovePlanCommand(...args) as unknown,
   rejectRunCommand: vi.fn().mockReturnValue({ outcome: 'rejected', success: true }),
   revisePlanCommand: vi.fn().mockReturnValue({ outcome: 'revised', success: true }),
 }));
@@ -59,8 +61,12 @@ vi.mock('@/lib/auth/session', () => ({
   }),
 }));
 
+vi.mock('@/lib/enqueue-implementer', () => ({
+  enqueueImplementerAfterApproval: (...args: unknown[]) => mockEnqueueImplementer(...args) as unknown,
+}));
+
 // Import after mocks
-const { retryRun } = await import('./run-actions.ts');
+const { retryRun, approvePlan } = await import('./run-actions.ts');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,6 +80,18 @@ function makeBlockedRun(overrides: Record<string, unknown> = {}) {
     step: 'planner_create_plan',
     lastEventSequence: 5,
     blockedReason: 'API key missing',
+    ...overrides,
+  };
+}
+
+function makeApprovalRun(overrides: Record<string, unknown> = {}) {
+  return {
+    runId: 'run_1',
+    projectId: 'proj_1',
+    phase: 'awaiting_plan_approval',
+    step: 'planner_create_plan',
+    approvalCycle: 1,
+    lastEventSequence: 5,
     ...overrides,
   };
 }
@@ -137,5 +155,117 @@ describe('retryRun', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('not in blocked state');
     expect(mockAddJob).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// approvePlan — enqueue implementer
+// ---------------------------------------------------------------------------
+
+describe('approvePlan', () => {
+  it('approved → enqueues implementer', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }),
+    });
+    mockEnqueueImplementer.mockResolvedValue({ outcome: 'enqueued' });
+
+    const result = await approvePlan('run_1');
+
+    expect(result.success).toBe(true);
+    expect(result.outcome).toBe('approved');
+    expect(mockEnqueueImplementer).toHaveBeenCalledTimes(1);
+    expect(mockEnqueueImplementer).toHaveBeenCalledWith(
+      expect.anything(), // db
+      expect.anything(), // queues
+      'run_1',
+      'proj_1',
+    );
+  });
+
+  it('approved + helper returns skipped → returns failure', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }),
+    });
+    mockEnqueueImplementer.mockResolvedValue({ outcome: 'skipped', reason: 'wrong_step' });
+
+    const result = await approvePlan('run_1');
+
+    expect(result.success).toBe(false);
+    expect(result.outcome).toBe('skipped');
+  });
+
+  it('already_decided + enqueued → self-heal success', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'already_decided', success: true, run: makeApprovalRun({ phase: 'executing' }),
+    });
+    mockEnqueueImplementer.mockResolvedValue({ outcome: 'enqueued' });
+
+    const result = await approvePlan('run_1');
+
+    expect(result.success).toBe(true);
+    expect(result.outcome).toBe('already_decided');
+    expect(mockEnqueueImplementer).toHaveBeenCalledTimes(1);
+  });
+
+  it('already_decided + skipped → idempotent success', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'already_decided', success: true, run: makeApprovalRun({ phase: 'executing' }),
+    });
+    mockEnqueueImplementer.mockResolvedValue({ outcome: 'skipped', reason: 'active_invocation' });
+
+    const result = await approvePlan('run_1');
+
+    expect(result.success).toBe(true);
+    expect(result.outcome).toBe('already_decided');
+  });
+
+  it('accepted → no enqueue', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'accepted', success: true,
+    });
+
+    const result = await approvePlan('run_1');
+
+    expect(result.success).toBe(true);
+    expect(mockEnqueueImplementer).not.toHaveBeenCalled();
+  });
+
+  it('enqueue failure + block success → returns failure with outcome', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }),
+    });
+    mockEnqueueImplementer.mockResolvedValue({
+      outcome: 'enqueue_failed',
+      error: 'Approval recorded but agent dispatch failed — run has been blocked for retry',
+    });
+
+    const result = await approvePlan('run_1');
+
+    expect(result.success).toBe(false);
+    expect(result.outcome).toBe('enqueue_failed');
+    expect(result.error).toContain('blocked for retry');
+  });
+
+  it('enqueue failure + block failure → returns failure with distinct outcome', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }),
+    });
+    mockEnqueueImplementer.mockResolvedValue({
+      outcome: 'enqueue_and_block_failed',
+      error: 'Agent dispatch failed and run could not be blocked — run may be stranded in executing',
+    });
+
+    const result = await approvePlan('run_1');
+
+    expect(result.success).toBe(false);
+    expect(result.outcome).toBe('enqueue_and_block_failed');
+    expect(result.error).toContain('stranded');
   });
 });

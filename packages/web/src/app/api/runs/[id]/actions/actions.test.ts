@@ -1,6 +1,6 @@
 /**
- * Tests for the run actions API route — verifies the retry enqueue payload
- * includes fromPhase and fromSequence for staleness guarding.
+ * Tests for the run actions API route — verifies retry enqueue payload,
+ * approve_plan implementer enqueue + mirror ordering, and failure scenarios.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -20,6 +20,7 @@ const mockApprovePlanCommand = vi.fn();
 const mockRejectRunCommand = vi.fn();
 const mockRevisePlanCommand = vi.fn();
 const mockMirrorApprovalDecision = vi.fn();
+const mockEnqueueImplementer = vi.fn();
 
 vi.mock('@conductor/shared', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
@@ -65,6 +66,10 @@ vi.mock('@/lib/auth', () => ({
       return handler(req as never, ctx as never);
     };
   },
+}));
+
+vi.mock('@/lib/enqueue-implementer', () => ({
+  enqueueImplementerAfterApproval: (...args: unknown[]) => mockEnqueueImplementer(...args) as unknown,
 }));
 
 // Import after mocks
@@ -217,12 +222,13 @@ describe('POST /api/runs/[id]/actions — approve_plan', () => {
     expect(body.outcome).toBe('stale_run');
   });
 
-  it('approved → HTTP 200 + mirrorApprovalDecision called', async () => {
+  it('approved → enqueues implementer + mirror called AFTER', async () => {
     const opAction = { operatorActionId: 'oa_1' };
     mockGetRun.mockReturnValue(makeApprovalRun());
     mockApprovePlanCommand.mockReturnValue({
       outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }), operatorAction: opAction,
     });
+    mockEnqueueImplementer.mockResolvedValue({ outcome: 'enqueued' });
 
     const response = await (POST as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest({ action: 'approve_plan' }),
@@ -230,10 +236,16 @@ describe('POST /api/runs/[id]/actions — approve_plan', () => {
     );
 
     expect(response.status).toBe(200);
+    expect(mockEnqueueImplementer).toHaveBeenCalledTimes(1);
     expect(mockMirrorApprovalDecision).toHaveBeenCalledTimes(1);
+
+    // Verify enqueue was called before mirror (by call order)
+    const enqueueOrder = mockEnqueueImplementer.mock.invocationCallOrder[0] ?? 0;
+    const mirrorOrder = mockMirrorApprovalDecision.mock.invocationCallOrder[0] ?? 0;
+    expect(enqueueOrder).toBeLessThan(mirrorOrder);
   });
 
-  it('accepted → HTTP 200 + mirrorApprovalDecision NOT called', async () => {
+  it('accepted → no enqueue, no mirror', async () => {
     mockGetRun.mockReturnValue(makeApprovalRun());
     mockApprovePlanCommand.mockReturnValue({
       outcome: 'accepted', success: true, operatorAction: { operatorActionId: 'oa_1' },
@@ -245,6 +257,7 @@ describe('POST /api/runs/[id]/actions — approve_plan', () => {
     );
 
     expect(response.status).toBe(200);
+    expect(mockEnqueueImplementer).not.toHaveBeenCalled();
     expect(mockMirrorApprovalDecision).not.toHaveBeenCalled();
   });
 
@@ -253,6 +266,7 @@ describe('POST /api/runs/[id]/actions — approve_plan', () => {
     mockApprovePlanCommand.mockReturnValue({
       outcome: 'already_decided', success: true, run: makeApprovalRun({ phase: 'executing' }),
     });
+    mockEnqueueImplementer.mockResolvedValue({ outcome: 'skipped', reason: 'active_invocation' });
 
     const response = await (POST as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest({ action: 'approve_plan' }),
@@ -263,12 +277,32 @@ describe('POST /api/runs/[id]/actions — approve_plan', () => {
     expect(mockMirrorApprovalDecision).not.toHaveBeenCalled();
   });
 
-  it('approved with operatorAction undefined (retry no-match) → mirrorApprovalDecision NOT called', async () => {
+  it('already_decided + enqueued → self-heal success', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'already_decided', success: true, run: makeApprovalRun({ phase: 'executing' }),
+    });
+    mockEnqueueImplementer.mockResolvedValue({ outcome: 'enqueued' });
+
+    const response = await (POST as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
+      makeRequest({ action: 'approve_plan' }),
+      makeRouteContext('run_1'),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { success: boolean; outcome: string };
+    expect(body.success).toBe(true);
+    expect(body.outcome).toBe('already_decided');
+    expect(mockEnqueueImplementer).toHaveBeenCalledTimes(1);
+  });
+
+  it('approved with operatorAction undefined (retry no-match) → still enqueues implementer', async () => {
     mockGetRun.mockReturnValue(makeApprovalRun());
     mockApprovePlanCommand.mockReturnValue({
       outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }),
       operatorAction: undefined,
     });
+    mockEnqueueImplementer.mockResolvedValue({ outcome: 'enqueued' });
 
     const response = await (POST as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest({ action: 'approve_plan' }),
@@ -278,6 +312,69 @@ describe('POST /api/runs/[id]/actions — approve_plan', () => {
     expect(response.status).toBe(200);
     const body = await response.json() as { success: boolean; outcome: string };
     expect(body.outcome).toBe('approved');
+    expect(mockEnqueueImplementer).toHaveBeenCalledTimes(1);
+    expect(mockMirrorApprovalDecision).not.toHaveBeenCalled();
+  });
+
+  it('approved + helper returns skipped → HTTP 409, no mirror', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }),
+      operatorAction: { operatorActionId: 'oa_1' },
+    });
+    mockEnqueueImplementer.mockResolvedValue({ outcome: 'skipped', reason: 'wrong_step' });
+
+    const response = await (POST as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
+      makeRequest({ action: 'approve_plan' }),
+      makeRouteContext('run_1'),
+    );
+
+    expect(response.status).toBe(409);
+    expect(mockMirrorApprovalDecision).not.toHaveBeenCalled();
+  });
+
+  it('enqueue failure + block success → HTTP 409, mirror NOT called', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }),
+      operatorAction: { operatorActionId: 'oa_1' },
+    });
+    mockEnqueueImplementer.mockResolvedValue({
+      outcome: 'enqueue_failed',
+      error: 'Approval recorded but agent dispatch failed — run has been blocked for retry',
+    });
+
+    const response = await (POST as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
+      makeRequest({ action: 'approve_plan' }),
+      makeRouteContext('run_1'),
+    );
+
+    expect(response.status).toBe(409);
+    const body = await response.json() as { outcome: string; error: string };
+    expect(body.outcome).toBe('enqueue_failed');
+    expect(body.error).toContain('blocked for retry');
+    expect(mockMirrorApprovalDecision).not.toHaveBeenCalled();
+  });
+
+  it('enqueue failure + block failure → HTTP 409, mirror NOT called', async () => {
+    mockGetRun.mockReturnValue(makeApprovalRun());
+    mockApprovePlanCommand.mockReturnValue({
+      outcome: 'approved', success: true, run: makeApprovalRun({ phase: 'executing' }),
+      operatorAction: { operatorActionId: 'oa_1' },
+    });
+    mockEnqueueImplementer.mockResolvedValue({
+      outcome: 'enqueue_and_block_failed',
+      error: 'Agent dispatch failed and run could not be blocked — run may be stranded in executing',
+    });
+
+    const response = await (POST as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
+      makeRequest({ action: 'approve_plan' }),
+      makeRouteContext('run_1'),
+    );
+
+    expect(response.status).toBe(409);
+    const body = await response.json() as { outcome: string };
+    expect(body.outcome).toBe('enqueue_and_block_failed');
     expect(mockMirrorApprovalDecision).not.toHaveBeenCalled();
   });
 });
