@@ -327,11 +327,18 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
 
         {/* Stale executing warning — no agent activity for 30s+ */}
         {showStaleWarning && (
-          <Alert>
+          <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
-            <AlertTitle>No agent activity</AlertTitle>
+            <AlertTitle>Run appears stuck — no agent is processing</AlertTitle>
             <AlertDescription>
-              This run may be stuck. Use Cancel or wait for automatic recovery.
+              <p>
+                This run is in <strong>{getPhaseLabel(run.phase)}</strong> / <strong>{getPhaseLabel(run.step)}</strong> but
+                no agent job is active or queued. It will not make progress without intervention.
+              </p>
+              <p className="text-xs mt-2 opacity-70">
+                Last updated {formatTimestamp(run.updatedAt)}.
+                {' '}Cancelling will discard all progress and require starting over.
+              </p>
             </AlertDescription>
           </Alert>
         )}
