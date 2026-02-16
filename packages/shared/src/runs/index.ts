@@ -9,6 +9,8 @@ import { createLogger } from '../logger/index.ts';
 import type { RunPhase, RunStep, RunStatus } from '../types/index.ts';
 import { deriveRunStatus } from '../types/index.ts';
 import { ensureDefaultPolicySet } from '../policy-sets/index.ts';
+import { getProject } from '../projects/index.ts';
+import { createWorkflowSnapshot, parseWorkflowConfigJson } from '../workflow-config/index.ts';
 
 const log = createLogger({ name: 'conductor:runs' });
 
@@ -69,6 +71,8 @@ export interface Run {
   result?: string;
   resultReason?: string;
   implementerBackend: ImplementerBackend;
+  workflowSnapshotJson?: string;
+  workflowOverlayJson?: string;
 }
 
 export interface RunSummary {
@@ -163,7 +167,18 @@ export function createRun(db: Database, input: CreateRunInput): Run {
   const policySet = ensureDefaultPolicySet(db, input.projectId);
   const runNumber = getRunCountForTask(db, input.taskId) + 1;
 
-  const implementerBackend = input.implementerBackend ?? 'raw';
+  const inputBackend = input.implementerBackend ?? 'raw';
+
+  // Compute workflow snapshot from project config
+  const project = getProject(db, input.projectId);
+  const workflowSnapshotJson = createWorkflowSnapshot(
+    project?.workflowConfigJson,
+    inputBackend,
+  );
+
+  // Extract resolved implementer backend from snapshot to keep column in sync
+  const snapshotConfig = parseWorkflowConfigJson(workflowSnapshotJson, 'snapshot');
+  const implementerBackend = (snapshotConfig?.implementer?.backend as ImplementerBackend | undefined) ?? inputBackend;
 
   db.prepare(`
     INSERT INTO runs (
@@ -173,8 +188,9 @@ export function createRun(db: Database, input: CreateRunInput): Run {
       last_event_sequence, next_sequence,
       base_branch, branch,
       implementer_backend,
+      workflow_snapshot_json,
       started_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     runId, input.taskId, input.projectId, input.repoId, runNumber,
     input.parentRunId ?? null, input.supersedesRunId ?? null,
@@ -182,6 +198,7 @@ export function createRun(db: Database, input: CreateRunInput): Run {
     0, 1,
     input.baseBranch, '',
     implementerBackend,
+    workflowSnapshotJson,
     now, now
   );
 
@@ -209,6 +226,7 @@ export function createRun(db: Database, input: CreateRunInput): Run {
     startedAt: now,
     updatedAt: now,
     implementerBackend,
+    workflowSnapshotJson,
   };
 }
 
@@ -503,5 +521,7 @@ function rowToRun(row: Record<string, unknown>): Run {
     result: (row['result'] as string | null) ?? undefined,
     resultReason: (row['result_reason'] as string | null) ?? undefined,
     implementerBackend: (row['implementer_backend'] as ImplementerBackend | null) ?? 'raw',
+    workflowSnapshotJson: (row['workflow_snapshot_json'] as string | null) ?? undefined,
+    workflowOverlayJson: (row['workflow_overlay_json'] as string | null) ?? undefined,
   };
 }

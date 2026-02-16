@@ -15,6 +15,8 @@ import {
   getRunByPrNodeId,
 } from './index.ts';
 import { updateTaskActiveRun } from '../tasks/index.ts';
+import { updateProject } from '../projects/index.ts';
+import { MVP_DEFAULTS } from '../workflow-config/index.ts';
 
 let db: DatabaseType;
 
@@ -346,5 +348,68 @@ describe('getRunByPrNodeId', () => {
     ).run('PR_wrong_step', new Date().toISOString(), run.runId);
 
     expect(getRunByPrNodeId(db, 'PR_wrong_step')).toBeNull();
+  });
+});
+
+// =============================================================================
+// Workflow Snapshot Tests
+// =============================================================================
+
+describe('workflow snapshot in createRun', () => {
+  it('persists workflowSnapshotJson for project with workflow config', () => {
+    const { projectId, repoId, taskId } = seedTestData(db);
+    const config = JSON.stringify({ planner: { model: 'custom-model' } });
+    updateProject(db, projectId, { workflowConfigJson: config });
+
+    const run = createRun(db, { taskId, projectId, repoId, baseBranch: 'main' });
+    expect(run.workflowSnapshotJson).toBeDefined();
+
+    const snapshot = JSON.parse(run.workflowSnapshotJson!);
+    expect(snapshot.planner.model).toBe('custom-model');
+
+    // Verify persisted in DB
+    const fetched = getRun(db, run.runId);
+    expect(fetched?.workflowSnapshotJson).toBe(run.workflowSnapshotJson);
+  });
+
+  it('persists workflowSnapshotJson with defaults when project has no config', () => {
+    const { projectId, repoId, taskId } = seedTestData(db);
+    const run = createRun(db, { taskId, projectId, repoId, baseBranch: 'main' });
+    expect(run.workflowSnapshotJson).toBeDefined();
+
+    const snapshot = JSON.parse(run.workflowSnapshotJson!);
+    expect(snapshot.planner.model).toBe(MVP_DEFAULTS.planner.model);
+  });
+
+  it('syncs implementer_backend column from project config', () => {
+    const { projectId, repoId, taskId } = seedTestData(db);
+    const config = JSON.stringify({ implementer: { backend: 'agent_sdk' } });
+    updateProject(db, projectId, { workflowConfigJson: config });
+
+    const run = createRun(db, { taskId, projectId, repoId, baseBranch: 'main' });
+    expect(run.implementerBackend).toBe('agent_sdk');
+
+    const fetched = getRun(db, run.runId);
+    expect(fetched?.implementerBackend).toBe('agent_sdk');
+  });
+
+  it('getRun returns workflowSnapshotJson as string field', () => {
+    const { projectId, repoId, taskId } = seedTestData(db);
+    const run = createRun(db, { taskId, projectId, repoId, baseBranch: 'main' });
+    const fetched = getRun(db, run.runId);
+    expect(typeof fetched?.workflowSnapshotJson).toBe('string');
+  });
+
+  it('succeeds with defaults when project has malformed workflow_config_json in DB', () => {
+    const { projectId, repoId, taskId } = seedTestData(db);
+    // Directly set malformed JSON in DB (bypassing validation)
+    db.prepare('UPDATE projects SET workflow_config_json = ? WHERE project_id = ?')
+      .run('not-valid-json', projectId);
+
+    const run = createRun(db, { taskId, projectId, repoId, baseBranch: 'main' });
+    expect(run.workflowSnapshotJson).toBeDefined();
+
+    const snapshot = JSON.parse(run.workflowSnapshotJson!);
+    expect(snapshot.planner.model).toBe(MVP_DEFAULTS.planner.model);
   });
 });

@@ -6,6 +6,7 @@
 
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../logger/index.ts';
+import { validateWorkflowConfigStrict, WorkflowConfigError } from '../workflow-config/index.ts';
 
 const log = createLogger({ name: 'conductor:projects' });
 
@@ -27,6 +28,7 @@ export interface Project {
   enforceProjects: boolean;
   portRangeStart: number;
   portRangeEnd: number;
+  workflowConfigJson?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -64,6 +66,8 @@ export interface UpdateProjectInput {
   enforceProjects?: boolean;
   portRangeStart?: number;
   portRangeEnd?: number;
+  /** undefined = don't change, null = clear, string = set (validated JSON) */
+  workflowConfigJson?: string | null;
 }
 
 // =============================================================================
@@ -271,6 +275,25 @@ export function updateProject(
   if (input.portRangeEnd !== undefined) {
     updates.push('port_range_end = ?');
     values.push(input.portRangeEnd);
+  }
+  if (input.workflowConfigJson !== undefined) {
+    if (input.workflowConfigJson === null) {
+      updates.push('workflow_config_json = ?');
+      values.push(null);
+    } else {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(input.workflowConfigJson);
+      } catch {
+        throw new WorkflowConfigError('Malformed JSON');
+      }
+      const errors = validateWorkflowConfigStrict(parsed);
+      if (errors.length > 0) {
+        throw new WorkflowConfigError(errors.join('; '));
+      }
+      updates.push('workflow_config_json = ?');
+      values.push(input.workflowConfigJson);
+    }
   }
 
   values.push(projectId);
@@ -522,6 +545,7 @@ function rowToProject(row: Record<string, unknown>): Project {
     enforceProjects: (row['enforce_projects'] as number) === 1,
     portRangeStart: row['port_range_start'] as number,
     portRangeEnd: row['port_range_end'] as number,
+    workflowConfigJson: (row['workflow_config_json'] as string | null) ?? undefined,
     createdAt: row['created_at'] as string,
     updatedAt: row['updated_at'] as string,
   };

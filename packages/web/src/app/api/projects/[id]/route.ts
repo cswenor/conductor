@@ -11,12 +11,18 @@ import {
   updateProject,
   deleteProject,
   canAccessProject,
+  WorkflowConfigError,
   type UpdateProjectInput,
 } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
 const log = createLogger({ name: 'conductor:api:project' });
+
+function isWorkflowConfigError(err: unknown): err is WorkflowConfigError {
+  return err instanceof WorkflowConfigError
+    || (err instanceof Error && 'code' in err && (err as { code: unknown }).code === 'INVALID_WORKFLOW_CONFIG');
+}
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -98,6 +104,9 @@ export const PATCH = withAuth(async (
 
     return NextResponse.json({ project });
   } catch (err) {
+    if (isWorkflowConfigError(err)) {
+      return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    }
     log.error(
       { error: err instanceof Error ? err.message : 'Unknown error' },
       'Failed to update project'

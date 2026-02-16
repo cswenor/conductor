@@ -14,6 +14,7 @@ import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createLogger } from '../../logger/index.ts';
 import type { ImplementerBackend, Run } from '../../runs/index.ts';
+import { getResolvedWorkflowConfig } from '../../workflow-config/index.ts';
 import { getRun } from '../../runs/index.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
 import { publishAgentInvocationEvent } from '../../pubsub/index.ts';
@@ -80,7 +81,8 @@ When you see "[...truncated]", use your tools to fetch the full details:
 // =============================================================================
 
 export function resolveImplementerBackend(run: Run): ImplementerBackend {
-  return run.implementerBackend;
+  const resolved = getResolvedWorkflowConfig(run);
+  return resolved.implementer.backend;
 }
 
 // =============================================================================

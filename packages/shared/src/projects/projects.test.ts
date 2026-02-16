@@ -9,6 +9,8 @@ import { initDatabase, closeDatabase } from '../db/index.ts';
 import {
   syncUserInstallations,
   listPendingInstallations,
+  updateProject,
+  getProject,
   type DiscoveredInstallation,
 } from './index.ts';
 import type { Database } from 'better-sqlite3';
@@ -140,5 +142,36 @@ describe('syncUserInstallations', () => {
     expect(result).toHaveLength(2);
     const ids = result.map((r) => r.installationId).sort((a, b) => a - b);
     expect(ids).toEqual([500, 600]);
+  });
+});
+
+describe('updateProject workflowConfigJson', () => {
+  function setupWithProject(): { db: Database; projectId: string } {
+    const testDb = setup();
+    const now = new Date().toISOString();
+    testDb.prepare(`
+      INSERT INTO projects (
+        project_id, user_id, name, github_org_id, github_org_node_id, github_org_name,
+        github_installation_id, default_profile_id, default_base_branch,
+        port_range_start, port_range_end, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('proj_wfc', 'user_a', 'WFC Project', 999, 'O_999', 'wfc-org',
+      99999, 'default', 'main', 3000, 4000, now, now);
+    return { db: testDb, projectId: 'proj_wfc' };
+  }
+
+  it('null clears workflowConfigJson; getProject returns undefined', () => {
+    const { db: testDb, projectId } = setupWithProject();
+    // Set a config first
+    updateProject(testDb, projectId, {
+      workflowConfigJson: JSON.stringify({ planner: { model: 'test' } }),
+    });
+    let proj = getProject(testDb, projectId);
+    expect(proj?.workflowConfigJson).toBeDefined();
+
+    // Clear it
+    updateProject(testDb, projectId, { workflowConfigJson: null });
+    proj = getProject(testDb, projectId);
+    expect(proj?.workflowConfigJson).toBeUndefined();
   });
 });

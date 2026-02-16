@@ -99,3 +99,6 @@ export * from './mirroring/index.ts';
 
 // Re-export pubsub module
 export * from './pubsub/index.ts';
+
+// Re-export workflow-config module
+export * from './workflow-config/index.ts';
