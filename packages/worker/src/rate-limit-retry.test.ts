@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Run, getDatabase } from '@conductor/shared';
 import type { RateLimitRetryDeps } from './rate-limit-retry.ts';
+import { handleRateLimitRetry } from './rate-limit-retry.ts';
 
 type Db = ReturnType<typeof getDatabase>;
 
@@ -79,8 +80,6 @@ describe('handleRateLimitRetry', () => {
   });
 
   it('retries with valid retryAfterMs', async () => {
-    // Fresh import to reset module state
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun();
 
@@ -95,7 +94,6 @@ describe('handleRateLimitRetry', () => {
   });
 
   it('retries without retryAfterMs using exponential backoff', async () => {
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun();
 
@@ -110,7 +108,6 @@ describe('handleRateLimitRetry', () => {
   });
 
   it('caps delay at 600s even with large retryAfterMs', async () => {
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun();
 
@@ -121,7 +118,6 @@ describe('handleRateLimitRetry', () => {
   });
 
   it('treats sub-1 retryAfterMs (0.5, 0, -1) as absent and falls back to backoff', async () => {
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun();
 
@@ -134,7 +130,6 @@ describe('handleRateLimitRetry', () => {
   });
 
   it('treats non-finite retryAfterMs (NaN, Infinity) as absent', async () => {
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun();
 
@@ -147,7 +142,6 @@ describe('handleRateLimitRetry', () => {
   });
 
   it('blocks run when retry cap is reached', async () => {
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun();
 
@@ -167,8 +161,6 @@ describe('handleRateLimitRetry', () => {
 
   it('CONDUCTOR_RATE_LIMIT_MAX_RETRIES=0 blocks immediately', async () => {
     process.env['CONDUCTOR_RATE_LIMIT_MAX_RETRIES'] = '0';
-    vi.resetModules();
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun();
 
@@ -185,8 +177,6 @@ describe('handleRateLimitRetry', () => {
 
   it('CONDUCTOR_RATE_LIMIT_MAX_RETRIES=2 allows retries 0,1 and blocks 2', async () => {
     process.env['CONDUCTOR_RATE_LIMIT_MAX_RETRIES'] = '2';
-    vi.resetModules();
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun();
 
@@ -206,8 +196,6 @@ describe('handleRateLimitRetry', () => {
   it('falls back to default on invalid env values', async () => {
     for (const invalid of ['abc', '-1', '1.5', '', '  ']) {
       process.env['CONDUCTOR_RATE_LIMIT_MAX_RETRIES'] = invalid;
-      vi.resetModules();
-      const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
       const deps = makeDeps();
       const run = makeRun();
 
@@ -222,7 +210,6 @@ describe('handleRateLimitRetry', () => {
   });
 
   it('passes correct fromPhase and fromSequence from run', async () => {
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun({ phase: 'planning', lastEventSequence: 99 });
 
@@ -234,7 +221,6 @@ describe('handleRateLimitRetry', () => {
   });
 
   it('returns retried: false when cap reached and retried: true with delayMs when retrying', async () => {
-    const { handleRateLimitRetry } = await import('./rate-limit-retry.ts');
     const deps = makeDeps();
     const run = makeRun();
 
