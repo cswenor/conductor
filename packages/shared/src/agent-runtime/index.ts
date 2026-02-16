@@ -48,6 +48,7 @@ export {
 } from './artifacts.ts';
 
 // Provider abstraction, factory, and executor
+// TODO: Add worker-level handling for AgentBudgetExceededError (currently treated as generic AgentError for run retry)
 export {
   type AgentInput,
   type AgentOutput,
@@ -58,6 +59,7 @@ export {
   AgentAuthError,
   AgentRateLimitError,
   AgentContextLengthError,
+  AgentBudgetExceededError,
   AgentUnsupportedProviderError,
   AgentTimeoutError,
   AgentCancelledError,

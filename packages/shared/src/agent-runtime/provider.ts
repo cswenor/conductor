@@ -56,6 +56,20 @@ export class AgentContextLengthError extends AgentError {
   }
 }
 
+export class AgentBudgetExceededError extends AgentError {
+  public readonly estimatedTokens: number;
+  public readonly tokenBudget: number;
+  constructor(estimatedTokens: number, tokenBudget: number) {
+    super(
+      `Token budget exceeded: estimated ${estimatedTokens} tokens > ${tokenBudget} limit`,
+      'budget_exceeded',
+    );
+    this.name = 'AgentBudgetExceededError';
+    this.estimatedTokens = estimatedTokens;
+    this.tokenBudget = tokenBudget;
+  }
+}
+
 export class AgentUnsupportedProviderError extends AgentError {
   constructor(provider: string) {
     super(
