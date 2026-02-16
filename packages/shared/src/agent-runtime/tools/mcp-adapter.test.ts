@@ -16,8 +16,10 @@ import { DEFAULT_POLICY_RULES } from './policy.ts';
 import { listToolInvocations } from '../tool-invocations.ts';
 import { ensureBuiltInPolicyDefinitions } from '../policy-definitions.ts';
 import { executeAuditedToolCall } from '../executor.ts';
-import { createImplementerMcpServer, getAllowedToolNames, MCP_SERVER_NAME } from './mcp-adapter.ts';
-import type { ToolResultEntry } from './mcp-adapter.ts';
+import { createImplementerMcpServer, createMcpToolDefinitions, getAllowedToolNames, MCP_SERVER_NAME } from './mcp-adapter.ts';
+import type { ToolResultEntry } from './protocol.ts';
+import { flushToolResults } from './protocol.ts';
+import { listAgentMessages } from '../agent-messages.ts';
 
 // =============================================================================
 // Test Helpers
@@ -290,5 +292,96 @@ describe('ToolResultEntry shape', () => {
     expect(typeof entry.tool_use_id).toBe('string');
     expect(typeof entry.content).toBe('string');
     expect(typeof entry.is_error).toBe('boolean');
+  });
+});
+
+// =============================================================================
+// MCP handler wiring and multi-turn integration
+// =============================================================================
+
+describe('MCP handler wiring and multi-turn integration', () => {
+  it('Turn 1: two tool calls produce correct results and flush to one agent_message', async () => {
+    const registry = createToolRegistry();
+    registry.register(makeEchoTool());
+
+    const pendingToolResults: ToolResultEntry[] = [];
+    const pendingToolUseIds: string[] = [];
+    let turnIndex = 0;
+    const nextTurnIndex = () => turnIndex++;
+
+    const toolDefs = createMcpToolDefinitions(
+      registry,
+      [],
+      makeContext(),
+      db,
+      pendingToolResults,
+      pendingToolUseIds,
+    );
+
+    expect(toolDefs).toHaveLength(1);
+    const echoToolDef = toolDefs[0];
+    expect(echoToolDef).toBeDefined();
+
+    // Simulate Turn 1: SDK sends 2 tool_use blocks
+    pendingToolUseIds.push('toolu_abc', 'toolu_def');
+
+    // Call handler for first tool_use
+    const result1 = await echoToolDef!.handler({ message: 'hi' }, undefined);
+    expect(result1).toEqual({
+      content: [{ type: 'text', text: 'Echo: hi' }],
+      isError: false,
+    });
+
+    // Call handler for second tool_use
+    const result2 = await echoToolDef!.handler({ message: 'bye' }, undefined);
+    expect(result2).toEqual({
+      content: [{ type: 'text', text: 'Echo: bye' }],
+      isError: false,
+    });
+
+    // Verify pending state
+    expect(pendingToolResults).toHaveLength(2);
+    expect(pendingToolResults[0]?.tool_use_id).toBe('toolu_abc');
+    expect(pendingToolResults[1]?.tool_use_id).toBe('toolu_def');
+
+    // Verify tool_invocations table
+    const invocations = listToolInvocations(db, agentInvocationId);
+    expect(invocations).toHaveLength(2);
+    expect(invocations.every(i => i.status === 'completed')).toBe(true);
+
+    // Flush → 1 agent_message
+    flushToolResults(pendingToolResults, pendingToolUseIds, db, agentInvocationId, nextTurnIndex);
+
+    const messages = listAgentMessages(db, agentInvocationId);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.role).toBe('tool_result');
+
+    const parsed = JSON.parse(messages[0]?.contentJson ?? '[]') as ToolResultEntry[];
+    expect(parsed).toHaveLength(2);
+    expect(parsed[0]?.tool_use_id).toBe('toolu_abc');
+    expect(parsed[0]?.content).toBe('Echo: hi');
+    expect(parsed[1]?.tool_use_id).toBe('toolu_def');
+    expect(parsed[1]?.content).toBe('Echo: bye');
+
+    // Both arrays empty after flush
+    expect(pendingToolResults).toHaveLength(0);
+    expect(pendingToolUseIds).toHaveLength(0);
+
+    // Turn 2: 1 tool call
+    pendingToolUseIds.push('toolu_ghi');
+
+    await echoToolDef!.handler({ message: 'again' }, undefined);
+    flushToolResults(pendingToolResults, pendingToolUseIds, db, agentInvocationId, nextTurnIndex);
+
+    const allMessages = listAgentMessages(db, agentInvocationId);
+    expect(allMessages).toHaveLength(2);
+
+    const turn2Parsed = JSON.parse(allMessages[1]?.contentJson ?? '[]') as ToolResultEntry[];
+    expect(turn2Parsed).toHaveLength(1);
+    expect(turn2Parsed[0]?.tool_use_id).toBe('toolu_ghi');
+    expect(turn2Parsed[0]?.content).toBe('Echo: again');
+
+    // turnIndex strictly increasing
+    expect(turnIndex).toBe(2);
   });
 });

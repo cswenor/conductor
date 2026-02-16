@@ -10,30 +10,19 @@ import { z } from 'zod/v4';
 import { createSdkMcpServer, tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
 import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { Database } from 'better-sqlite3';
-import { createLogger } from '../../logger/index.ts';
 import type { ToolRegistry } from './registry.ts';
 import type { PolicyRule } from './policy.ts';
 import type { ToolExecutionContext, ToolInputSchema } from './types.ts';
 import { executeAuditedToolCall } from '../executor.ts';
-
-const log = createLogger({ name: 'conductor:mcp-adapter' });
+import { recordToolResult } from './protocol.ts';
+export type { ToolResultEntry } from './protocol.ts';
+import type { ToolResultEntry } from './protocol.ts';
 
 // =============================================================================
 // Constants
 // =============================================================================
 
 export const MCP_SERVER_NAME = 'conductor-tools';
-
-// =============================================================================
-// Types
-// =============================================================================
-
-export interface ToolResultEntry {
-  type: 'tool_result';
-  tool_use_id: string;
-  content: string;
-  is_error: boolean;
-}
 
 // =============================================================================
 // Zod Schema Conversion
@@ -95,18 +84,18 @@ function inputSchemaToZodShape(schema: ToolInputSchema): Record<string, z.ZodTyp
 // =============================================================================
 
 /**
- * Create an MCP server that wraps all tools from the registry.
+ * Create MCP tool definitions that wrap all tools from the registry.
  * Each tool handler calls `executeAuditedToolCall()` and pushes
- * the result to the shared `pendingToolResults` array.
+ * the result to the shared `pendingToolResults` array via `recordToolResult()`.
  */
-export function createImplementerMcpServer(
+export function createMcpToolDefinitions(
   registry: ToolRegistry,
   policyRules: PolicyRule[],
   context: ToolExecutionContext,
   db: Database,
   pendingToolResults: ToolResultEntry[],
   pendingToolUseIds: string[],
-): ReturnType<typeof createSdkMcpServer> {
+): SdkMcpToolDefinition[] {
   const tools: SdkMcpToolDefinition[] = [];
 
   for (const toolName of registry.names()) {
@@ -129,20 +118,7 @@ export function createImplementerMcpServer(
           db,
         );
 
-        // Dequeue tool_use_id from FIFO (populated by stream iterator)
-        const toolUseId = pendingToolUseIds.shift()
-          ?? `synth_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
-        if (toolUseId.startsWith('synth_')) {
-          log.warn({ toolName }, 'Using synthetic tool_use_id — queue was empty');
-        }
-
-        pendingToolResults.push({
-          type: 'tool_result',
-          tool_use_id: toolUseId,
-          content: audited.content,
-          is_error: audited.isError ?? false,
-        });
+        recordToolResult(pendingToolUseIds, pendingToolResults, toolName, audited);
 
         return {
           content: [{ type: 'text' as const, text: audited.content }],
@@ -151,6 +127,25 @@ export function createImplementerMcpServer(
       },
     ));
   }
+
+  return tools;
+}
+
+/**
+ * Create an MCP server that wraps all tools from the registry.
+ * Thin wrapper around `createMcpToolDefinitions()`.
+ */
+export function createImplementerMcpServer(
+  registry: ToolRegistry,
+  policyRules: PolicyRule[],
+  context: ToolExecutionContext,
+  db: Database,
+  pendingToolResults: ToolResultEntry[],
+  pendingToolUseIds: string[],
+): ReturnType<typeof createSdkMcpServer> {
+  const tools = createMcpToolDefinitions(
+    registry, policyRules, context, db, pendingToolResults, pendingToolUseIds,
+  );
 
   return createSdkMcpServer({
     name: MCP_SERVER_NAME,

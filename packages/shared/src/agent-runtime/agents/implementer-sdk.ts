@@ -28,7 +28,8 @@ import { registerTestRunnerTool } from '../tools/test-runner.ts';
 import { DEFAULT_POLICY_RULES } from '../tools/policy.ts';
 import { ensureBuiltInPolicyDefinitions } from '../policy-definitions.ts';
 import { createImplementerMcpServer, getAllowedToolNames } from '../tools/mcp-adapter.ts';
-import type { ToolResultEntry } from '../tools/mcp-adapter.ts';
+import type { ToolResultEntry } from '../tools/protocol.ts';
+import { flushToolResults as flushToolResultsHelper } from '../tools/protocol.ts';
 import { AgentError, AgentAuthError, AgentRateLimitError, AgentContextLengthError, AgentCancelledError } from '../provider.ts';
 import type { FileOperation, ImplementerInput, ImplementerResult } from './implementer.ts';
 
@@ -89,9 +90,12 @@ export function extractRetryAfterMs(err: unknown): number | undefined {
   ) {
     value = (headers as { get: (k: string) => string | null }).get('retry-after');
   }
-  // Handle plain Record<string, string>
+  // Handle plain Record<string, unknown> — case-insensitive + string-only
   else if (headers !== null && typeof headers === 'object') {
-    value = (headers as Record<string, string>)['retry-after'] ?? null;
+    const headerObj = headers as Record<string, unknown>;
+    const key = Object.keys(headerObj).find(k => k.toLowerCase() === 'retry-after');
+    const rawValue = key !== undefined ? headerObj[key] : undefined;
+    value = typeof rawValue === 'string' ? rawValue : null;
   }
 
   if (value === null) return undefined;
@@ -225,22 +229,7 @@ export async function runImplementerWithAgentSDK(
 
   // Flush accumulated tool results as one agent_message
   function flushToolResults(): void {
-    if (pendingToolResults.length === 0) return;
-    if (pendingToolUseIds.length > 0) {
-      log.warn({ remaining: pendingToolUseIds.length }, 'Stale tool_use_ids remaining after batch');
-      pendingToolUseIds.length = 0;
-    }
-    try {
-      createAgentMessage(db, {
-        agentInvocationId,
-        turnIndex: nextTurnIndex(),
-        role: 'tool_result',
-        contentJson: JSON.stringify(pendingToolResults),
-      });
-    } catch (e) {
-      log.warn({ err: e }, 'Failed to persist tool_result message');
-    }
-    pendingToolResults.length = 0;
+    flushToolResultsHelper(pendingToolResults, pendingToolUseIds, db, agentInvocationId, nextTurnIndex);
   }
 
   const startTime = Date.now();

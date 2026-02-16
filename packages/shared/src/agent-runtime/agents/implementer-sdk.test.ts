@@ -269,6 +269,38 @@ describe('extractRetryAfterMs', () => {
     };
     expect(extractRetryAfterMs(err)).toBe(1500);
   });
+
+  it('extracts from capitalized Retry-After header', () => {
+    const err = {
+      status: 429,
+      headers: { 'Retry-After': '10' },
+    };
+    expect(extractRetryAfterMs(err)).toBe(10000);
+  });
+
+  it('extracts from mixed-case ReTrY-AfTeR header', () => {
+    const err = {
+      status: 429,
+      headers: { 'ReTrY-AfTeR': '5' },
+    };
+    expect(extractRetryAfterMs(err)).toBe(5000);
+  });
+
+  it('returns undefined for non-string value (number)', () => {
+    const err = {
+      status: 429,
+      headers: { 'retry-after': 42 },
+    };
+    expect(extractRetryAfterMs(err)).toBeUndefined();
+  });
+
+  it('returns undefined for non-string value (boolean)', () => {
+    const err = {
+      status: 429,
+      headers: { 'retry-after': true },
+    };
+    expect(extractRetryAfterMs(err)).toBeUndefined();
+  });
 });
 
 // =============================================================================
