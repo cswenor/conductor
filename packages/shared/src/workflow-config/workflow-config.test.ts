@@ -342,12 +342,15 @@ describe('getResolvedWorkflowConfig', () => {
 
 describe('warn-once dedupe', () => {
   it('sanitize same unknown field twice logs warning only once', async () => {
-    // Use resetModules + dynamic import to get a fresh warn-once Set
+    // Mock the logger before re-importing the module
+    const mockWarn = vi.fn();
     vi.resetModules();
+    vi.doMock('../logger/index.ts', () => ({
+      createLogger: () => ({ warn: mockWarn, info: vi.fn(), error: vi.fn() }),
+    }));
+
     const mod = await import('./index.ts');
 
-    // Mock the logger after re-import by spying on console/log calls
-    // Since warn-once is internal, we verify behavior: second call produces same result
     const r1 = mod.parseWorkflowConfigJson(
       JSON.stringify({ planner: { unknownField: 42, model: 'test' } }),
       'dedupe-test',
@@ -360,6 +363,19 @@ describe('warn-once dedupe', () => {
     // Both should strip the unknown field and preserve model
     expect(r1).toEqual({ planner: { model: 'test' } });
     expect(r2).toEqual({ planner: { model: 'test2' } });
+
+    // The warn for dedupe-test.planner.unknownField should have been called exactly once
+    const dedupeWarns = mockWarn.mock.calls.filter(
+      (call: unknown[]) => {
+        const ctx = call[0] as Record<string, unknown>;
+        return ctx.dedupeKey === 'dedupe-test.planner.unknownField';
+      },
+    );
+    expect(dedupeWarns).toHaveLength(1);
+
+    // Restore original modules for subsequent tests
+    vi.doUnmock('../logger/index.ts');
+    vi.resetModules();
   });
 });
 
