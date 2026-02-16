@@ -161,15 +161,15 @@ const readFileTool: ToolDefinition = {
       }
 
       let content = readFileSync(fullPath, 'utf8');
-      const originalSize = Buffer.byteLength(content, 'utf8');
+      const originalLength = content.length;
       let truncated = false;
 
-      if (originalSize > maxReadBytes) {
+      if (originalLength > maxReadBytes) {
         content = content.substring(0, maxReadBytes) + '\n[...truncated]';
         truncated = true;
       }
 
-      return ok(content, { bytesRead: originalSize, truncated });
+      return ok(content, { charCount: originalLength, truncated });
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unknown error';
       return err(`Error reading file: ${msg}`, { error: msg });

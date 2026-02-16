@@ -57,7 +57,7 @@ describe('read_file', () => {
     const result = await tool.execute({ path: 'src/main.ts' }, context);
     expect(result.isError).toBeUndefined();
     expect(result.content).toContain('console.log("hello")');
-    expect(result.meta['bytesRead']).toBeGreaterThan(0);
+    expect(result.meta['charCount']).toBeGreaterThan(0);
   });
 
   it('returns error for non-existent file', async () => {
@@ -440,7 +440,7 @@ describe('env-configurable limits', () => {
     expect(result.content.length).toBeLessThan(21_000);
   });
 
-  it('below-floor env values are clamped to floor', async () => {
+  it('below-floor CONDUCTOR_MAX_READ_BYTES is clamped to floor', async () => {
     process.env['CONDUCTOR_MAX_READ_BYTES'] = '500'; // below floor of 1000
     const registry = getRegistry();
     const tool = registry.get('read_file')!;
@@ -455,5 +455,34 @@ describe('env-configurable limits', () => {
     // Should be clamped to floor of 1000, so content ~1000 + marker
     expect(result.content.length).toBeGreaterThan(990);
     expect(result.content.length).toBeLessThan(1100);
+  });
+
+  it('invalid CONDUCTOR_MAX_LIST_ENTRIES falls back to default', async () => {
+    process.env['CONDUCTOR_MAX_LIST_ENTRIES'] = 'not-a-number';
+    const registry = getRegistry();
+    const tool = registry.get('list_files')!;
+
+    // Default is 200, so listing 3 tracked files should not truncate
+    const result = await tool.execute({}, context);
+    expect(result.meta['truncated']).toBe(false);
+    expect(result.content).toContain('src/main.ts');
+  });
+
+  it('below-floor CONDUCTOR_MAX_LIST_ENTRIES is clamped to floor', async () => {
+    process.env['CONDUCTOR_MAX_LIST_ENTRIES'] = '5'; // below floor of 10
+    const registry = getRegistry();
+    const tool = registry.get('list_files')!;
+
+    // Create and git-add 15 files (+ 2 existing = 17 total)
+    for (let i = 0; i < 15; i++) {
+      writeFileSync(join(worktreePath, `clamp${i.toString().padStart(2, '0')}.ts`), `export {};`);
+    }
+    execFileSync('git', ['add', '-A'], { cwd: worktreePath });
+    execFileSync('git', ['-c', 'commit.gpgsign=false', 'commit', '-m', 'add clamp files'], { cwd: worktreePath });
+
+    const result = await tool.execute({}, context);
+    expect(result.meta['truncated']).toBe(true);
+    // Should be clamped to floor of 10, not 5
+    expect(result.meta['listed']).toBe(10);
   });
 });

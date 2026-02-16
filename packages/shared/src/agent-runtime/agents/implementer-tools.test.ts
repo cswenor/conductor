@@ -123,4 +123,18 @@ describe('runImplementerWithTools maxTokens', () => {
     await runImplementerWithTools(db, { runId, worktreePath, provider });
     expect(capturedMaxTokens[0]).toBe(4096);
   });
+
+  it('invalid CONDUCTOR_IMPLEMENTER_MAX_TOKENS falls back to default', async () => {
+    process.env['CONDUCTOR_IMPLEMENTER_MAX_TOKENS'] = 'garbage';
+    const { provider, capturedMaxTokens } = createCapturingProvider();
+    await runImplementerWithTools(db, { runId, worktreePath, provider });
+    expect(capturedMaxTokens[0]).toBe(8192);
+  });
+
+  it('below-floor CONDUCTOR_IMPLEMENTER_MAX_TOKENS is clamped to floor', async () => {
+    process.env['CONDUCTOR_IMPLEMENTER_MAX_TOKENS'] = '512'; // below floor of 1024
+    const { provider, capturedMaxTokens } = createCapturingProvider();
+    await runImplementerWithTools(db, { runId, worktreePath, provider });
+    expect(capturedMaxTokens[0]).toBe(1024);
+  });
 });
