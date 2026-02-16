@@ -757,4 +757,51 @@ describe('reason_code write-path contract', () => {
     const context = JSON.parse(blockedRun.blockedContextJson ?? '{}') as Record<string, unknown>;
     expect(context['reason_code']).toBe('max_review_rounds');
   });
+
+  it('persists rate_limit_exhausted with error_detail and retry metadata (markRunFailed shape)', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Advance to executing so prior_phase/prior_step are meaningful
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'planner_create_plan', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', toStep: 'wait_plan_approval', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'executing', toStep: 'implementer_apply_changes', triggeredBy: 'system' });
+
+    // Simulate what markRunFailed produces for rate_limit_exhausted:
+    // blockedReason = short key, extraContext spread into blockedContext
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'rate_limit_exhausted',
+      blockedContext: {
+        error: 'rate_limit_exhausted',
+        prior_phase: 'executing',
+        prior_step: 'implementer_apply_changes',
+        // extraContext fields from handleRateLimitRetry:
+        error_detail: "Rate-limit retry budget exhausted for agent 'implementer' (maxRetries=5). Manual retry available.",
+        agent: 'implementer',
+        action: 'apply_changes',
+        retries_exhausted: 5,
+        max_retries: 5,
+        // reason_code set after spread:
+        reason_code: 'rate_limit_exhausted',
+      },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    expect(blockedRun.blockedReason).toBe('rate_limit_exhausted');
+
+    const context = JSON.parse(blockedRun.blockedContextJson ?? '{}') as Record<string, unknown>;
+    expect(context['reason_code']).toBe('rate_limit_exhausted');
+    expect(context['error_detail']).toBe(
+      "Rate-limit retry budget exhausted for agent 'implementer' (maxRetries=5). Manual retry available.",
+    );
+    expect(context['agent']).toBe('implementer');
+    expect(context['action']).toBe('apply_changes');
+    expect(context['retries_exhausted']).toBe(5);
+    expect(context['max_retries']).toBe(5);
+    expect(context['prior_phase']).toBe('executing');
+    expect(context['prior_step']).toBe('implementer_apply_changes');
+  });
 });
