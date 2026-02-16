@@ -73,6 +73,7 @@ export {
 export {
   type AgentContext,
   type AssembleContextInput,
+  type SectionBudgets,
   SENSITIVE_FILE_PATTERNS,
   isSensitiveFile,
   redactSecretPatterns,
@@ -80,6 +81,7 @@ export {
   readRelevantFiles,
   assembleContext,
   formatContextForPrompt,
+  resolveImplementerBudgets,
 } from './context.ts';
 
 // Planner agent

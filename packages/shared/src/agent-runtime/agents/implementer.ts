@@ -13,7 +13,7 @@ import type { Database } from 'better-sqlite3';
 import { createLogger } from '../../logger/index.ts';
 import type { AgentProvider } from '../provider.ts';
 import { executeAgent } from '../provider.ts';
-import { assembleContext, formatContextForPrompt } from '../context.ts';
+import { assembleContext, formatContextForPrompt, resolveImplementerBudgets } from '../context.ts';
 import { createArtifact } from '../artifacts.ts';
 import { createAgentInvocation, markAgentRunning, completeAgentInvocation, failAgentInvocation } from '../invocations.ts';
 import { createToolRegistry } from '../tools/registry.ts';
@@ -304,7 +304,14 @@ You have access to the following tools:
 - Do not create or modify .git/ directory files.
 - Ensure all code compiles/parses correctly.
 - Use read_file and list_files to understand existing code before making changes.
-- After writing files, consider running tests to verify your changes.`;
+- After writing files, consider running tests to verify your changes.
+
+## Context
+Context sections (plan, review, file tree, issue body) may be truncated to save tokens.
+When you see "[...truncated]", use your tools to fetch the full details:
+- Use list_files to explore the repository structure.
+- Use read_file or read_file_range to inspect specific files.
+- Use search_in_file to locate specific patterns.`;
 
 // =============================================================================
 // Tool-Use Mode Agent Function
@@ -323,7 +330,7 @@ export async function runImplementerWithTools(
     worktreePath: input.worktreePath,
   });
 
-  const userPrompt = formatContextForPrompt(context);
+  const userPrompt = formatContextForPrompt(context, resolveImplementerBudgets());
 
   // Look up projectId from the run record
   const runRecord = getRun(db, input.runId);

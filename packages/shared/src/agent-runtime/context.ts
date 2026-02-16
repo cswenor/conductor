@@ -56,6 +56,60 @@ export interface AssembleContextInput {
   relevantFilePaths?: string[];
 }
 
+export interface SectionBudgets {
+  issueBody?: number;
+  plan?: number;
+  review?: number;
+  fileTree?: number;
+  fileTreeEntries?: number;
+}
+
+// =============================================================================
+// Budget Resolution
+// =============================================================================
+
+const warnedCtxEnvKeys = new Set<string>();
+
+function resolveCtxEnvInt(key: string, defaultVal: number, floor: number): number {
+  const raw = process.env[key];
+  if (raw === undefined) return defaultVal;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    if (!warnedCtxEnvKeys.has(key)) {
+      warnedCtxEnvKeys.add(key);
+      log.warn({ envKey: key, envValue: raw }, `Invalid ${key}, using default ${defaultVal}`);
+    }
+    return defaultVal;
+  }
+  return Math.max(parsed, floor);
+}
+
+export function resolveImplementerBudgets(): SectionBudgets {
+  return {
+    issueBody: resolveCtxEnvInt('CONDUCTOR_CTX_BUDGET_ISSUE', 5_000, 500),
+    plan: resolveCtxEnvInt('CONDUCTOR_CTX_BUDGET_PLAN', 10_000, 1_000),
+    review: resolveCtxEnvInt('CONDUCTOR_CTX_BUDGET_REVIEW', 10_000, 1_000),
+    fileTree: resolveCtxEnvInt('CONDUCTOR_CTX_BUDGET_FILE_TREE', 10_000, 1_000),
+    fileTreeEntries: resolveCtxEnvInt('CONDUCTOR_CTX_BUDGET_FILE_TREE_ENTRIES', 500, 50),
+  };
+}
+
+// =============================================================================
+// Truncation
+// =============================================================================
+
+export const TRUNCATION_HINT = '[...truncated — use read_file, search_in_file, or list_files to inspect details on demand]';
+
+function truncateSection(content: string, budget: number | undefined): string {
+  if (budget === undefined || content.length <= budget) return content;
+  if (budget <= 0) return '';
+  const hintWithNewline = '\n' + TRUNCATION_HINT;
+  // Strict < : when budget === hintWithNewline.length, fall through to last branch
+  // which yields '' + hintWithNewline, length exactly = budget.
+  if (budget < hintWithNewline.length) return TRUNCATION_HINT.slice(0, budget);
+  return content.substring(0, budget - hintWithNewline.length) + hintWithNewline;
+}
+
 // =============================================================================
 // Sensitive File Exclusion
 // =============================================================================
@@ -355,9 +409,16 @@ export function assembleContext(
 
 /**
  * Serialize context into a structured text format for LLM consumption.
+ * When budgets are provided, individual sections are truncated to fit.
  */
-export function formatContextForPrompt(context: AgentContext): string {
+export function formatContextForPrompt(context: AgentContext, budgets?: SectionBudgets): string {
   const sections: string[] = [];
+
+  // Track sizes for telemetry
+  let issueBodyFinal = 0;
+  let planFinal = 0;
+  let reviewFinal = 0;
+  let treeFinal = 0;
 
   // Issue section
   sections.push(`## Issue #${context.issue.number}: ${context.issue.title}`);
@@ -366,7 +427,9 @@ export function formatContextForPrompt(context: AgentContext): string {
     sections.push(`Labels: ${context.issue.labels.join(', ')}`);
   }
   sections.push('');
-  sections.push(context.issue.body);
+  const issueBodyContent = truncateSection(context.issue.body, budgets?.issueBody);
+  issueBodyFinal = issueBodyContent.length;
+  sections.push(issueBodyContent);
 
   // Repository section
   sections.push('');
@@ -389,24 +452,38 @@ export function formatContextForPrompt(context: AgentContext): string {
 
   // Plan section
   if (context.plan !== undefined) {
+    const planContent = truncateSection(context.plan, budgets?.plan);
+    planFinal = planContent.length;
     sections.push('');
     sections.push('## Current Plan');
-    sections.push(context.plan);
+    sections.push(planContent);
   }
 
   // Review feedback section
   if (context.review !== undefined) {
+    const reviewContent = truncateSection(context.review, budgets?.review);
+    reviewFinal = reviewContent.length;
     sections.push('');
     sections.push('## Latest Review Feedback');
-    sections.push(context.review);
+    sections.push(reviewContent);
   }
 
   // File tree section
   if (context.fileTree !== undefined) {
+    let tree = context.fileTree;
+    if (budgets?.fileTreeEntries !== undefined) {
+      const lines = tree.split('\n');
+      if (lines.length > budgets.fileTreeEntries) {
+        tree = lines.slice(0, budgets.fileTreeEntries).join('\n')
+          + `\n[...${lines.length - budgets.fileTreeEntries} more files — use list_files to explore]`;
+      }
+    }
+    const treeContent = truncateSection(tree, budgets?.fileTree);
+    treeFinal = treeContent.length;
     sections.push('');
     sections.push('## Repository File Tree');
     sections.push('```');
-    sections.push(context.fileTree);
+    sections.push(treeContent);
     sections.push('```');
   }
 
@@ -424,11 +501,26 @@ export function formatContextForPrompt(context: AgentContext): string {
   }
 
   let result = sections.join('\n');
+  const preSafetyTotal = result.length;
 
-  // Enforce total size limit
+  // Enforce total size limit (existing safety net)
   if (result.length > MAX_TOTAL_CONTEXT_CHARS) {
     result = result.substring(0, MAX_TOTAL_CONTEXT_CHARS) + '\n[...context truncated]';
   }
+
+  log.info({
+    issueBodyOriginal: context.issue.body.length,
+    issueBodyFinal,
+    planOriginal: context.plan?.length ?? 0,
+    planFinal,
+    reviewOriginal: context.review?.length ?? 0,
+    reviewFinal,
+    fileTreeOriginal: context.fileTree?.length ?? 0,
+    fileTreeFinal: treeFinal,
+    preSafetyTotal,
+    finalTotal: result.length,
+    hasBudgets: budgets !== undefined,
+  }, 'Context formatted for prompt');
 
   return result;
 }

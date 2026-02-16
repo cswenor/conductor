@@ -17,7 +17,7 @@ import type { ImplementerBackend, Run } from '../../runs/index.ts';
 import { getRun } from '../../runs/index.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
 import { publishAgentInvocationEvent } from '../../pubsub/index.ts';
-import { assembleContext, formatContextForPrompt } from '../context.ts';
+import { assembleContext, formatContextForPrompt, resolveImplementerBudgets } from '../context.ts';
 import { createAgentInvocation, markAgentRunning, completeAgentInvocation, failAgentInvocation } from '../invocations.ts';
 import { createArtifact } from '../artifacts.ts';
 import { createAgentMessage } from '../agent-messages.ts';
@@ -48,12 +48,15 @@ Your task is to implement the approved plan by producing file changes.
 
 You have access to the following tools:
 - **read_file**: Read the contents of a file to understand existing code.
+- **read_file_range**: Read specific lines from a file (e.g., a function or class definition).
+- **search_in_file**: Search for a literal string in a file. Returns matching lines with line numbers. Use /pattern/flags syntax for regex.
 - **write_file**: Write or overwrite a file with complete content.
 - **delete_file**: Delete a file that is no longer needed.
 - **list_files**: List files in the repository to understand its structure.
 - **run_tests**: Run test commands to verify your changes work.
 
 ## Rules
+- Prefer read_file_range and search_in_file for targeted inspection before reading entire files with read_file. This reduces token usage significantly.
 - Follow the plan exactly. Implement all planned changes.
 - Write COMPLETE files, not diffs or patches.
 - Use relative paths from the repository root. No absolute paths.
@@ -63,7 +66,14 @@ You have access to the following tools:
 - Do not create or modify .git/ directory files.
 - Ensure all code compiles/parses correctly.
 - Use read_file and list_files to understand existing code before making changes.
-- After writing files, consider running tests to verify your changes.`;
+- After writing files, consider running tests to verify your changes.
+
+## Context
+Context sections (plan, review, file tree, issue body) may be truncated to save tokens.
+When you see "[...truncated]", use your tools to fetch the full details:
+- Use list_files to explore the repository structure.
+- Use read_file or read_file_range to inspect specific files.
+- Use search_in_file to locate specific patterns.`;
 
 // =============================================================================
 // Backend Resolver
@@ -92,7 +102,7 @@ export async function runImplementerWithAgentSDK(
     runId: input.runId,
     worktreePath: input.worktreePath,
   });
-  const userPrompt = formatContextForPrompt(assembledContext);
+  const userPrompt = formatContextForPrompt(assembledContext, resolveImplementerBudgets());
 
   // Create agent invocation
   const invocation = createAgentInvocation(db, {

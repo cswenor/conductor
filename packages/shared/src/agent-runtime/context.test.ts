@@ -18,6 +18,8 @@ import {
   readRelevantFiles,
   assembleContext,
   formatContextForPrompt,
+  resolveImplementerBudgets,
+  TRUNCATION_HINT,
 } from './context.ts';
 
 let db: DatabaseType;
@@ -346,5 +348,182 @@ describe('formatContextForPrompt', () => {
 
     expect(formatted).toContain('## Latest Review Feedback');
     expect(formatted).toContain('Fix the thing');
+  });
+});
+
+// =============================================================================
+// Section Budgets
+// =============================================================================
+
+function makeMinimalContext(overrides: Partial<import('./context.ts').AgentContext> = {}): import('./context.ts').AgentContext {
+  return {
+    issue: { number: 1, title: 'Test', body: overrides.issue?.body ?? 'body', type: 'issue', state: 'open', labels: [] },
+    repository: { fullName: 'o/r', defaultBranch: 'main' },
+    run: { runId: 'r_1', baseBranch: 'main', branch: '', planRevisions: 0, testFixAttempts: 0, reviewRounds: 0 },
+    ...overrides,
+  };
+}
+
+/**
+ * Extract the plan payload from formatted output.
+ * Plan payload is everything between "## Current Plan\n" and the next "\n\n##" or end of string.
+ */
+function extractPlanPayload(formatted: string): string | null {
+  const marker = '## Current Plan\n';
+  const start = formatted.indexOf(marker);
+  if (start === -1) return null;
+  const payloadStart = start + marker.length;
+  const nextSection = formatted.indexOf('\n\n##', payloadStart);
+  if (nextSection === -1) return formatted.substring(payloadStart);
+  return formatted.substring(payloadStart, nextSection);
+}
+
+function extractReviewPayload(formatted: string): string | null {
+  const marker = '## Latest Review Feedback\n';
+  const start = formatted.indexOf(marker);
+  if (start === -1) return null;
+  const payloadStart = start + marker.length;
+  const nextSection = formatted.indexOf('\n\n##', payloadStart);
+  if (nextSection === -1) return formatted.substring(payloadStart);
+  return formatted.substring(payloadStart, nextSection);
+}
+
+describe('section budgets', () => {
+  it('returns full content when no budgets specified', () => {
+    const bigPlan = 'X'.repeat(20_000);
+    const ctx = makeMinimalContext({ plan: bigPlan });
+    const formatted = formatContextForPrompt(ctx);
+    expect(formatted).toContain(bigPlan);
+  });
+
+  it('truncates plan when budget exceeded', () => {
+    const bigPlan = 'X'.repeat(20_000);
+    const ctx = makeMinimalContext({ plan: bigPlan });
+    const formatted = formatContextForPrompt(ctx, { plan: 5000 });
+    expect(formatted).toContain(TRUNCATION_HINT);
+    expect(formatted).not.toContain(bigPlan);
+  });
+
+  it('truncates issue body when budget exceeded', () => {
+    const bigBody = 'B'.repeat(10_000);
+    const ctx = makeMinimalContext({ issue: { number: 1, title: 'T', body: bigBody, type: 'issue', state: 'open', labels: [] } });
+    const formatted = formatContextForPrompt(ctx, { issueBody: 1000 });
+    expect(formatted).toContain(TRUNCATION_HINT);
+    expect(formatted).not.toContain(bigBody);
+  });
+
+  it('truncates review when budget exceeded', () => {
+    const bigReview = 'R'.repeat(20_000);
+    const ctx = makeMinimalContext({ review: bigReview });
+    const formatted = formatContextForPrompt(ctx, { review: 5000 });
+    const payload = extractReviewPayload(formatted);
+    expect(payload).not.toBeNull();
+    expect(payload).toContain(TRUNCATION_HINT);
+    expect(payload!.length).toBeLessThanOrEqual(5000);
+  });
+
+  it('limits file tree entries when fileTreeEntries budget set', () => {
+    const lines = Array.from({ length: 1000 }, (_, i) => `src/file${i}.ts`);
+    const ctx = makeMinimalContext({ fileTree: lines.join('\n') });
+    const formatted = formatContextForPrompt(ctx, { fileTreeEntries: 50 });
+    expect(formatted).toContain('950 more files');
+  });
+
+  it('does not truncate sections within budget', () => {
+    const shortPlan = 'Short plan';
+    const ctx = makeMinimalContext({ plan: shortPlan });
+    const formatted = formatContextForPrompt(ctx, { plan: 50000 });
+    expect(formatted).toContain(shortPlan);
+    expect(formatted).not.toContain(TRUNCATION_HINT);
+  });
+
+  it('truncation hint contains tool names', () => {
+    expect(TRUNCATION_HINT).toContain('read_file');
+    expect(TRUNCATION_HINT).toContain('search_in_file');
+    expect(TRUNCATION_HINT).toContain('list_files');
+  });
+
+  it('strict cap: plan payload fits within budget', () => {
+    const bigPlan = 'X'.repeat(20_000);
+    const ctx = makeMinimalContext({ plan: bigPlan });
+    const formatted = formatContextForPrompt(ctx, { plan: 500 });
+    const payload = extractPlanPayload(formatted);
+    expect(payload).not.toBeNull();
+    expect(payload!.length).toBeLessThanOrEqual(500);
+  });
+
+  it('strict cap: budget=0 produces empty plan payload', () => {
+    const ctx = makeMinimalContext({ plan: 'some plan' });
+    const formatted = formatContextForPrompt(ctx, { plan: 0 });
+    const payload = extractPlanPayload(formatted);
+    expect(payload).not.toBeNull();
+    expect(payload).toBe('');
+  });
+
+  it('strict cap: tiny budget produces visible hint fragment', () => {
+    const ctx = makeMinimalContext({ plan: 'X'.repeat(1000) });
+    const formatted = formatContextForPrompt(ctx, { plan: 10 });
+    const payload = extractPlanPayload(formatted);
+    expect(payload).not.toBeNull();
+    expect(payload!.length).toBe(10);
+    expect(payload!.startsWith('[')).toBe(true);
+  });
+
+  it('no budgets means no truncation (backward compat)', () => {
+    const bigPlan = 'P'.repeat(20_000);
+    const bigReview = 'R'.repeat(15_000);
+    const ctx = makeMinimalContext({ plan: bigPlan, review: bigReview });
+    const withoutBudgets = formatContextForPrompt(ctx);
+    const withUndefined = formatContextForPrompt(ctx, undefined);
+    expect(withoutBudgets).toContain(bigPlan);
+    expect(withoutBudgets).toContain(bigReview);
+    expect(withoutBudgets).toBe(withUndefined);
+  });
+});
+
+// =============================================================================
+// resolveImplementerBudgets
+// =============================================================================
+
+const CTX_ENV_KEYS = [
+  'CONDUCTOR_CTX_BUDGET_ISSUE', 'CONDUCTOR_CTX_BUDGET_PLAN',
+  'CONDUCTOR_CTX_BUDGET_REVIEW', 'CONDUCTOR_CTX_BUDGET_FILE_TREE',
+  'CONDUCTOR_CTX_BUDGET_FILE_TREE_ENTRIES',
+];
+function cleanCtxEnv() {
+  for (const key of CTX_ENV_KEYS) delete process.env[key];
+}
+
+describe('resolveImplementerBudgets', () => {
+  beforeEach(() => cleanCtxEnv());
+  afterEach(() => cleanCtxEnv());
+
+  it('returns default budgets', () => {
+    const budgets = resolveImplementerBudgets();
+    expect(budgets).toEqual({
+      issueBody: 5_000,
+      plan: 10_000,
+      review: 10_000,
+      fileTree: 10_000,
+      fileTreeEntries: 500,
+    });
+  });
+
+  it('CONDUCTOR_CTX_BUDGET_PLAN overrides plan budget', () => {
+    process.env['CONDUCTOR_CTX_BUDGET_PLAN'] = '20000';
+    const budgets = resolveImplementerBudgets();
+    expect(budgets.plan).toBe(20_000);
+  });
+
+  it('invalid env value falls back to default', () => {
+    process.env['CONDUCTOR_CTX_BUDGET_PLAN'] = 'garbage';
+    const budgets = resolveImplementerBudgets();
+    expect(budgets.plan).toBe(10_000);
+  });
+
+  it('below-floor env value is clamped', () => {
+    process.env['CONDUCTOR_CTX_BUDGET_PLAN'] = '100';
+    const budgets = resolveImplementerBudgets();
+    expect(budgets.plan).toBe(1_000);
   });
 });
