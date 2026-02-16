@@ -46,6 +46,19 @@ const ESTIMATION_SAFETY_FACTOR = 1.15;
 const RETRY_BASE_DELAY_MS = 1_000;
 const RETRY_JITTER_MS = 500;
 
+const MAX_SUMMARY_CHARS = 4000;
+const MAX_ERROR_SNIPPET_CHARS = 80;
+const MAX_TARGET_CHARS = 120;
+const MAX_THINKING_CHARS = 100;
+/** @internal Exported for testing. */
+export const COMPACTION_MARKER = '[COMPACTION_SUMMARY_V1]';
+const COMPACTION_BRIDGE = 'The above summarizes earlier tool calls. Continue with the task using the recent context below.';
+
+/** Keys safe for target extraction, in priority order. First match wins. */
+const TARGET_KEY_PRIORITY: readonly string[] = [
+  'path', 'file_path', 'file', 'directory', 'pattern', 'glob', 'command', 'cwd',
+];
+
 // =============================================================================
 // Budget Config
 // =============================================================================
@@ -418,16 +431,310 @@ function estimateTokens(
   return Math.ceil((chars / 4) * ESTIMATION_SAFETY_FACTOR);
 }
 
+// =============================================================================
+// Compaction Helpers
+// =============================================================================
+
+function truncate(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max - 3) + '...';
+}
+
+function extractTarget(input: Record<string, unknown>): string | undefined {
+  for (const key of TARGET_KEY_PRIORITY) {
+    const val = input[key];
+    if (typeof val === 'string' && val.length > 0) {
+      return truncate(val, MAX_TARGET_CHARS);
+    }
+  }
+  return undefined;
+}
+
+function resolveContentBytes(content: unknown): { text: string; bytes: number } {
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  return { text, bytes: Buffer.byteLength(text, 'utf8') };
+}
+
+function isSyntheticSummary(msg: Anthropic.MessageParam): boolean {
+  if (!Array.isArray(msg.content) || msg.content.length !== 1) return false;
+  const block = msg.content[0];
+  if (block === undefined || !('type' in block) || block.type !== 'text' || !('text' in block)) return false;
+  const text = String(block.text);
+  const firstLine = text.split('\n', 1)[0];
+  return firstLine === COMPACTION_MARKER;
+}
+
+function isSyntheticBridge(msg: Anthropic.MessageParam): boolean {
+  return typeof msg.content === 'string' && msg.content === COMPACTION_BRIDGE;
+}
+
+function extractPriorSummaryBody(msg: Anthropic.MessageParam): string | null {
+  if (!isSyntheticSummary(msg)) return null;
+  const blocks = msg.content as Array<{ text: string }>;
+  const block = blocks[0];
+  if (block === undefined) return null;
+  const idx = block.text.indexOf('\n');
+  return idx >= 0 ? block.text.slice(idx + 1) : '';
+}
+
+/** @internal Exported for testing. */
+export function parsePriorSummaryEntries(body: string): { entries: string[]; priorOmitted: number } {
+  // Normalize: trim leading whitespace, canonicalize line endings
+  let text = body.trimStart().replaceAll('\r\n', '\n');
+  // Strip header line
+  text = text.replace(/^Compacted history:.*\n?/, '').trimStart();
+  // Strip and capture omission line
+  let priorOmitted = 0;
+  text = text.replace(/^\[\.\.\.(\d+) earlier entries omitted\]\n?/, (_match, n) => {
+    priorOmitted = parseInt(n as string, 10);
+    return '';
+  }).trimStart();
+  // Split on Turn boundaries, filter empties
+  const entries = text.split(/\n(?=Turn \d+:)/).map(e => e.trim()).filter(e => e.length > 0);
+  return { entries, priorOmitted };
+}
+
+// =============================================================================
+// Summary Compaction
+// =============================================================================
+
+/** @internal Exported for testing. */
+export function summarizeDroppedTurns(
+  droppedMessages: Anthropic.MessageParam[],
+  maxChars?: number,
+): string {
+  const limit = maxChars ?? MAX_SUMMARY_CHARS;
+
+  // --- Step 1: Collect prior summaries and filter synthetic messages ---
+  const priorEntries: string[] = [];
+  let totalPriorOmitted = 0;
+
+  for (const msg of droppedMessages) {
+    const body = extractPriorSummaryBody(msg);
+    if (body !== null) {
+      const parsed = parsePriorSummaryEntries(body);
+      priorEntries.push(...parsed.entries);
+      totalPriorOmitted += parsed.priorOmitted;
+    }
+  }
+
+  const filtered = droppedMessages.filter(m => !isSyntheticSummary(m) && !isSyntheticBridge(m));
+
+  // --- Step 2: Walk remaining messages with role-aware state machine ---
+  interface PendingToolUse {
+    name: string;
+    input: Record<string, unknown>;
+    id: string;
+  }
+
+  const newEntries: string[] = [];
+  let currentToolUses: PendingToolUse[] = [];
+
+  function flushPending(): void {
+    if (currentToolUses.length === 0) return;
+    const lines: string[] = [];
+    for (const tu of currentToolUses) {
+      const target = extractTarget(tu.input);
+      const targetStr = target !== undefined ? `(${target})` : '';
+      lines.push(`  - ${tu.name}${targetStr} → (no result)`);
+    }
+    newEntries.push(`Turn PLACEHOLDER:\n${lines.join('\n')}`);
+    currentToolUses = [];
+  }
+
+  function emitTurn(
+    toolUses: PendingToolUse[],
+    results: Map<string, { content: unknown; isError: boolean }>,
+  ): void {
+    const lines: string[] = [];
+    for (const tu of toolUses) {
+      const target = extractTarget(tu.input);
+      const targetStr = target !== undefined ? `(${target})` : '';
+
+      const result = results.get(tu.id);
+      let resultStr: string;
+      if (result === undefined) {
+        resultStr = '(no result)';
+      } else {
+        const { text, bytes } = resolveContentBytes(result.content);
+        if (result.isError) {
+          const snippet = truncate(text, MAX_ERROR_SNIPPET_CHARS);
+          resultStr = `error, ${bytes} bytes: "${snippet}"`;
+        } else {
+          resultStr = `ok, ${bytes} bytes`;
+        }
+      }
+
+      // Hash for write tools
+      let hashStr = '';
+      if (tu.name.includes('write') && typeof tu.input['content'] === 'string') {
+        const hash = createHash('sha256').update(tu.input['content']).digest('hex').slice(0, 8);
+        hashStr = `, sha256=${hash}`;
+      }
+
+      lines.push(`  - ${tu.name}${targetStr} → ${resultStr}${hashStr}`);
+    }
+    newEntries.push(`Turn PLACEHOLDER:\n${lines.join('\n')}`);
+  }
+
+  for (const msg of filtered) {
+    if (msg.role === 'assistant') {
+      // Flush any pending tool_uses without results
+      flushPending();
+
+      if (Array.isArray(msg.content)) {
+        const toolUseBlocks: PendingToolUse[] = [];
+        const textParts: string[] = [];
+
+        for (const block of msg.content) {
+          if (typeof block === 'object' && block !== null && 'type' in block) {
+            if (block.type === 'tool_use' && 'name' in block && 'input' in block && 'id' in block) {
+              toolUseBlocks.push({
+                name: String(block.name),
+                input: block.input as Record<string, unknown>,
+                id: String(block.id),
+              });
+            } else if (block.type === 'text' && 'text' in block) {
+              textParts.push(String(block.text));
+            }
+          }
+        }
+
+        if (toolUseBlocks.length > 0) {
+          currentToolUses = toolUseBlocks;
+        } else if (textParts.length > 0) {
+          // Text-only assistant turn (reasoning)
+          const combined = textParts.join(' ');
+          const snippet = truncate(combined, MAX_THINKING_CHARS);
+          newEntries.push(`Turn PLACEHOLDER:\n  [reasoning]: "${snippet}"`);
+        }
+      } else if (typeof msg.content === 'string' && msg.content.length > 0) {
+        // String-content assistant message
+        const snippet = truncate(msg.content, MAX_THINKING_CHARS);
+        newEntries.push(`Turn PLACEHOLDER:\n  [reasoning]: "${snippet}"`);
+      }
+    } else if (msg.role === 'user') {
+      if (Array.isArray(msg.content) && currentToolUses.length > 0) {
+        // Match tool_result blocks to pending tool_uses
+        const results = new Map<string, { content: unknown; isError: boolean }>();
+        for (const block of msg.content) {
+          if (typeof block === 'object' && block !== null && 'type' in block && block.type === 'tool_result' && 'tool_use_id' in block) {
+            const toolBlock = block as { tool_use_id: string; content?: unknown; is_error?: boolean };
+            results.set(
+              toolBlock.tool_use_id,
+              {
+                content: toolBlock.content ?? '',
+                isError: toolBlock.is_error === true,
+              },
+            );
+          }
+        }
+        emitTurn(currentToolUses, results);
+        currentToolUses = [];
+      }
+      // String user messages: skip (continuation text, not tool results)
+    }
+  }
+
+  // Flush any remaining pending tool_uses
+  flushPending();
+
+  // --- Step 3: Combine prior + new entries ---
+  const allEntries = [...priorEntries, ...newEntries];
+
+  if (allEntries.length === 0) return '';
+
+  // --- Step 4: Renumber turns sequentially ---
+  for (let i = 0; i < allEntries.length; i++) {
+    const entry = allEntries[i] ?? '';
+    allEntries[i] = entry.replace(/^Turn [^:]+:/, `Turn ${i + 1}:`);
+  }
+
+  // --- Step 5: Count totals ---
+  let totalCalls = 0;
+  for (const entry of allEntries) {
+    const matches = entry.match(/^\s+-\s/gm);
+    if (matches) totalCalls += matches.length;
+  }
+
+  // --- Step 6: Assemble ---
+  function assemble(entries: string[], omittedCount: number): string {
+    const header = `Compacted history: ${totalCalls} tool calls across ${entries.length} turns`;
+    const omitLine = omittedCount > 0 ? `[...${omittedCount} earlier entries omitted]\n\n` : '';
+    return `${COMPACTION_MARKER}\n${header}\n\n${omitLine}${entries.join('\n\n')}`;
+  }
+
+  let result = assemble(allEntries, 0);
+
+  // --- Step 7: Trim if over budget ---
+  if (result.length > limit) {
+    const trimmed = [...allEntries];
+    let omittedCount = totalPriorOmitted;
+    while (trimmed.length > 1 && result.length > limit) {
+      // Remove oldest entry, recalculate
+      const removed = trimmed.shift() ?? '';
+      const removedCalls = (removed.match(/^\s+-\s/gm) ?? []).length;
+      totalCalls -= removedCalls;
+      omittedCount++;
+      // Renumber remaining
+      for (let i = 0; i < trimmed.length; i++) {
+        const entry = trimmed[i] ?? '';
+        trimmed[i] = entry.replace(/^Turn [^:]+:/, `Turn ${i + 1}:`);
+      }
+      result = assemble(trimmed, omittedCount);
+    }
+  }
+
+  return result;
+}
+
+// =============================================================================
+// Message Compaction
+// =============================================================================
+
+interface CompactionResult {
+  summary: Anthropic.MessageParam[];
+  naive: Anthropic.MessageParam[];
+  turnsDropped: number;
+  hasSummary: boolean;
+}
+
 function compactMessages(
   messages: Anthropic.MessageParam[],
   keepRecentTurns: number,
-): Anthropic.MessageParam[] | null {
+): CompactionResult | null {
   const totalPairs = (messages.length - 1) / 2;
   if (totalPairs <= keepRecentTurns) return null;
   const initial = messages[0];
   if (initial === undefined) return null;
   const recentStart = messages.length - keepRecentTurns * 2;
-  return [initial, ...messages.slice(recentStart)];
+  const recent = messages.slice(recentStart);
+  const dropped = messages.slice(1, recentStart);
+  const turnsDropped = Math.floor(dropped.length / 2);
+
+  // Naive compaction: original user prompt + recent turns
+  const naive: Anthropic.MessageParam[] = [initial, ...recent];
+
+  // Summary compaction: inject summary of dropped turns
+  const summaryText = summarizeDroppedTurns(dropped);
+  let summary: Anthropic.MessageParam[];
+  const hasSummary = summaryText.length > 0;
+
+  if (hasSummary) {
+    const summaryAssistant: Anthropic.MessageParam = {
+      role: 'assistant',
+      content: [{ type: 'text', text: summaryText }],
+    };
+    const bridgeUser: Anthropic.MessageParam = {
+      role: 'user',
+      content: COMPACTION_BRIDGE,
+    };
+    summary = [initial, summaryAssistant, bridgeUser, ...recent];
+  } else {
+    summary = naive;
+  }
+
+  return { summary, naive, turnsDropped, hasSummary };
 }
 
 function applyCompaction(
@@ -435,27 +742,39 @@ function applyCompaction(
   messages: Anthropic.MessageParam[],
   tools: Anthropic.Tool[] | undefined,
   budget: number,
-): { resolved: boolean; finalEstimate: number; keptTurns: number } {
+): { resolved: boolean; finalEstimate: number; keptTurns: number; turnsDropped: number; mode: 'summary' | 'naive' | 'none' } {
   let keepTurns = DEFAULT_KEEP_RECENT_TURNS;
-  let compacted: Anthropic.MessageParam[] | null = null;
   let estimate = estimateTokens(systemPrompt, messages, tools);
 
   while (keepTurns >= MIN_RECENT_TURNS) {
-    compacted = compactMessages(messages, keepTurns);
-    if (compacted === null) {
+    const result = compactMessages(messages, keepTurns);
+    if (result === null) {
       keepTurns--;
       continue;
     }
-    estimate = estimateTokens(systemPrompt, compacted, tools);
+
+    // Stage 1: prefer summary
+    if (result.hasSummary) {
+      estimate = estimateTokens(systemPrompt, result.summary, tools);
+      if (estimate <= budget) {
+        messages.length = 0;
+        messages.push(...result.summary);
+        return { resolved: true, finalEstimate: estimate, keptTurns: keepTurns, turnsDropped: result.turnsDropped, mode: 'summary' };
+      }
+    }
+
+    // Stage 2: fallback to naive
+    estimate = estimateTokens(systemPrompt, result.naive, tools);
     if (estimate <= budget) {
       messages.length = 0;
-      messages.push(...compacted);
-      return { resolved: true, finalEstimate: estimate, keptTurns: keepTurns };
+      messages.push(...result.naive);
+      return { resolved: true, finalEstimate: estimate, keptTurns: keepTurns, turnsDropped: result.turnsDropped, mode: 'naive' };
     }
+
     keepTurns--;
   }
 
-  return { resolved: false, finalEstimate: estimate, keptTurns: keepTurns };
+  return { resolved: false, finalEstimate: estimate, keptTurns: keepTurns, turnsDropped: 0, mode: 'none' };
 }
 
 // =============================================================================
@@ -551,22 +870,23 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
     const estimated = estimateTokens(input.systemPrompt, messages, toolDefs);
 
     if (estimated > effectiveBudget) {
-      const { resolved, finalEstimate, keptTurns } = applyCompaction(
+      const compactionResult = applyCompaction(
         input.systemPrompt, messages, toolDefs, effectiveBudget,
       );
-      if (resolved) {
+      if (compactionResult.resolved) {
         log.info(
-          { iteration: i, estimatedTokens: estimated, compactedTokens: finalEstimate,
-            keptTurns, effectiveBudget },
+          { iteration: i, estimatedTokens: estimated, compactedTokens: compactionResult.finalEstimate,
+            keptTurns: compactionResult.keptTurns, turnsDropped: compactionResult.turnsDropped,
+            mode: compactionResult.mode, effectiveBudget },
           'Token budget preflight: compacted message history',
         );
       } else {
         log.warn(
-          { iteration: i, estimatedTokens: finalEstimate, effectiveBudget,
-            messageCount: messages.length },
-          'Token budget preflight: compaction insufficient',
+          { iteration: i, estimatedTokens: compactionResult.finalEstimate,
+            keptTurns: compactionResult.keptTurns, mode: 'none', effectiveBudget },
+          'Token budget preflight: compaction exhausted, no viable reduction found',
         );
-        throw new AgentBudgetExceededError(finalEstimate, effectiveBudget);
+        throw new AgentBudgetExceededError(compactionResult.finalEstimate, effectiveBudget);
       }
     }
 
@@ -612,13 +932,14 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
             if (compResult.resolved) {
               log.info(
                 { iteration: i, retry, compactedTokens: compResult.finalEstimate,
-                  effectiveBudget, keptTurns: compResult.keptTurns },
+                  effectiveBudget, keptTurns: compResult.keptTurns,
+                  turnsDropped: compResult.turnsDropped, mode: compResult.mode },
                 'Re-compacted after rate limit backoff',
               );
             } else {
               log.warn(
                 { iteration: i, retry, estimatedTokens: compResult.finalEstimate,
-                  effectiveBudget },
+                  effectiveBudget, mode: 'none' },
                 'Re-compaction failed after rate limit, re-throwing rate limit error',
               );
               throw err;
