@@ -90,8 +90,8 @@ describe('read_file', () => {
     const registry = getRegistry();
     const tool = registry.get('read_file')!;
 
-    // Write a file larger than 100KB
-    const largeContent = 'x'.repeat(200_000);
+    // Write a file larger than default 20KB limit
+    const largeContent = 'x'.repeat(40_000);
     writeFileSync(join(worktreePath, 'large.txt'), largeContent);
 
     const result = await tool.execute({ path: 'large.txt' }, context);
@@ -299,10 +299,10 @@ describe('list_files with pattern', () => {
     expect(result.content).not.toContain('untracked.js');
   });
 
-  it('description mentions 500', () => {
+  it('description mentions 200', () => {
     const registry = getRegistry();
     const tool = registry.get('list_files')!;
-    expect(tool.description).toContain('500');
+    expect(tool.description).toContain('200');
   });
 });
 
@@ -379,5 +379,81 @@ describe('registerFilesystemTools', () => {
     expect(registry.has('delete_file')).toBe(true);
     expect(registry.has('list_files')).toBe(true);
     expect(registry.names()).toHaveLength(4);
+  });
+});
+
+describe('env-configurable limits', () => {
+  afterEach(() => {
+    delete process.env['CONDUCTOR_MAX_READ_BYTES'];
+    delete process.env['CONDUCTOR_MAX_LIST_ENTRIES'];
+  });
+
+  it('CONDUCTOR_MAX_READ_BYTES overrides read_file truncation threshold', async () => {
+    process.env['CONDUCTOR_MAX_READ_BYTES'] = '5000';
+    const registry = getRegistry();
+    const tool = registry.get('read_file')!;
+
+    // Write 10KB file, verify truncation at ~5000 chars
+    const content = 'x'.repeat(10_000);
+    writeFileSync(join(worktreePath, 'medium.txt'), content);
+
+    const result = await tool.execute({ path: 'medium.txt' }, context);
+    expect(result.content).toContain('[...truncated]');
+    expect(result.meta['truncated']).toBe(true);
+    // Content should be ~5000 chars + truncation marker
+    expect(result.content.length).toBeLessThan(6000);
+  });
+
+  it('CONDUCTOR_MAX_LIST_ENTRIES overrides list_files cap', async () => {
+    process.env['CONDUCTOR_MAX_LIST_ENTRIES'] = '10';
+    const registry = getRegistry();
+    const tool = registry.get('list_files')!;
+
+    // Create and git-add 20 files
+    for (let i = 0; i < 20; i++) {
+      writeFileSync(join(worktreePath, `file${i.toString().padStart(2, '0')}.ts`), `export const x${i} = ${i};`);
+    }
+    execFileSync('git', ['add', '-A'], { cwd: worktreePath });
+    execFileSync('git', ['-c', 'commit.gpgsign=false', 'commit', '-m', 'add files'], { cwd: worktreePath });
+
+    const result = await tool.execute({}, context);
+    expect(result.meta['truncated']).toBe(true);
+    expect(result.meta['listed']).toBe(10);
+    expect(result.content).toContain('more files');
+  });
+
+  it('invalid env values fall back to defaults', async () => {
+    process.env['CONDUCTOR_MAX_READ_BYTES'] = 'abc';
+    process.env['CONDUCTOR_MAX_LIST_ENTRIES'] = 'Infinity';
+    const registry = getRegistry();
+    const tool = registry.get('read_file')!;
+
+    // Write 40KB file, verify truncation at default 20KB
+    const content = 'x'.repeat(40_000);
+    writeFileSync(join(worktreePath, 'big.txt'), content);
+
+    const result = await tool.execute({ path: 'big.txt' }, context);
+    expect(result.content).toContain('[...truncated]');
+    expect(result.meta['truncated']).toBe(true);
+    // Should be truncated at ~20000 (default), not at some other value
+    expect(result.content.length).toBeGreaterThan(19_000);
+    expect(result.content.length).toBeLessThan(21_000);
+  });
+
+  it('below-floor env values are clamped to floor', async () => {
+    process.env['CONDUCTOR_MAX_READ_BYTES'] = '500'; // below floor of 1000
+    const registry = getRegistry();
+    const tool = registry.get('read_file')!;
+
+    // Write 2KB file, verify truncation at 1000 (floor), not 500
+    const content = 'x'.repeat(2_000);
+    writeFileSync(join(worktreePath, 'small.txt'), content);
+
+    const result = await tool.execute({ path: 'small.txt' }, context);
+    expect(result.content).toContain('[...truncated]');
+    expect(result.meta['truncated']).toBe(true);
+    // Should be clamped to floor of 1000, so content ~1000 + marker
+    expect(result.content.length).toBeGreaterThan(990);
+    expect(result.content.length).toBeLessThan(1100);
   });
 });

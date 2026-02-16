@@ -29,6 +29,28 @@ import { publishAgentInvocationEvent } from '../../pubsub/index.ts';
 const log = createLogger({ name: 'conductor:implementer' });
 
 // =============================================================================
+// Runtime-resolved limits (issue #136)
+// =============================================================================
+
+// Rationale (issue #136): Reduced from 16384 to limit per-call output size
+// in tool-loop mode, reducing cumulative payload growth. Env-configurable.
+let warnedMaxTokens = false;
+function resolveImplementerMaxTokens(): number {
+  const raw = process.env['CONDUCTOR_IMPLEMENTER_MAX_TOKENS'];
+  if (raw === undefined) return 8_192;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    if (!warnedMaxTokens) {
+      warnedMaxTokens = true;
+      log.warn({ envKey: 'CONDUCTOR_IMPLEMENTER_MAX_TOKENS', envValue: raw },
+        'Invalid CONDUCTOR_IMPLEMENTER_MAX_TOKENS, using default 8192');
+    }
+    return 8_192;
+  }
+  return Math.max(parsed, 1_024);
+}
+
+// =============================================================================
 // Types
 // =============================================================================
 
@@ -352,7 +374,7 @@ export async function runImplementerWithTools(
         projectId,
         abortSignal,
       },
-      maxTokens: 16384,
+      maxTokens: resolveImplementerMaxTokens(),
       temperature: 0.2,
       abortSignal,
     });

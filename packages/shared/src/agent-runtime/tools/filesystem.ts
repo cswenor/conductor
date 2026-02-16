@@ -11,15 +11,46 @@ import { resolve, relative, dirname, isAbsolute } from 'node:path';
 import { isValidFilePath } from '../agents/implementer.ts';
 import { isSensitiveFile } from '../context.ts';
 import { checkSymlinkEscape } from './path-safety.ts';
+import { createLogger } from '../../logger/index.ts';
 import type { ToolDefinition, ToolResult } from './types.ts';
 import type { ToolRegistry } from './registry.ts';
 
+const log = createLogger({ name: 'conductor:filesystem' });
+
 // =============================================================================
-// Constants
+// Runtime-resolved limits (issue #136)
 // =============================================================================
 
-const MAX_READ_BYTES = 100_000; // 100KB
-const MAX_LIST_ENTRIES = 500;
+// Rationale (issue #136): Tightened from 100KB/500 to reduce tool-loop payload
+// size and rate-limit pressure. Env-configurable for operator tuning.
+// Limits are resolved per-call (env changes take effect at runtime).
+// Tool descriptions are a startup snapshot — they do NOT update if env changes after init.
+
+const warnedEnvKeys = new Set<string>();
+
+function resolveEnvInt(key: string, defaultVal: number, floor: number): number {
+  const raw = process.env[key];
+  if (raw === undefined) return defaultVal;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    if (!warnedEnvKeys.has(key)) {
+      warnedEnvKeys.add(key);
+      log.warn({ envKey: key, envValue: raw }, `Invalid ${key}, using default ${defaultVal}`);
+    }
+    return defaultVal;
+  }
+  return Math.max(parsed, floor);
+}
+
+// Note: truncation uses char count via substring(), not byte count.
+// Acceptable for UTF-8 source files where chars ≈ bytes.
+function resolveMaxReadBytes(): number {
+  return resolveEnvInt('CONDUCTOR_MAX_READ_BYTES', 20_000, 1_000);
+}
+
+function resolveMaxListEntries(): number {
+  return resolveEnvInt('CONDUCTOR_MAX_LIST_ENTRIES', 200, 10);
+}
 
 // =============================================================================
 // Helpers
@@ -100,7 +131,8 @@ export function matchesGlob(filePath: string, pattern: string): boolean {
 
 const readFileTool: ToolDefinition = {
   name: 'read_file',
-  description: 'Read the contents of a file at the given path relative to the repository root. Returns the file content as text. Files larger than 100KB will be truncated.',
+  // Description is a startup snapshot; does not update if env changes after init.
+  description: `Read the contents of a file at the given path relative to the repository root. Returns the file content as text. Files larger than ${resolveMaxReadBytes()} characters will be truncated.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -113,6 +145,7 @@ const readFileTool: ToolDefinition = {
   },
   extractTarget: (input) => input['path'] as string | undefined,
   execute: (input, context) => {
+    const maxReadBytes = resolveMaxReadBytes();
     const path = input['path'] as string;
 
     const validationError = validatePath(path, context.worktreePath);
@@ -131,8 +164,8 @@ const readFileTool: ToolDefinition = {
       const originalSize = Buffer.byteLength(content, 'utf8');
       let truncated = false;
 
-      if (originalSize > MAX_READ_BYTES) {
-        content = content.substring(0, MAX_READ_BYTES) + '\n[...truncated]';
+      if (originalSize > maxReadBytes) {
+        content = content.substring(0, maxReadBytes) + '\n[...truncated]';
         truncated = true;
       }
 
@@ -239,7 +272,8 @@ const deleteFileTool: ToolDefinition = {
 
 const listFilesTool: ToolDefinition = {
   name: 'list_files',
-  description: 'List files in the repository using git ls-files. Optionally filter by a subdirectory and/or glob pattern. Sensitive files (.env, .pem, etc) are excluded. Maximum 500 entries.',
+  // Description is a startup snapshot; does not update if env changes after init.
+  description: `List files in the repository using git ls-files. Optionally filter by a subdirectory and/or glob pattern. Sensitive files (.env, .pem, etc) are excluded. Maximum ${resolveMaxListEntries()} entries.`,
   inputSchema: {
     type: 'object',
     properties: {
@@ -255,6 +289,7 @@ const listFilesTool: ToolDefinition = {
   },
   extractTarget: (input) => input['directory'] as string | undefined,
   execute: (input, context) => {
+    const maxListEntries = resolveMaxListEntries();
     const directory = input['directory'] as string | undefined;
     const pattern = input['pattern'] as string | undefined;
 
@@ -300,12 +335,12 @@ const listFilesTool: ToolDefinition = {
 
       const files = [...trackedFiles, ...untrackedFiles];
       const safeFiles = files.filter((f) => !isSensitiveFile(f));
-      const limited = safeFiles.slice(0, MAX_LIST_ENTRIES);
-      const truncated = safeFiles.length > MAX_LIST_ENTRIES;
+      const limited = safeFiles.slice(0, maxListEntries);
+      const truncated = safeFiles.length > maxListEntries;
 
       let listing = limited.join('\n');
       if (truncated) {
-        listing += `\n[...${safeFiles.length - MAX_LIST_ENTRIES} more files]`;
+        listing += `\n[...${safeFiles.length - maxListEntries} more files]`;
       }
 
       return ok(listing, { totalFiles: safeFiles.length, listed: limited.length, truncated });
