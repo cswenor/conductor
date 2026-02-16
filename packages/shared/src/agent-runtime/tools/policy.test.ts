@@ -72,6 +72,42 @@ describe('worktreeBoundaryRule', () => {
     expect(result?.decision).toBe('block');
   });
 
+  it('blocks path traversal via read_file_range', () => {
+    const result = worktreeBoundaryRule.evaluate(
+      'read_file_range',
+      { path: '../secret.txt', start_line: 1, end_line: 10 },
+      makeContext()
+    );
+    expect(result?.decision).toBe('block');
+  });
+
+  it('allows valid path via read_file_range', () => {
+    const result = worktreeBoundaryRule.evaluate(
+      'read_file_range',
+      { path: 'src/main.ts', start_line: 1, end_line: 10 },
+      makeContext()
+    );
+    expect(result).toBeNull();
+  });
+
+  it('blocks path traversal via search_in_file', () => {
+    const result = worktreeBoundaryRule.evaluate(
+      'search_in_file',
+      { path: '/etc/passwd', pattern: 'root' },
+      makeContext()
+    );
+    expect(result?.decision).toBe('block');
+  });
+
+  it('allows valid path via search_in_file', () => {
+    const result = worktreeBoundaryRule.evaluate(
+      'search_in_file',
+      { path: 'src/main.ts', pattern: 'hello' },
+      makeContext()
+    );
+    expect(result).toBeNull();
+  });
+
   describe('symlink escape detection', () => {
     let testWorktree: string;
 
@@ -159,6 +195,24 @@ describe('dotGitProtectionRule', () => {
     const result = dotGitProtectionRule.evaluate(
       'read_file',
       { path: 'sub/.git/config' },
+      makeContext()
+    );
+    expect(result?.decision).toBe('block');
+  });
+
+  it('blocks .git access via read_file_range', () => {
+    const result = dotGitProtectionRule.evaluate(
+      'read_file_range',
+      { path: '.git/config', start_line: 1, end_line: 5 },
+      makeContext()
+    );
+    expect(result?.decision).toBe('block');
+  });
+
+  it('blocks .git access via search_in_file', () => {
+    const result = dotGitProtectionRule.evaluate(
+      'search_in_file',
+      { path: '.git/config', pattern: 'url' },
       makeContext()
     );
     expect(result?.decision).toBe('block');

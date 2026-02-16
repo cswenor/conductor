@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createToolRegistry } from './registry.ts';
-import { registerFilesystemTools, matchesGlob } from './filesystem.ts';
+import { registerFilesystemTools, matchesGlob, splitLines } from './filesystem.ts';
 import type { ToolExecutionContext } from './types.ts';
 
 let worktreePath: string;
@@ -369,16 +369,480 @@ describe('symlink escape detection', () => {
   });
 });
 
+describe('splitLines', () => {
+  it('returns empty array for empty string', () => {
+    expect(splitLines('')).toEqual([]);
+  });
+
+  it('returns one line for content with trailing newline', () => {
+    expect(splitLines('a\n')).toEqual(['a']);
+  });
+
+  it('returns two lines when second is intentional empty line', () => {
+    expect(splitLines('a\n\n')).toEqual(['a', '']);
+  });
+
+  it('returns two lines with no trailing newline', () => {
+    expect(splitLines('a\nb')).toEqual(['a', 'b']);
+  });
+});
+
+describe('read_file_range', () => {
+  it('reads correct line range with line number prefixes', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'lines.txt'), 'line1\nline2\nline3\nline4\nline5\n');
+
+    const result = await tool.execute({ path: 'lines.txt', start_line: 2, end_line: 4 }, context);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe('2: line2\n3: line3\n4: line4');
+    expect(result.meta['linesReturned']).toBe(3);
+  });
+
+  it('clamps end_line past EOF without error', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'short.txt'), 'a\nb\nc\n');
+
+    const result = await tool.execute({ path: 'short.txt', start_line: 2, end_line: 100 }, context);
+    expect(result.isError).toBeUndefined();
+    expect(result.meta['effectiveEndLine']).toBe(3);
+    expect(result.meta['requestedEndLine']).toBe(100);
+    expect(result.meta['linesReturned']).toBe(2);
+  });
+
+  it('returns empty content when start_line > totalLines', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'small.txt'), 'one\ntwo\n');
+
+    const result = await tool.execute({ path: 'small.txt', start_line: 10, end_line: 20 }, context);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toBe('');
+    expect(result.meta['linesReturned']).toBe(0);
+    expect(result.meta['outOfBounds']).toBe(true);
+  });
+
+  it('rejects start_line < 1', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'any.txt'), 'content\n');
+
+    const result = await tool.execute({ path: 'any.txt', start_line: 0, end_line: 1 }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('start_line must be >= 1');
+  });
+
+  it('rejects end_line < start_line', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'any.txt'), 'content\n');
+
+    const result = await tool.execute({ path: 'any.txt', start_line: 5, end_line: 3 }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('end_line must be >= start_line');
+  });
+
+  it('rejects non-integer start_line', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'any.txt'), 'content\n');
+
+    const result = await tool.execute({ path: 'any.txt', start_line: 1.5, end_line: 3 }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('start_line must be an integer');
+  });
+
+  it('returns error for non-existent file', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    const result = await tool.execute({ path: 'nope.txt', start_line: 1, end_line: 5 }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('File not found');
+  });
+
+  it('blocks path that escapes worktree', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    const result = await tool.execute({ path: '../../../etc/passwd', start_line: 1, end_line: 5 }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('Invalid file path');
+  });
+
+  it('returns correct metadata with requested vs effective fields', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'meta.txt'), 'a\nb\nc\nd\ne\n');
+
+    const result = await tool.execute({ path: 'meta.txt', start_line: 2, end_line: 10 }, context);
+    expect(result.meta['requestedStartLine']).toBe(2);
+    expect(result.meta['requestedEndLine']).toBe(10);
+    expect(result.meta['effectiveStartLine']).toBe(2);
+    expect(result.meta['effectiveEndLine']).toBe(5);
+    expect(result.meta['totalLines']).toBe(5);
+    expect(result.meta['linesReturned']).toBe(4);
+    expect(result.meta['outOfBounds']).toBe(false);
+  });
+
+  it('truncates output when exceeding max read char limit', async () => {
+    process.env['CONDUCTOR_MAX_READ_BYTES'] = '1000';
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    const bigContent = Array.from({ length: 500 }, (_, i) => `line ${i + 1} ${'x'.repeat(50)}`).join('\n') + '\n';
+    writeFileSync(join(worktreePath, 'big.txt'), bigContent);
+
+    const result = await tool.execute({ path: 'big.txt', start_line: 1, end_line: 500 }, context);
+    expect(result.content).toContain('[...truncated]');
+    expect(result.meta['truncated']).toBe(true);
+    delete process.env['CONDUCTOR_MAX_READ_BYTES'];
+  });
+
+  it('returns totalLines: 0 for empty file', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'empty.txt'), '');
+
+    const result = await tool.execute({ path: 'empty.txt', start_line: 1, end_line: 1 }, context);
+    expect(result.meta['totalLines']).toBe(0);
+    expect(result.meta['outOfBounds']).toBe(true);
+    expect(result.meta['linesReturned']).toBe(0);
+  });
+
+  it('file with trailing newline has correct totalLines', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'trail.txt'), 'a\nb\n');
+
+    const result = await tool.execute({ path: 'trail.txt', start_line: 1, end_line: 10 }, context);
+    expect(result.meta['totalLines']).toBe(2);
+  });
+
+  it('outOfBounds is false for normal in-range requests', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'inrange.txt'), 'a\nb\nc\n');
+
+    const result = await tool.execute({ path: 'inrange.txt', start_line: 1, end_line: 2 }, context);
+    expect(result.meta['outOfBounds']).toBe(false);
+  });
+
+  it('effectiveStartLine <= effectiveEndLine always holds', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'inv.txt'), 'a\n');
+
+    // Normal case
+    const r1 = await tool.execute({ path: 'inv.txt', start_line: 1, end_line: 1 }, context);
+    expect(r1.meta['effectiveStartLine']).toBeLessThanOrEqual(r1.meta['effectiveEndLine'] as number);
+
+    // Out of bounds case
+    const r2 = await tool.execute({ path: 'inv.txt', start_line: 10, end_line: 20 }, context);
+    expect(r2.meta['effectiveStartLine']).toBeLessThanOrEqual(r2.meta['effectiveEndLine'] as number);
+  });
+
+  it('requestedStartLine/requestedEndLine always reflect original input', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    writeFileSync(join(worktreePath, 'req.txt'), 'a\nb\n');
+
+    const result = await tool.execute({ path: 'req.txt', start_line: 1, end_line: 999 }, context);
+    expect(result.meta['requestedStartLine']).toBe(1);
+    expect(result.meta['requestedEndLine']).toBe(999);
+  });
+
+  it('extractTarget returns path', () => {
+    const registry = getRegistry();
+    const tool = registry.get('read_file_range')!;
+
+    expect(tool.extractTarget({ path: 'src/foo.ts', start_line: 1, end_line: 10 })).toBe('src/foo.ts');
+  });
+});
+
+describe('search_in_file', () => {
+  it('finds literal substring matches with line numbers', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'search.txt'), 'foo bar\nbaz foo\nqux\nfoo end\n');
+
+    const result = await tool.execute({ path: 'search.txt', pattern: 'foo' }, context);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain('Found 3 match(es)');
+    expect(result.content).toContain('1: foo bar');
+    expect(result.content).toContain('2: baz foo');
+    expect(result.content).toContain('4: foo end');
+    expect(result.meta['totalMatches']).toBe(3);
+    expect(result.meta['patternType']).toBe('literal');
+  });
+
+  it('finds regex matches when pattern uses /pattern/ delimiters', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'regex.txt'), 'abc 123\ndef 456\nghi\n');
+
+    const result = await tool.execute({ path: 'regex.txt', pattern: '/\\d+/' }, context);
+    expect(result.meta['patternType']).toBe('regex');
+    expect(result.meta['totalMatches']).toBe(2);
+  });
+
+  it('falls back to literal on invalid regex inside delimiters', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    // Pattern looks like regex but body is invalid
+    writeFileSync(join(worktreePath, 'fallback.txt'), 'hello /[invalid/ world\nother\n');
+
+    const result = await tool.execute({ path: 'fallback.txt', pattern: '/[invalid/' }, context);
+    expect(result.meta['patternType']).toBe('literal');
+    expect(result.meta['totalMatches']).toBe(1);
+  });
+
+  it('treats undelimited patterns as literal (. matches literal dot)', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'literal.txt'), 'file.ts\nfilets\n');
+
+    const result = await tool.execute({ path: 'literal.txt', pattern: 'file.ts' }, context);
+    expect(result.meta['patternType']).toBe('literal');
+    // 'file.ts' literal matches first line only, not 'filets'
+    expect(result.meta['totalMatches']).toBe(1);
+  });
+
+  it('regex with /g flag works correctly across multiple matching lines', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'gflag.txt'), 'match1\nmatch2\nmatch3\n');
+
+    const result = await tool.execute({ path: 'gflag.txt', pattern: '/match/g' }, context);
+    expect(result.meta['patternType']).toBe('regex');
+    expect(result.meta['totalMatches']).toBe(3);
+  });
+
+  it('regex with escaped slash matches literal a/b', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'slash.txt'), 'a/b\nc/d\na/b again\n');
+
+    const result = await tool.execute({ path: 'slash.txt', pattern: '/a\\/b/' }, context);
+    expect(result.meta['patternType']).toBe('regex');
+    expect(result.meta['totalMatches']).toBe(2);
+  });
+
+  it('pattern with invalid flag char treated as literal', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'badflag.txt'), '/foo/z\nother\n');
+
+    // /foo/z — 'z' is not in [gimsuy], so regex delimiter doesn't match; treated as literal
+    const result = await tool.execute({ path: 'badflag.txt', pattern: '/foo/z' }, context);
+    expect(result.meta['patternType']).toBe('literal');
+    expect(result.meta['totalMatches']).toBe(1);
+  });
+
+  it('rejects empty pattern', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'any.txt'), 'content\n');
+
+    const result = await tool.execute({ path: 'any.txt', pattern: '' }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('Pattern must not be empty');
+  });
+
+  it('respects max_matches limit with [...N more matches] note', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    const lines = Array.from({ length: 50 }, (_, i) => `match line ${i + 1}`).join('\n') + '\n';
+    writeFileSync(join(worktreePath, 'many.txt'), lines);
+
+    const result = await tool.execute({ path: 'many.txt', pattern: 'match', max_matches: 5 }, context);
+    expect(result.meta['returnedMatches']).toBe(5);
+    expect(result.meta['totalMatches']).toBe(50);
+    expect(result.content).toContain('[...45 more matches]');
+  });
+
+  it('clamps max_matches to [1, 200] range', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'clamp.txt'), 'a\n');
+
+    // Above 200
+    const r1 = await tool.execute({ path: 'clamp.txt', pattern: 'a', max_matches: 500 }, context);
+    expect(r1.meta['effectiveMaxMatches']).toBe(200);
+    expect(r1.meta['requestedMaxMatches']).toBe(500);
+
+    // Below 1
+    const r2 = await tool.execute({ path: 'clamp.txt', pattern: 'a', max_matches: -5 }, context);
+    expect(r2.meta['effectiveMaxMatches']).toBe(1);
+    expect(r2.meta['requestedMaxMatches']).toBe(-5);
+  });
+
+  it('rejects non-integer max_matches', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'any.txt'), 'content\n');
+
+    const result = await tool.execute({ path: 'any.txt', pattern: 'content', max_matches: 2.5 }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('max_matches must be an integer');
+  });
+
+  it('rejects non-number max_matches', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'any.txt'), 'content\n');
+
+    const result = await tool.execute({ path: 'any.txt', pattern: 'content', max_matches: '5' as unknown as number }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('max_matches must be an integer');
+  });
+
+  it('returns appropriate message when no matches found', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'nomatch.txt'), 'hello world\n');
+
+    const result = await tool.execute({ path: 'nomatch.txt', pattern: 'zzz' }, context);
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain('No matches found for "zzz"');
+    expect(result.meta['totalMatches']).toBe(0);
+  });
+
+  it('returns error for non-existent file', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    const result = await tool.execute({ path: 'missing.txt', pattern: 'foo' }, context);
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain('File not found');
+  });
+
+  it('blocks path that escapes worktree', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    const result = await tool.execute({ path: '../../../etc/passwd', pattern: 'root' }, context);
+    expect(result.isError).toBe(true);
+  });
+
+  it('requestedMaxMatches is null when max_matches omitted', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'nullreq.txt'), 'a\n');
+
+    const result = await tool.execute({ path: 'nullreq.txt', pattern: 'a' }, context);
+    expect(result.meta['requestedMaxMatches']).toBeNull();
+    expect(result.meta['effectiveMaxMatches']).toBe(20);
+  });
+
+  it('truncates per-line snippets at 200 chars', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    const longLine = 'x'.repeat(300);
+    writeFileSync(join(worktreePath, 'longline.txt'), `${longLine}\n`);
+
+    const result = await tool.execute({ path: 'longline.txt', pattern: 'x' }, context);
+    // The output line should contain 200 x's + '...'
+    expect(result.content).toContain('x'.repeat(200) + '...');
+    expect(result.content).not.toContain('x'.repeat(201));
+  });
+
+  it('caps total output by resolveMaxReadBytes', async () => {
+    process.env['CONDUCTOR_MAX_READ_BYTES'] = '1000';
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    const lines = Array.from({ length: 200 }, (_, i) => `match_line_${i}_${'y'.repeat(50)}`).join('\n') + '\n';
+    writeFileSync(join(worktreePath, 'bigmatch.txt'), lines);
+
+    const result = await tool.execute({ path: 'bigmatch.txt', pattern: 'match_line', max_matches: 200 }, context);
+    expect(result.content).toContain('[...truncated]');
+    delete process.env['CONDUCTOR_MAX_READ_BYTES'];
+  });
+
+  it('extractTarget returns path', () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    expect(tool.extractTarget({ path: 'src/foo.ts', pattern: 'hello' })).toBe('src/foo.ts');
+  });
+
+  it('defaults max_matches to 20 when omitted', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    const lines = Array.from({ length: 30 }, (_, i) => `match ${i}`).join('\n') + '\n';
+    writeFileSync(join(worktreePath, 'default.txt'), lines);
+
+    const result = await tool.execute({ path: 'default.txt', pattern: 'match' }, context);
+    expect(result.meta['returnedMatches']).toBe(20);
+    expect(result.meta['effectiveMaxMatches']).toBe(20);
+    expect(result.meta['requestedMaxMatches']).toBeNull();
+    expect(result.meta['totalMatches']).toBe(30);
+  });
+
+  it('empty file returns totalLines: 0 and totalMatches: 0', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'empty.txt'), '');
+
+    const result = await tool.execute({ path: 'empty.txt', pattern: 'anything' }, context);
+    expect(result.meta['totalLines']).toBe(0);
+    expect(result.meta['totalMatches']).toBe(0);
+  });
+
+  it('file with trailing newline has totalLines: 2', async () => {
+    const registry = getRegistry();
+    const tool = registry.get('search_in_file')!;
+
+    writeFileSync(join(worktreePath, 'trail.txt'), 'a\nb\n');
+
+    const result = await tool.execute({ path: 'trail.txt', pattern: 'a' }, context);
+    expect(result.meta['totalLines']).toBe(2);
+  });
+});
+
 describe('registerFilesystemTools', () => {
-  it('registers all four tools', () => {
+  it('registers all six tools', () => {
     const registry = createToolRegistry();
     registerFilesystemTools(registry);
 
     expect(registry.has('read_file')).toBe(true);
+    expect(registry.has('read_file_range')).toBe(true);
+    expect(registry.has('search_in_file')).toBe(true);
     expect(registry.has('write_file')).toBe(true);
     expect(registry.has('delete_file')).toBe(true);
     expect(registry.has('list_files')).toBe(true);
-    expect(registry.names()).toHaveLength(4);
+    expect(registry.names()).toHaveLength(6);
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * Filesystem Tools
  *
- * read_file, write_file, delete_file, list_files tool definitions.
+ * read_file, read_file_range, search_in_file, write_file, delete_file, list_files tool definitions.
  * All operations are bounded to the worktree and respect policy rules.
  */
 
@@ -125,6 +125,21 @@ export function matchesGlob(filePath: string, pattern: string): boolean {
   return new RegExp(`^${regexStr}$`).test(matchTarget);
 }
 
+/**
+ * Split file content into logical lines, stripping trailing-newline sentinel.
+ * Matches editor/`wc -l` behavior:
+ *   '' → [] (0 lines — empty file)
+ *   'a\n' → ['a'] (1 line — trailing newline is normal terminator)
+ *   'a\n\n' → ['a', ''] (2 lines — second is intentional empty line)
+ *   'a\nb' → ['a', 'b'] (2 lines — no trailing newline)
+ */
+export function splitLines(content: string): string[] {
+  if (content === '') return [];
+  const parts = content.split('\n');
+  if (parts[parts.length - 1] === '') parts.pop();
+  return parts;
+}
+
 // =============================================================================
 // read_file
 // =============================================================================
@@ -170,6 +185,250 @@ const readFileTool: ToolDefinition = {
       }
 
       return ok(content, { charCount: originalLength, truncated });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      return err(`Error reading file: ${msg}`, { error: msg });
+    }
+  },
+};
+
+// =============================================================================
+// read_file_range
+// =============================================================================
+
+const readFileRangeTool: ToolDefinition = {
+  name: 'read_file_range',
+  description: `Read specific lines from a file. Returns lines with line numbers. Output capped at ${resolveMaxReadBytes()} characters.`,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'Relative file path from the repository root',
+      },
+      start_line: {
+        type: 'integer',
+        description: 'First line to read (1-based inclusive)',
+      },
+      end_line: {
+        type: 'integer',
+        description: 'Last line to read (1-based inclusive)',
+      },
+    },
+    required: ['path', 'start_line', 'end_line'],
+  },
+  extractTarget: (input) => input['path'] as string | undefined,
+  execute: (input, context) => {
+    const maxReadBytes = resolveMaxReadBytes();
+    const path = input['path'] as string;
+    const startLine = input['start_line'] as number;
+    const endLine = input['end_line'] as number;
+
+    const validationError = validatePath(path, context.worktreePath);
+    if (validationError !== null) {
+      return err(`Error: ${validationError}`, { error: validationError });
+    }
+
+    if (!Number.isInteger(startLine)) {
+      return err('Error: start_line must be an integer', { error: 'start_line must be an integer' });
+    }
+    if (!Number.isInteger(endLine)) {
+      return err('Error: end_line must be an integer', { error: 'end_line must be an integer' });
+    }
+    if (startLine < 1) {
+      return err('Error: start_line must be >= 1', { error: 'start_line must be >= 1' });
+    }
+    if (endLine < startLine) {
+      return err('Error: end_line must be >= start_line', { error: 'end_line must be >= start_line' });
+    }
+
+    const fullPath = resolve(context.worktreePath, path);
+
+    try {
+      if (!existsSync(fullPath)) {
+        return err(`Error: File not found: ${path}`, { error: 'ENOENT' });
+      }
+
+      const content = readFileSync(fullPath, 'utf8');
+      const lines = splitLines(content);
+      const totalLines = lines.length;
+
+      if (startLine > totalLines) {
+        return ok('', {
+          requestedStartLine: startLine,
+          requestedEndLine: endLine,
+          effectiveStartLine: startLine,
+          effectiveEndLine: startLine,
+          totalLines,
+          linesReturned: 0,
+          outOfBounds: true,
+        });
+      }
+
+      const effectiveEndLine = Math.min(endLine, totalLines);
+      const selectedLines = lines.slice(startLine - 1, effectiveEndLine);
+
+      let output = selectedLines
+        .map((line, i) => `${startLine + i}: ${line}`)
+        .join('\n');
+
+      let truncated = false;
+      if (output.length > maxReadBytes) {
+        output = output.substring(0, maxReadBytes) + '\n[...truncated]';
+        truncated = true;
+      }
+
+      return ok(output, {
+        requestedStartLine: startLine,
+        requestedEndLine: endLine,
+        effectiveStartLine: startLine,
+        effectiveEndLine,
+        totalLines,
+        linesReturned: selectedLines.length,
+        outOfBounds: false,
+        truncated,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      return err(`Error reading file: ${msg}`, { error: msg });
+    }
+  },
+};
+
+// =============================================================================
+// search_in_file
+// =============================================================================
+
+const REGEX_DELIMITER = /^\/(.+)\/([gimsuy]*)$/;
+
+const searchInFileTool: ToolDefinition = {
+  name: 'search_in_file',
+  description: `Search for a literal string or regex in a file. Returns matching lines with line numbers. Wrap pattern in /pattern/flags for regex mode. Output capped at ${resolveMaxReadBytes()} characters.`,
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: {
+        type: 'string',
+        description: 'Relative file path from the repository root',
+      },
+      pattern: {
+        type: 'string',
+        description: 'Search string (literal). Wrap in /regex/flags for regex mode.',
+      },
+      max_matches: {
+        type: 'integer',
+        description: 'Maximum matches to return (default 20, max 200)',
+      },
+    },
+    required: ['path', 'pattern'],
+  },
+  extractTarget: (input) => input['path'] as string | undefined,
+  execute: (input, context) => {
+    const maxReadBytes = resolveMaxReadBytes();
+    const path = input['path'] as string;
+    const pattern = input['pattern'] as string;
+    const rawMaxMatches = input['max_matches'] as number | undefined;
+
+    const validationError = validatePath(path, context.worktreePath);
+    if (validationError !== null) {
+      return err(`Error: ${validationError}`, { error: validationError });
+    }
+
+    if (pattern === '') {
+      return err('Error: Pattern must not be empty', { error: 'Pattern must not be empty' });
+    }
+
+    // Validate max_matches
+    let requestedMaxMatches: number | null = null;
+    let effectiveMaxMatches = 20;
+
+    if (rawMaxMatches !== undefined) {
+      if (typeof rawMaxMatches !== 'number') {
+        return err('Error: max_matches must be an integer', { error: 'max_matches must be an integer' });
+      }
+      if (!Number.isInteger(rawMaxMatches)) {
+        return err('Error: max_matches must be an integer', { error: 'max_matches must be an integer' });
+      }
+      requestedMaxMatches = rawMaxMatches;
+      effectiveMaxMatches = Math.max(1, Math.min(rawMaxMatches, 200));
+    }
+
+    const fullPath = resolve(context.worktreePath, path);
+
+    try {
+      if (!existsSync(fullPath)) {
+        return err(`Error: File not found: ${path}`, { error: 'ENOENT' });
+      }
+
+      const content = readFileSync(fullPath, 'utf8');
+      const lines = splitLines(content);
+      const totalLines = lines.length;
+
+      // Determine match function
+      let patternType: 'regex' | 'literal' = 'literal';
+      let matchFn: (line: string) => boolean;
+
+      const regexMatch = REGEX_DELIMITER.exec(pattern);
+      if (regexMatch?.[1] !== undefined) {
+        const body = regexMatch[1];
+        const flags = (regexMatch[2] ?? '').replace(/[gy]/g, '');
+        try {
+          const regex = new RegExp(body, flags);
+          patternType = 'regex';
+          matchFn = (line) => regex.test(line);
+        } catch {
+          // Invalid regex — fall back to literal match on raw pattern
+          matchFn = (line) => line.includes(pattern);
+        }
+      } else {
+        matchFn = (line) => line.includes(pattern);
+      }
+
+      let totalMatches = 0;
+      const matchedLines: string[] = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? '';
+        if (matchFn(line)) {
+          totalMatches++;
+          if (matchedLines.length < effectiveMaxMatches) {
+            const snippet = line.length > 200 ? line.substring(0, 200) + '...' : line;
+            matchedLines.push(`${i + 1}: ${snippet}`);
+          }
+        }
+      }
+
+      const returnedMatches = matchedLines.length;
+
+      if (totalMatches === 0) {
+        return ok(`No matches found for "${pattern}" in ${path}`, {
+          totalMatches: 0,
+          returnedMatches: 0,
+          requestedMaxMatches,
+          effectiveMaxMatches,
+          totalLines,
+          patternType,
+        });
+      }
+
+      let output = `Found ${totalMatches} match(es) in ${path}:\n` + matchedLines.join('\n');
+
+      if (totalMatches > returnedMatches) {
+        output += `\n[...${totalMatches - returnedMatches} more matches]`;
+      }
+
+      if (output.length > maxReadBytes) {
+        output = output.substring(0, maxReadBytes) + '\n[...truncated]';
+      }
+
+      return ok(output, {
+        totalMatches,
+        returnedMatches,
+        requestedMaxMatches,
+        effectiveMaxMatches,
+        totalLines,
+        patternType,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Unknown error';
       return err(`Error reading file: ${msg}`, { error: msg });
@@ -357,6 +616,8 @@ const listFilesTool: ToolDefinition = {
 
 export function registerFilesystemTools(registry: ToolRegistry): void {
   registry.register(readFileTool);
+  registry.register(readFileRangeTool);
+  registry.register(searchInFileTool);
   registry.register(writeFileTool);
   registry.register(deleteFileTool);
   registry.register(listFilesTool);

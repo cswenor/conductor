@@ -286,12 +286,15 @@ Your task is to implement the approved plan by producing file changes.
 
 You have access to the following tools:
 - **read_file**: Read the contents of a file to understand existing code.
+- **read_file_range**: Read specific lines from a file (e.g., a function or class definition).
+- **search_in_file**: Search for a literal string in a file. Returns matching lines with line numbers. Use /pattern/flags syntax for regex.
 - **write_file**: Write or overwrite a file with complete content.
 - **delete_file**: Delete a file that is no longer needed.
 - **list_files**: List files in the repository to understand its structure.
 - **run_tests**: Run test commands to verify your changes work.
 
 ## Rules
+- Prefer read_file_range and search_in_file for targeted inspection before reading entire files with read_file. This reduces token usage significantly.
 - Follow the plan exactly. Implement all planned changes.
 - Write COMPLETE files, not diffs or patches.
 - Use relative paths from the repository root. No absolute paths.

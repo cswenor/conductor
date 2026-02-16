@@ -37,7 +37,7 @@ export interface PolicyRule {
 // Built-in Rules
 // =============================================================================
 
-const PATH_TOOLS = new Set(['read_file', 'write_file', 'delete_file', 'list_files']);
+const PATH_TOOLS = new Set(['read_file', 'read_file_range', 'search_in_file', 'write_file', 'delete_file', 'list_files']);
 
 function getPathArg(toolName: string, args: Record<string, unknown>): string | undefined {
   if (toolName === 'list_files') {
