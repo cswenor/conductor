@@ -411,6 +411,84 @@ describe('handleBlockedRetry', () => {
     expect(mockEnqueueAgent).toHaveBeenCalledWith(run.runId, 'planner', 'create_plan');
   });
 
+  it('resets plan_revisions and re-runs planner on max plan revisions retry', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Advance to planning, set plan_revisions to 3 (max), then block
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'reviewer_review_plan',
+      triggeredBy: 'system',
+    });
+    db.prepare('UPDATE runs SET plan_revisions = 3 WHERE run_id = ?').run(run.runId);
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Plan rejected after 3 revisions. Manual intervention required.',
+      blockedContext: { error: 'Plan rejected', prior_phase: 'planning', prior_step: 'reviewer_review_plan' },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    expect(blockedRun.phase).toBe('blocked');
+    expect(blockedRun.planRevisions).toBe(3);
+
+    const result = await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    expect(result.retried).toBe(true);
+    expect(result.priorPhase).toBe('planning');
+    expect(result.priorStep).toBe('planner_create_plan');
+
+    // Counter reset to 0
+    const updated = mustGetRun(db, run.runId);
+    expect(updated.phase).toBe('planning');
+    expect(updated.step).toBe('planner_create_plan');
+    expect(updated.planRevisions).toBe(0);
+
+    // Planner (not reviewer) enqueued
+    expect(mockEnqueueAgent).toHaveBeenCalledWith(run.runId, 'planner', 'create_plan');
+  });
+
+  it('resets review_rounds and re-runs implementer on max review rounds retry', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Advance through full pipeline to awaiting_review, then block
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'planner_create_plan', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', toStep: 'wait_plan_approval', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'executing', toStep: 'implementer_apply_changes', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_review', toStep: 'reviewer_review_code', triggeredBy: 'system' });
+    db.prepare('UPDATE runs SET review_rounds = 3 WHERE run_id = ?').run(run.runId);
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Code rejected after 3 review rounds. Manual intervention required.',
+      blockedContext: { error: 'Code rejected', prior_phase: 'awaiting_review', prior_step: 'reviewer_review_code' },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    expect(blockedRun.phase).toBe('blocked');
+    expect(blockedRun.reviewRounds).toBe(3);
+
+    const result = await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    expect(result.retried).toBe(true);
+    expect(result.priorPhase).toBe('executing');
+    expect(result.priorStep).toBe('implementer_apply_changes');
+
+    // Counter reset to 0
+    const updated = mustGetRun(db, run.runId);
+    expect(updated.phase).toBe('executing');
+    expect(updated.step).toBe('implementer_apply_changes');
+    expect(updated.reviewRounds).toBe(0);
+
+    // Implementer (not reviewer) enqueued
+    expect(mockEnqueueAgent).toHaveBeenCalledWith(run.runId, 'implementer', 'apply_changes');
+  });
+
   it('returns error when transition fails (stale)', async () => {
     const seed = seedTestData(db);
     const run = createTestRun(db, seed);

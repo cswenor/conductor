@@ -140,14 +140,37 @@ export async function handleBlockedRetry(
   }
 
   // Resolve prior phase
-  const priorPhase = resolvePriorPhase(db, run, blockedContext);
+  let priorPhase = resolvePriorPhase(db, run, blockedContext);
   if (priorPhase === undefined) {
     log.error({ runId }, 'Invalid or missing prior_phase in blocked context — cannot retry');
     return { retried: false, error: 'Invalid or missing prior_phase' };
   }
 
   // Resolve prior step
-  const priorStep = resolvePriorStep(run, blockedContext);
+  let priorStep = resolvePriorStep(run, blockedContext);
+
+  // Detect max-counter blocks and adjust for meaningful retry.
+  // When plan revisions or review rounds hit the limit, the prior_step points
+  // at the reviewer. Re-running the reviewer would just re-reject immediately.
+  // Instead, reset the counter and re-run the creator (planner / implementer)
+  // so it can incorporate the reviewer's latest feedback and continue.
+  let counterReset: (() => void) | undefined;
+
+  if (run.blockedReason?.startsWith('Plan rejected after') === true) {
+    priorPhase = 'planning';
+    priorStep = 'planner_create_plan';
+    counterReset = () => {
+      db.prepare('UPDATE runs SET plan_revisions = 0 WHERE run_id = ?').run(runId);
+    };
+    log.info({ runId }, 'Max plan revisions retry: resetting counter, re-running planner');
+  } else if (run.blockedReason?.startsWith('Code rejected after') === true) {
+    priorPhase = 'executing';
+    priorStep = 'implementer_apply_changes';
+    counterReset = () => {
+      db.prepare('UPDATE runs SET review_rounds = 0 WHERE run_id = ?').run(runId);
+    };
+    log.info({ runId }, 'Max review rounds retry: resetting counter, re-running implementer');
+  }
 
   log.info({ runId, triggeredBy, priorPhase, priorStep }, 'Retrying from blocked state');
 
@@ -165,6 +188,9 @@ export async function handleBlockedRetry(
     log.error({ runId, error: result.error, targetPhase: priorPhase }, 'Failed to transition from blocked');
     return { retried: false, priorPhase, priorStep, error: result.error ?? 'Transition failed' };
   }
+
+  // Reset the counter after successful transition (before enqueuing the agent)
+  counterReset?.();
 
   publishTransitionEvent(run.projectId, runId, 'blocked', priorPhase, db);
 
