@@ -98,6 +98,8 @@ import {
   initPublisher,
   closePublisher,
   publishTransitionEvent,
+  // Blocked reason codes
+  type BlockedReasonCode,
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
 import { cleanOldJobs } from './old-jobs-cleanup.ts';
@@ -614,18 +616,28 @@ function handleRunTimeout(
 function markRunFailed(
   db: ReturnType<typeof getDatabase>,
   runId: string,
-  reason: string
+  reason: string,
+  reasonCode?: BlockedReasonCode,
 ): void {
   const currentRun = getRun(db, runId);
   const priorPhase = currentRun?.phase ?? 'pending';
   const priorStep = currentRun?.step ?? 'setup_worktree';
+
+  const blockedContext: Record<string, unknown> = {
+    error: reason,
+    prior_phase: priorPhase,
+    prior_step: priorStep,
+  };
+  if (reasonCode !== undefined) {
+    blockedContext['reason_code'] = reasonCode;
+  }
 
   const failedInput = {
     runId,
     toPhase: 'blocked' as const,
     triggeredBy: 'system',
     blockedReason: reason,
-    blockedContext: { error: reason, prior_phase: priorPhase, prior_step: priorStep },
+    blockedContext,
   };
   const result = transitionPhase(db, failedInput);
 
@@ -814,7 +826,7 @@ async function handlePlanReviewerAgent(
     const currentRun = getRun(db, runId);
     if (currentRun !== null && currentRun.planRevisions >= MAX_PLAN_REVISIONS) {
       // Too many revisions — block the run
-      markRunFailed(db, runId, `Plan rejected after ${MAX_PLAN_REVISIONS} revisions. Manual intervention required.`);
+      markRunFailed(db, runId, `Plan rejected after ${MAX_PLAN_REVISIONS} revisions. Manual intervention required.`, 'max_plan_revisions');
       return;
     }
 
@@ -1046,7 +1058,7 @@ async function handleCodeReviewerAgent(
     // Re-read run to get current review_rounds
     const currentRun = getRun(db, runId);
     if (currentRun !== null && currentRun.reviewRounds >= MAX_REVIEW_ROUNDS) {
-      markRunFailed(db, runId, `Code rejected after ${MAX_REVIEW_ROUNDS} review rounds. Manual intervention required.`);
+      markRunFailed(db, runId, `Code rejected after ${MAX_REVIEW_ROUNDS} review rounds. Manual intervention required.`, 'max_review_rounds');
       return;
     }
 

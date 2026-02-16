@@ -480,6 +480,29 @@ describe('revisePlanCommand', () => {
     expect(result.run?.phase).toBe('blocked');
   });
 
+  it('persists reason_code in blockedContextJson when revision limit exceeded', () => {
+    const { run, userId } = seedTestData(db);
+
+    // Set revisions to 2 (one more will hit limit of 3)
+    db.prepare('UPDATE runs SET plan_revisions = 2 WHERE run_id = ?').run(run.runId);
+
+    const result = revisePlanCommand({
+      db, run, actorId: userId, actorType: 'operator', comment: 'Final revision',
+    });
+
+    expect(result.outcome).toBe('blocked');
+
+    // Re-read from DB to verify persisted context
+    const blockedRun = getRun(db, run.runId);
+    expect(blockedRun).not.toBeNull();
+    expect(blockedRun?.blockedContextJson).toBeDefined();
+
+    const context = JSON.parse(blockedRun?.blockedContextJson ?? '{}') as Record<string, unknown>;
+    expect(context['reason_code']).toBe('max_plan_revisions');
+    expect(context['prior_phase']).toBeDefined();
+    expect(context['revisions']).toBe(3);
+  });
+
   it('returns wrong_phase for non-approval phase', () => {
     const { userId, projectId } = seedTestData(db);
 

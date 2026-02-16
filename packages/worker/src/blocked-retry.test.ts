@@ -428,7 +428,7 @@ describe('handleBlockedRetry', () => {
       toPhase: 'blocked',
       triggeredBy: 'system',
       blockedReason: 'Plan rejected after 3 revisions. Manual intervention required.',
-      blockedContext: { error: 'Plan rejected', prior_phase: 'planning', prior_step: 'reviewer_review_plan' },
+      blockedContext: { error: 'Plan rejected', prior_phase: 'planning', prior_step: 'reviewer_review_plan', reason_code: 'max_plan_revisions' },
     });
 
     const blockedRun = mustGetRun(db, run.runId);
@@ -466,7 +466,7 @@ describe('handleBlockedRetry', () => {
       toPhase: 'blocked',
       triggeredBy: 'system',
       blockedReason: 'Code rejected after 3 review rounds. Manual intervention required.',
-      blockedContext: { error: 'Code rejected', prior_phase: 'awaiting_review', prior_step: 'reviewer_review_code' },
+      blockedContext: { error: 'Code rejected', prior_phase: 'awaiting_review', prior_step: 'reviewer_review_code', reason_code: 'max_review_rounds' },
     });
 
     const blockedRun = mustGetRun(db, run.runId);
@@ -504,5 +504,210 @@ describe('handleBlockedRetry', () => {
     expect(result.retried).toBe(false);
     expect(result.error).toBeDefined();
     expect(mockEnqueueAgent).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reason_code contract guards
+// ---------------------------------------------------------------------------
+
+describe('reason_code contract guards', () => {
+  const deps = {
+    enqueueAgent: mockEnqueueAgent,
+    enqueueRunJob: mockEnqueueRunJob,
+    mirror: mockMirror,
+  };
+
+  it('does NOT reset counters when reason_code absent and no legacy text match', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Block from planning with NO reason_code — generic failure
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'planner_create_plan',
+      triggeredBy: 'system',
+    });
+    db.prepare('UPDATE runs SET plan_revisions = 2 WHERE run_id = ?').run(run.runId);
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Some random error',
+      blockedContext: { error: 'fail', prior_phase: 'planning', prior_step: 'planner_create_plan' },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    // Counter should NOT be reset
+    const updated = mustGetRun(db, run.runId);
+    expect(updated.planRevisions).toBe(2);
+  });
+
+  it('handles command-path retry_limit_exceeded with reason_code: max_plan_revisions', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Simulate the command path: blockedReason='retry_limit_exceeded', reason_code in context
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'planner_create_plan',
+      triggeredBy: 'system',
+    });
+    db.prepare('UPDATE runs SET plan_revisions = 3 WHERE run_id = ?').run(run.runId);
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'retry_limit_exceeded',
+      blockedContext: {
+        prior_phase: 'planning',
+        prior_step: 'planner_create_plan',
+        revisions: 3,
+        reason_code: 'max_plan_revisions',
+      },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    const result = await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    expect(result.retried).toBe(true);
+    expect(result.priorPhase).toBe('planning');
+    expect(result.priorStep).toBe('planner_create_plan');
+
+    const updated = mustGetRun(db, run.runId);
+    expect(updated.planRevisions).toBe(0);
+    expect(mockEnqueueAgent).toHaveBeenCalledWith(run.runId, 'planner', 'create_plan');
+  });
+
+  it('legacy text match still works when reason_code absent (backward compat)', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Old-format block: human-readable reason, NO reason_code in context
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'reviewer_review_plan',
+      triggeredBy: 'system',
+    });
+    db.prepare('UPDATE runs SET plan_revisions = 3 WHERE run_id = ?').run(run.runId);
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Plan rejected after 3 revisions. Manual intervention required.',
+      blockedContext: { error: 'Plan rejected', prior_phase: 'planning', prior_step: 'reviewer_review_plan' },
+      // NO reason_code — pre-existing blocked run
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    const result = await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    // Legacy fallback should still trigger counter reset + planner reroute
+    expect(result.retried).toBe(true);
+    expect(result.priorPhase).toBe('planning');
+    expect(result.priorStep).toBe('planner_create_plan');
+
+    const updated = mustGetRun(db, run.runId);
+    expect(updated.planRevisions).toBe(0);
+    expect(mockEnqueueAgent).toHaveBeenCalledWith(run.runId, 'planner', 'create_plan');
+  });
+
+  it('reason_code takes precedence over legacy text match', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Contrived: reason_code says max_review_rounds, but text says "Plan rejected..."
+    // reason_code should win
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'planner_create_plan', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', toStep: 'wait_plan_approval', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'executing', toStep: 'implementer_apply_changes', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_review', toStep: 'reviewer_review_code', triggeredBy: 'system' });
+    db.prepare('UPDATE runs SET review_rounds = 3 WHERE run_id = ?').run(run.runId);
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Plan rejected after 3 revisions. Manual intervention required.',
+      blockedContext: {
+        prior_phase: 'awaiting_review',
+        prior_step: 'reviewer_review_code',
+        reason_code: 'max_review_rounds',
+      },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    const result = await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    // reason_code wins: routes to implementer, not planner
+    expect(result.retried).toBe(true);
+    expect(result.priorPhase).toBe('executing');
+    expect(result.priorStep).toBe('implementer_apply_changes');
+
+    const updated = mustGetRun(db, run.runId);
+    expect(updated.reviewRounds).toBe(0);
+    expect(mockEnqueueAgent).toHaveBeenCalledWith(run.runId, 'implementer', 'apply_changes');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Write-path contract: reason_code persists through transitionPhase
+// ---------------------------------------------------------------------------
+
+describe('reason_code write-path contract', () => {
+  it('persists reason_code in blocked_context_json via transitionPhase (worker markRunFailed shape)', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Simulate what markRunFailed produces when called with reasonCode
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Plan rejected after 3 revisions. Manual intervention required.',
+      blockedContext: {
+        error: 'Plan rejected after 3 revisions. Manual intervention required.',
+        prior_phase: 'pending',
+        prior_step: 'setup_worktree',
+        reason_code: 'max_plan_revisions',
+      },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    expect(blockedRun.blockedContextJson).toBeDefined();
+
+    const context = JSON.parse(blockedRun.blockedContextJson ?? '{}') as Record<string, unknown>;
+    expect(context['reason_code']).toBe('max_plan_revisions');
+    expect(context['prior_phase']).toBe('pending');
+    expect(context['prior_step']).toBe('setup_worktree');
+  });
+
+  it('persists reason_code for max_review_rounds', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'planner_create_plan', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', toStep: 'wait_plan_approval', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'executing', toStep: 'implementer_apply_changes', triggeredBy: 'system' });
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Code rejected after 3 review rounds. Manual intervention required.',
+      blockedContext: {
+        error: 'Code rejected after 3 review rounds. Manual intervention required.',
+        prior_phase: 'executing',
+        prior_step: 'implementer_apply_changes',
+        reason_code: 'max_review_rounds',
+      },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    const context = JSON.parse(blockedRun.blockedContextJson ?? '{}') as Record<string, unknown>;
+    expect(context['reason_code']).toBe('max_review_rounds');
   });
 });

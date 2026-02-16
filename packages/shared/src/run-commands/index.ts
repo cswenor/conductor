@@ -386,7 +386,7 @@ export function revisePlanCommand(input: PlanCommandInput & { comment: string })
         runId: run.runId, toPhase: 'blocked', triggeredBy: actorId,
         reason: 'Plan revision limit exceeded',
         blockedReason: 'retry_limit_exceeded',
-        blockedContext: { prior_phase: run.phase, revisions: updatedRun.planRevisions },
+        blockedContext: { prior_phase: updatedRun.phase, revisions: updatedRun.planRevisions, reason_code: 'max_plan_revisions' },
       });
       if (!blockResult.success) throw new Error(blockResult.error ?? 'Failed to block');
       return { outcome: 'blocked' as const, toPhase: 'blocked', run: blockResult.run, operatorAction };

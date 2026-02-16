@@ -156,20 +156,43 @@ export async function handleBlockedRetry(
   // so it can incorporate the reviewer's latest feedback and continue.
   let counterReset: (() => void) | undefined;
 
-  if (run.blockedReason?.startsWith('Plan rejected after') === true) {
+  const reasonCode = typeof blockedContext['reason_code'] === 'string'
+    ? blockedContext['reason_code']
+    : undefined;
+
+  if (reasonCode === 'max_plan_revisions') {
     priorPhase = 'planning';
     priorStep = 'planner_create_plan';
     counterReset = () => {
       db.prepare('UPDATE runs SET plan_revisions = 0 WHERE run_id = ?').run(runId);
     };
     log.info({ runId }, 'Max plan revisions retry: resetting counter, re-running planner');
-  } else if (run.blockedReason?.startsWith('Code rejected after') === true) {
+  } else if (reasonCode === 'max_review_rounds') {
     priorPhase = 'executing';
     priorStep = 'implementer_apply_changes';
     counterReset = () => {
       db.prepare('UPDATE runs SET review_rounds = 0 WHERE run_id = ?').run(runId);
     };
     log.info({ runId }, 'Max review rounds retry: resetting counter, re-running implementer');
+  } else if (reasonCode !== undefined) {
+    // Unknown structured reason_code — log for diagnosis, proceed with generic retry
+    log.warn({ runId, reasonCode }, 'Unrecognized reason_code in blocked context, proceeding with generic retry');
+  }
+  // TODO(legacy-removal): Remove once all pre-existing blocked runs without reason_code have been resolved.
+  else if (run.blockedReason?.startsWith('Plan rejected after') === true) {
+    priorPhase = 'planning';
+    priorStep = 'planner_create_plan';
+    counterReset = () => {
+      db.prepare('UPDATE runs SET plan_revisions = 0 WHERE run_id = ?').run(runId);
+    };
+    log.warn({ runId }, 'Max plan revisions retry via legacy text match (missing reason_code)');
+  } else if (run.blockedReason?.startsWith('Code rejected after') === true) {
+    priorPhase = 'executing';
+    priorStep = 'implementer_apply_changes';
+    counterReset = () => {
+      db.prepare('UPDATE runs SET review_rounds = 0 WHERE run_id = ?').run(runId);
+    };
+    log.warn({ runId }, 'Max review rounds retry via legacy text match (missing reason_code)');
   }
 
   log.info({ runId, triggeredBy, priorPhase, priorStep }, 'Retrying from blocked state');
