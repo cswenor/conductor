@@ -103,9 +103,10 @@ import {
 } from '@conductor/shared';
 import { handlePrCreation } from './pr-creation.ts';
 import { cleanOldJobs } from './old-jobs-cleanup.ts';
-import { casUpdateRunStep, isStaleRunJob } from './run-helpers.ts';
+import { casUpdateRunStep, isStaleRunJob, shouldSkipStaleAgentJob } from './run-helpers.ts';
 import { dispatchPrWebhook } from './webhook-dispatch.ts';
 import { handleBlockedRetry } from './blocked-retry.ts';
+import { handleRateLimitRetry } from './rate-limit-retry.ts';
 import { dispatchDbCleanup } from './cleanup-dispatch.ts';
 
 const log = createLogger({ name: 'conductor:worker' });
@@ -1093,7 +1094,8 @@ async function handleAgentError(
   run: Run,
   agent: string,
   action: string,
-  err: unknown
+  err: unknown,
+  rateLimitRetries: number,
 ): Promise<void> {
   const { runId } = run;
 
@@ -1115,18 +1117,23 @@ async function handleAgentError(
   }
 
   if (err instanceof AgentRateLimitError) {
-    log.warn({ runId, agent, action, retryAfterMs: err.retryAfterMs }, 'Agent rate limited');
-    // Re-enqueue with delay
-    const delay = err.retryAfterMs ?? 60_000;
-    const qm = getQueueManager();
-    await qm.addJob('agents', `agent-${runId}-${agent}-${action}-retry-${Date.now()}`, {
-      runId,
-      agentInvocationId: generateAgentInvocationId(),
-      agent,
-      action,
-      context: {},
-    }, { delay });
-    log.info({ runId, agent, delayMs: delay }, 'Agent job re-enqueued after rate limit');
+    log.warn({ runId, agent, action, retryAfterMs: err.retryAfterMs, attempt: rateLimitRetries }, 'Agent rate limited');
+    await handleRateLimitRetry(db, run, agent, action, err.retryAfterMs, rateLimitRetries, {
+      enqueueAgent: async (rId, ag, act, retries, delay, fromPhase, fromSequence) => {
+        const qm = getQueueManager();
+        await qm.addJob('agents', `agent-${rId}-${ag}-${act}-retry-${Date.now()}`, {
+          runId: rId,
+          agentInvocationId: generateAgentInvocationId(),
+          agent: ag,
+          action: act,
+          context: {},
+          rateLimitRetries: retries,
+          fromPhase,
+          fromSequence,
+        }, { delay });
+      },
+      markRunFailed,
+    });
     return;
   }
 
@@ -1193,6 +1200,13 @@ async function processAgent(job: Job<AgentJobData>): Promise<void> {
     return;
   }
 
+  // Stale-episode guard for delayed retries (rate-limit re-enqueues)
+  const staleReason = shouldSkipStaleAgentJob(run, job.data);
+  if (staleReason !== undefined) {
+    log.info({ runId, agent, action, staleReason }, 'Stale agent retry, skipping');
+    return;
+  }
+
   // Emit agent.started event
   emitAgentEvent(db, run, 'agent.started', agent, action);
 
@@ -1243,7 +1257,7 @@ async function processAgent(job: Job<AgentJobData>): Promise<void> {
       errorCode: err instanceof AgentError ? err.code : 'unknown',
       errorMessage: err instanceof Error ? err.message : 'Unknown error',
     });
-    await handleAgentError(db, run, agent, action, err);
+    await handleAgentError(db, run, agent, action, err, job.data.rateLimitRetries ?? 0);
   } finally {
     unregisterCancellable(runId);
   }

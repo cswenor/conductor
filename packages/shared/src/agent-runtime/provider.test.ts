@@ -63,9 +63,11 @@ vi.mock('@anthropic-ai/sdk', () => {
     };
 
     static RateLimitError = class extends Error {
-      constructor(message?: string) {
+      headers: Record<string, string>;
+      constructor(message?: string, headers?: Record<string, string>) {
         super(message);
         this.name = 'RateLimitError';
+        this.headers = headers ?? {};
       }
     };
 
@@ -317,5 +319,54 @@ describe('executeAgent message persistence', () => {
     expect(result.content).toBe('Mock response');
     expect(result.tokensInput).toBe(100);
     expect(result.tokensOutput).toBe(50);
+  });
+});
+
+// =============================================================================
+// AnthropicProvider error mapping — Retry-After propagation
+// =============================================================================
+
+describe('AnthropicProvider error mapping', () => {
+  it('extracts retry-after header from RateLimitError', async () => {
+    const provider = new AnthropicProvider('sk-test');
+
+    // Override the mock to throw a RateLimitError with headers
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+    (provider as any).client.messages.create = vi.fn().mockRejectedValue(
+      new Anthropic.RateLimitError('rate limited', { 'retry-after': '30' }),
+    );
+
+    try {
+      await provider.invoke({
+        systemPrompt: 'test',
+        userPrompt: 'test',
+      });
+      expect.fail('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AgentRateLimitError);
+      expect((err as AgentRateLimitError).retryAfterMs).toBe(30000);
+    }
+  });
+
+  it('returns undefined retryAfterMs when no retry-after header', async () => {
+    const provider = new AnthropicProvider('sk-test');
+
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+    (provider as any).client.messages.create = vi.fn().mockRejectedValue(
+      new Anthropic.RateLimitError('rate limited'),
+    );
+
+    try {
+      await provider.invoke({
+        systemPrompt: 'test',
+        userPrompt: 'test',
+      });
+      expect.fail('should have thrown');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AgentRateLimitError);
+      expect((err as AgentRateLimitError).retryAfterMs).toBeUndefined();
+    }
   });
 });

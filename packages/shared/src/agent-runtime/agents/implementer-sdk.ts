@@ -31,6 +31,7 @@ import { createImplementerMcpServer, getAllowedToolNames } from '../tools/mcp-ad
 import type { ToolResultEntry } from '../tools/protocol.ts';
 import { flushToolResults as flushToolResultsHelper } from '../tools/protocol.ts';
 import { AgentError, AgentAuthError, AgentRateLimitError, AgentContextLengthError, AgentCancelledError } from '../provider.ts';
+import { extractRetryAfterMs } from '../retry-after.ts';
 import type { FileOperation, ImplementerInput, ImplementerResult } from './implementer.ts';
 
 const log = createLogger({ name: 'conductor:implementer-sdk' });
@@ -70,40 +71,6 @@ You have access to the following tools:
 
 export function resolveImplementerBackend(run: Run): ImplementerBackend {
   return run.implementerBackend;
-}
-
-// =============================================================================
-// Retry-After Extraction
-// =============================================================================
-
-export function extractRetryAfterMs(err: unknown): number | undefined {
-  if (err === null || typeof err !== 'object' || !('headers' in err)) return undefined;
-  const headers = (err as { headers: unknown }).headers;
-  let value: string | null = null;
-
-  // Handle Headers-like API (has .get())
-  if (
-    headers !== null &&
-    typeof headers === 'object' &&
-    'get' in headers &&
-    typeof (headers as { get: unknown }).get === 'function'
-  ) {
-    value = (headers as { get: (k: string) => string | null }).get('retry-after');
-  }
-  // Handle plain Record<string, unknown> — case-insensitive + string-only
-  else if (headers !== null && typeof headers === 'object') {
-    const headerObj = headers as Record<string, unknown>;
-    const key = Object.keys(headerObj).find(k => k.toLowerCase() === 'retry-after');
-    const rawValue = key !== undefined ? headerObj[key] : undefined;
-    value = typeof rawValue === 'string' ? rawValue : null;
-  }
-
-  if (value === null) return undefined;
-  const seconds = Number(value);
-  if (Number.isFinite(seconds) && seconds > 0 && seconds < 3600) {
-    return Math.ceil(seconds * 1000);
-  }
-  return undefined;
 }
 
 // =============================================================================

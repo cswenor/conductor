@@ -2,7 +2,7 @@
  * Run step helpers for the worker.
  */
 
-import { getDatabase, type Run } from '@conductor/shared';
+import { getDatabase, type Run, type AgentJobData } from '@conductor/shared';
 
 type Db = ReturnType<typeof getDatabase>;
 
@@ -25,6 +25,21 @@ export function isStaleRunJob(
     return `sequence mismatch: expected ${expectedSequence}, got ${run.lastEventSequence}`;
   }
   return undefined;
+}
+
+/**
+ * Check if a rate-limit-retried agent job is stale (run has moved on).
+ * Returns a skip reason string if the job should be discarded, undefined otherwise.
+ * Only applies when job has fromPhase/fromSequence (rate-limit re-enqueues).
+ */
+export function shouldSkipStaleAgentJob(
+  run: Run,
+  jobData: Pick<AgentJobData, 'fromPhase' | 'fromSequence'>,
+): string | undefined {
+  if (jobData.fromPhase === undefined && jobData.fromSequence === undefined) {
+    return undefined; // Normal dispatch, not a retry
+  }
+  return isStaleRunJob(run, jobData.fromPhase, jobData.fromSequence);
 }
 
 /**

@@ -9,6 +9,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../logger/index.ts';
 import { ApiKeyNotConfiguredError, type ApiKeyProvider } from '../api-keys/index.ts';
+import { extractRetryAfterMs } from './retry-after.ts';
 import type { RunStep } from '../types/index.ts';
 import { resolveCredentials } from './resolver.ts';
 import {
@@ -255,8 +256,10 @@ export class AnthropicProvider implements AgentProvider {
         );
       }
       if (err instanceof Anthropic.RateLimitError) {
+        const retryAfterMs = extractRetryAfterMs(err);
         throw new AgentRateLimitError(
-          `Anthropic rate limited: ${err.message}`
+          `Anthropic rate limited: ${err.message}`,
+          retryAfterMs,
         );
       }
       if (err instanceof Anthropic.BadRequestError && /context|token/i.test(err.message)) {

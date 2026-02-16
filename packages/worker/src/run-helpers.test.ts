@@ -14,10 +14,18 @@ import {
   getRun,
   transitionPhase,
 } from '@conductor/shared';
-import { casUpdateRunStep, isStaleRunJob } from './run-helpers.ts';
+import type { Run } from '@conductor/shared';
+import { casUpdateRunStep, isStaleRunJob, shouldSkipStaleAgentJob } from './run-helpers.ts';
 
 type Db = ReturnType<typeof getDatabase>;
 let db: Db;
+
+/** Assert run exists and return it (avoids non-null assertions). */
+function mustGetRun(database: Db, runId: string): Run {
+  const run = getRun(database, runId);
+  if (run === null) throw new Error(`Run ${runId} not found`);
+  return run;
+}
 
 function seedTestData(db: Db) {
   const now = new Date().toISOString();
@@ -270,5 +278,100 @@ describe('isStaleRunJob', () => {
     expect(
       isStaleRunJob(blockedRun ?? run, 'blocked', blockedRun?.lastEventSequence)
     ).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldSkipStaleAgentJob
+// ---------------------------------------------------------------------------
+
+describe('shouldSkipStaleAgentJob', () => {
+  it('returns undefined when no fromPhase/fromSequence (normal dispatch)', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    expect(shouldSkipStaleAgentJob(run, {})).toBeUndefined();
+  });
+
+  it('returns undefined when phase and sequence match', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'test',
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+
+    expect(shouldSkipStaleAgentJob(blockedRun, {
+      fromPhase: 'blocked',
+      fromSequence: blockedRun.lastEventSequence,
+    })).toBeUndefined();
+  });
+
+  it('returns stale reason on phase mismatch', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'test',
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+
+    const reason = shouldSkipStaleAgentJob(blockedRun, {
+      fromPhase: 'executing',
+      fromSequence: blockedRun.lastEventSequence,
+    });
+    expect(reason).toContain('phase mismatch');
+  });
+
+  it('returns stale reason on sequence mismatch', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'test',
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+
+    const reason = shouldSkipStaleAgentJob(blockedRun, {
+      fromPhase: 'blocked',
+      fromSequence: 5,
+    });
+    expect(reason).toContain('sequence mismatch');
+  });
+
+  it('delegates correctly when only fromPhase is set', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed); // phase = pending
+
+    // fromPhase matches, no fromSequence → should not be stale
+    expect(shouldSkipStaleAgentJob(run, { fromPhase: 'pending' })).toBeUndefined();
+
+    // fromPhase doesn't match → stale
+    const reason = shouldSkipStaleAgentJob(run, { fromPhase: 'executing' });
+    expect(reason).toContain('phase mismatch');
+  });
+
+  it('delegates correctly when only fromSequence is set', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed); // lastEventSequence = 0
+
+    // fromSequence matches
+    expect(shouldSkipStaleAgentJob(run, { fromSequence: 0 })).toBeUndefined();
+
+    // fromSequence doesn't match → stale
+    const reason = shouldSkipStaleAgentJob(run, { fromSequence: 10 });
+    expect(reason).toContain('sequence mismatch');
   });
 });

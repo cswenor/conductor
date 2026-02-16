@@ -12,7 +12,7 @@ import { initDatabase, closeDatabase } from '../../db/index.ts';
 import { createRun } from '../../runs/index.ts';
 import type { ImplementerBackend, Run } from '../../runs/index.ts';
 import { getDefaultImplementerBackend, VALID_IMPLEMENTER_BACKENDS } from '../../runs/index.ts';
-import { resolveImplementerBackend, extractRetryAfterMs } from './implementer-sdk.ts';
+import { resolveImplementerBackend } from './implementer-sdk.ts';
 import { getAllowedToolNames } from '../tools/mcp-adapter.ts';
 import { createToolRegistry } from '../tools/registry.ts';
 
@@ -183,123 +183,6 @@ describe('implementer_backend CHECK constraint', () => {
         "INSERT INTO runs (run_id, task_id, project_id, repo_id, run_number, phase, step, policy_set_id, last_event_sequence, next_sequence, base_branch, branch, implementer_backend, started_at, updated_at) VALUES ('run_bad', 'task_test', 'proj_test', 'repo_test', 99, 'pending', 'setup_worktree', 'ps_1', 0, 1, 'main', '', 'invalid', ?, ?)"
       ).run(new Date().toISOString(), new Date().toISOString());
     }).toThrow();
-  });
-});
-
-// =============================================================================
-// extractRetryAfterMs
-// =============================================================================
-
-describe('extractRetryAfterMs', () => {
-  it('returns undefined for non-object', () => {
-    expect(extractRetryAfterMs(null)).toBeUndefined();
-    expect(extractRetryAfterMs('string')).toBeUndefined();
-    expect(extractRetryAfterMs(42)).toBeUndefined();
-  });
-
-  it('returns undefined for object without headers', () => {
-    expect(extractRetryAfterMs({ status: 429 })).toBeUndefined();
-  });
-
-  it('extracts from Headers-like API', () => {
-    const err = {
-      status: 429,
-      headers: {
-        get(key: string): string | null {
-          if (key === 'retry-after') return '30';
-          return null;
-        },
-      },
-    };
-    expect(extractRetryAfterMs(err)).toBe(30000);
-  });
-
-  it('extracts from plain Record', () => {
-    const err = {
-      status: 429,
-      headers: { 'retry-after': '5' },
-    };
-    expect(extractRetryAfterMs(err)).toBe(5000);
-  });
-
-  it('returns undefined for missing header', () => {
-    const err = {
-      status: 429,
-      headers: { 'x-other': 'value' },
-    };
-    expect(extractRetryAfterMs(err)).toBeUndefined();
-  });
-
-  it('returns undefined for non-numeric values', () => {
-    const err = {
-      status: 429,
-      headers: { 'retry-after': 'not-a-number' },
-    };
-    expect(extractRetryAfterMs(err)).toBeUndefined();
-  });
-
-  it('returns undefined for out-of-range values', () => {
-    const err = {
-      status: 429,
-      headers: { 'retry-after': '5000' }, // > 3600
-    };
-    expect(extractRetryAfterMs(err)).toBeUndefined();
-  });
-
-  it('returns undefined for zero', () => {
-    const err = {
-      status: 429,
-      headers: { 'retry-after': '0' },
-    };
-    expect(extractRetryAfterMs(err)).toBeUndefined();
-  });
-
-  it('returns undefined for negative values', () => {
-    const err = {
-      status: 429,
-      headers: { 'retry-after': '-10' },
-    };
-    expect(extractRetryAfterMs(err)).toBeUndefined();
-  });
-
-  it('ceils fractional seconds', () => {
-    const err = {
-      status: 429,
-      headers: { 'retry-after': '1.5' },
-    };
-    expect(extractRetryAfterMs(err)).toBe(1500);
-  });
-
-  it('extracts from capitalized Retry-After header', () => {
-    const err = {
-      status: 429,
-      headers: { 'Retry-After': '10' },
-    };
-    expect(extractRetryAfterMs(err)).toBe(10000);
-  });
-
-  it('extracts from mixed-case ReTrY-AfTeR header', () => {
-    const err = {
-      status: 429,
-      headers: { 'ReTrY-AfTeR': '5' },
-    };
-    expect(extractRetryAfterMs(err)).toBe(5000);
-  });
-
-  it('returns undefined for non-string value (number)', () => {
-    const err = {
-      status: 429,
-      headers: { 'retry-after': 42 },
-    };
-    expect(extractRetryAfterMs(err)).toBeUndefined();
-  });
-
-  it('returns undefined for non-string value (boolean)', () => {
-    const err = {
-      status: 429,
-      headers: { 'retry-after': true },
-    };
-    expect(extractRetryAfterMs(err)).toBeUndefined();
   });
 });
 

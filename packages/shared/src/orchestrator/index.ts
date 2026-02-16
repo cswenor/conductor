@@ -49,7 +49,7 @@ export interface TransitionResult {
  * Stored in blocked_context_json.reason_code.
  * Separate from blocked_reason, which is the display string.
  */
-export type BlockedReasonCode = 'max_plan_revisions' | 'max_review_rounds';
+export type BlockedReasonCode = 'max_plan_revisions' | 'max_review_rounds' | 'rate_limit_exhausted';
 
 // =============================================================================
 // Phase State Machine

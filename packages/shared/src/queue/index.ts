@@ -48,6 +48,12 @@ export interface AgentJobData {
   agent: string;
   action: string;
   context: Record<string, unknown>;
+  /** Worker-level rate-limit re-enqueue count (0-based). */
+  rateLimitRetries?: number;
+  /** Run phase when this job was enqueued (stale-episode guard). */
+  fromPhase?: string;
+  /** Run lastEventSequence when this job was enqueued (stale-episode guard). */
+  fromSequence?: number;
 }
 
 export interface CleanupJobData {
