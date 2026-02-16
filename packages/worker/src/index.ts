@@ -619,6 +619,7 @@ function markRunFailed(
   runId: string,
   reason: string,
   reasonCode?: BlockedReasonCode,
+  extraContext?: Record<string, unknown>,
 ): void {
   const currentRun = getRun(db, runId);
   const priorPhase = currentRun?.phase ?? 'pending';
@@ -628,6 +629,7 @@ function markRunFailed(
     error: reason,
     prior_phase: priorPhase,
     prior_step: priorStep,
+    ...extraContext,
   };
   if (reasonCode !== undefined) {
     blockedContext['reason_code'] = reasonCode;

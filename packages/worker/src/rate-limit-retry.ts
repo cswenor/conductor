@@ -25,7 +25,7 @@ export interface RateLimitRetryDeps {
     fromPhase: string,
     fromSequence: number,
   ) => Promise<void>;
-  markRunFailed: (db: Db, runId: string, reason: string, reasonCode: BlockedReasonCode) => void;
+  markRunFailed: (db: Db, runId: string, reason: string, reasonCode: BlockedReasonCode, extraContext?: Record<string, unknown>) => void;
 }
 
 export interface RateLimitRetryResult {
@@ -79,9 +79,15 @@ export async function handleRateLimitRetry(
   const maxRetries = resolveMaxRetries();
 
   if (currentRetries >= maxRetries) {
-    const reason = `Rate-limit retry budget exhausted for agent '${agent}' (maxRetries=${maxRetries}). Manual retry available.`;
-    deps.markRunFailed(db, run.runId, reason, 'rate_limit_exhausted');
-    log.warn({ runId: run.runId, agent, action, currentRetries, maxRetries }, reason);
+    const detail = `Rate-limit retry budget exhausted for agent '${agent}' (maxRetries=${maxRetries}). Manual retry available.`;
+    deps.markRunFailed(db, run.runId, 'rate_limit_exhausted', 'rate_limit_exhausted', {
+      error_detail: detail,
+      agent,
+      action,
+      retries_exhausted: currentRetries,
+      max_retries: maxRetries,
+    });
+    log.warn({ runId: run.runId, agent, action, currentRetries, maxRetries }, detail);
     return { retried: false };
   }
 

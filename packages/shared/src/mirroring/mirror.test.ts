@@ -366,6 +366,27 @@ describe('mirror', () => {
       expect(body).toContain('Repo not found');
     });
 
+    it('formats rate_limit_exhausted with agent info', () => {
+      const ctx = createCtx();
+      mirrorFailure(ctx, {
+        runId: 'run_1',
+        blockedReason: 'rate_limit_exhausted',
+        blockedContext: {
+          agent: 'implementer',
+          error_detail: "Rate-limit retry budget exhausted for agent 'implementer' (maxRetries=5). Manual retry available.",
+        },
+      });
+
+      const writes = db.prepare(
+        "SELECT * FROM github_writes WHERE run_id = 'run_1'"
+      ).all() as Array<Record<string, unknown>>;
+      const payload = JSON.parse(writes[0]?.['payload_json'] as string) as Record<string, unknown>;
+      const body = payload['body'] as string;
+      expect(body).toContain("rate limit exceeded");
+      expect(body).toContain("implementer");
+      expect(body).toContain('Rate limit details');
+    });
+
     it('includes test results when available for gate_failed', () => {
       // Create a test_results artifact
       db.prepare(`

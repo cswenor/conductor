@@ -153,8 +153,14 @@ describe('handleRateLimitRetry', () => {
     expect(deps.markRunFailed).toHaveBeenCalledWith(
       fakeDb,
       'run_rl_test',
-      "Rate-limit retry budget exhausted for agent 'implementer' (maxRetries=5). Manual retry available.",
       'rate_limit_exhausted',
+      'rate_limit_exhausted',
+      expect.objectContaining({
+        agent: 'implementer',
+        max_retries: 5,
+        retries_exhausted: 5,
+        error_detail: expect.stringContaining('Rate-limit retry budget exhausted') as string,
+      }),
     );
     expect(deps.enqueueAgent).not.toHaveBeenCalled();
   });
@@ -170,8 +176,14 @@ describe('handleRateLimitRetry', () => {
     expect(deps.markRunFailed).toHaveBeenCalledWith(
       fakeDb,
       'run_rl_test',
-      "Rate-limit retry budget exhausted for agent 'implementer' (maxRetries=0). Manual retry available.",
       'rate_limit_exhausted',
+      'rate_limit_exhausted',
+      expect.objectContaining({
+        agent: 'implementer',
+        max_retries: 0,
+        retries_exhausted: 0,
+        error_detail: expect.stringContaining('maxRetries=0') as string,
+      }),
     );
   });
 
@@ -191,6 +203,18 @@ describe('handleRateLimitRetry', () => {
     const r2 = await handleRateLimitRetry(fakeDb, run, 'implementer', 'apply_changes', undefined, 2, deps);
     expect(r2.retried).toBe(false);
     expect(deps.markRunFailed).toHaveBeenCalledTimes(1);
+    expect(deps.markRunFailed).toHaveBeenCalledWith(
+      fakeDb,
+      'run_rl_test',
+      'rate_limit_exhausted',
+      'rate_limit_exhausted',
+      expect.objectContaining({
+        agent: 'implementer',
+        max_retries: 2,
+        retries_exhausted: 2,
+        error_detail: expect.stringContaining('maxRetries=2') as string,
+      }),
+    );
   });
 
   it('falls back to default on invalid env values', async () => {

@@ -367,6 +367,14 @@ export function mirrorFailure(
         body = `Run blocked: policy exception required for '${policyId}'`;
         break;
       }
+      case 'rate_limit_exhausted': {
+        const agent = (input.blockedContext?.['agent'] as string) ?? 'unknown';
+        const detail = (input.blockedContext?.['error_detail'] as string) ?? 'Rate limit exceeded';
+        body = `Run blocked: rate limit exceeded for agent '${agent}'`;
+        detailsContent = detail;
+        detailsSummary = 'Rate limit details';
+        break;
+      }
       default:
         body = `Run blocked: ${input.blockedReason}`;
         break;

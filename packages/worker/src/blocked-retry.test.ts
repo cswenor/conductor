@@ -489,6 +489,53 @@ describe('handleBlockedRetry', () => {
     expect(mockEnqueueAgent).toHaveBeenCalledWith(run.runId, 'implementer', 'apply_changes');
   });
 
+  it('retries rate_limit_exhausted from prior agent step (no counter reset)', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Advance through pipeline to executing, then block with rate_limit_exhausted
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'planner_create_plan', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', toStep: 'wait_plan_approval', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'executing', toStep: 'implementer_apply_changes', triggeredBy: 'system' });
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'rate_limit_exhausted',
+      blockedContext: {
+        error: 'rate_limit_exhausted',
+        prior_phase: 'executing',
+        prior_step: 'implementer_apply_changes',
+        reason_code: 'rate_limit_exhausted',
+        agent: 'implementer',
+        retries_exhausted: 5,
+        max_retries: 5,
+        error_detail: "Rate-limit retry budget exhausted for agent 'implementer' (maxRetries=5). Manual retry available.",
+      },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    expect(blockedRun.phase).toBe('blocked');
+
+    const result = await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    expect(result.retried).toBe(true);
+    expect(result.priorPhase).toBe('executing');
+    expect(result.priorStep).toBe('implementer_apply_changes');
+
+    // Run should transition back to executing
+    const updated = mustGetRun(db, run.runId);
+    expect(updated.phase).toBe('executing');
+    expect(updated.step).toBe('implementer_apply_changes');
+
+    // Implementer agent enqueued
+    expect(mockEnqueueAgent).toHaveBeenCalledWith(run.runId, 'implementer', 'apply_changes');
+
+    // No counter reset — planRevisions and reviewRounds remain unchanged
+    expect(updated.planRevisions).toBe(0);
+    expect(updated.reviewRounds).toBe(0);
+  });
+
   it('returns error when transition fails (stale)', async () => {
     const seed = seedTestData(db);
     const run = createTestRun(db, seed);

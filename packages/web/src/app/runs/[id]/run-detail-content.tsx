@@ -374,9 +374,26 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                 {run.resultReason !== undefined && (
                   <p className="text-xs text-muted-foreground">{run.resultReason}</p>
                 )}
-                <p className="text-xs text-muted-foreground">
-                  Use the actions bar below to retry or cancel this run.
-                </p>
+                {(blockedContext?.['reason_code'] === 'rate_limit_exhausted' || run.blockedReason === 'rate_limit_exhausted') && (
+                  <>
+                    {typeof blockedContext?.['agent'] === 'string' && (
+                      <p className="text-xs text-muted-foreground">
+                        Agent <span className="font-mono">{blockedContext['agent']}</span> was
+                        rate-limited{typeof blockedContext['retries_exhausted'] === 'number' && typeof blockedContext['max_retries'] === 'number'
+                          ? ` after ${blockedContext['retries_exhausted']}/${blockedContext['max_retries']} retries`
+                          : ''}.
+                      </p>
+                    )}
+                    <p className="text-xs text-muted-foreground">
+                      Click Retry to attempt again with a fresh retry budget.
+                    </p>
+                  </>
+                )}
+                {blockedContext?.['reason_code'] !== 'rate_limit_exhausted' && run.blockedReason !== 'rate_limit_exhausted' && (
+                  <p className="text-xs text-muted-foreground">
+                    Use the actions bar below to retry or cancel this run.
+                  </p>
+                )}
               </div>
             </CardContent>
           </Card>

@@ -174,6 +174,10 @@ export async function handleBlockedRetry(
       db.prepare('UPDATE runs SET review_rounds = 0 WHERE run_id = ?').run(runId);
     };
     log.info({ runId }, 'Max review rounds retry: resetting counter, re-running implementer');
+  } else if (reasonCode === 'rate_limit_exhausted') {
+    // Rate-limit exhaustion: generic retry from prior phase/step is correct.
+    // No counter reset needed — retry budget resets automatically with new agent job.
+    log.info({ runId }, 'Rate-limit exhaustion retry: re-running agent from prior step');
   } else if (reasonCode !== undefined) {
     // Unknown structured reason_code — log for diagnosis, proceed with generic retry
     log.warn({ runId, reasonCode }, 'Unrecognized reason_code in blocked context, proceeding with generic retry');

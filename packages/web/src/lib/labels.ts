@@ -90,6 +90,7 @@ const BLOCKED_REASON_LABELS: Record<string, string> = {
   policy_exception_required: 'A policy exception is required',
   retry_limit_exceeded: 'Revision limit exceeded',
   enqueue_failed: 'Agent dispatch failed after approval',
+  rate_limit_exhausted: 'Rate limit exceeded',
 };
 
 export function getBlockedReasonLabel(reason: string): string {
