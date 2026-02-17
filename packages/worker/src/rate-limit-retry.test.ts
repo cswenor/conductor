@@ -43,6 +43,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     reviewRounds: 0,
     testFixAttempts: 0,
     implementerBackend: 'raw',
+    workflowEpoch: 0,
     ...overrides,
   } as Run;
 }

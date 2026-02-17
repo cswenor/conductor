@@ -73,6 +73,8 @@ const OPERATOR_ACTION_LABELS: Record<string, string> = {
   pause: 'Run paused',
   resume: 'Run resumed',
   cancel: 'Run cancelled',
+  edit_workflow: 'Workflow config edited',
+  rewind: 'Run rewound',
   grant_policy_exception: 'Policy exception granted',
   deny_policy_exception: 'Policy exception denied',
 };

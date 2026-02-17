@@ -63,6 +63,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     startedAt: '2025-01-01T00:00:00.000Z',
     updatedAt: '2025-01-01T00:00:00.000Z',
     implementerBackend: 'raw',
+    workflowEpoch: 0,
     ...overrides,
   };
 }

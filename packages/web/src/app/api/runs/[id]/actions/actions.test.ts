@@ -14,6 +14,7 @@ const mockGetRun = vi.fn();
 const mockGetProject = vi.fn();
 const mockCanAccessProject = vi.fn();
 const mockRecordOperatorAction = vi.fn();
+const mockValidateActionPhase = vi.fn();
 const mockAddJob = vi.fn<(queue: string, jobId: string, data: Record<string, unknown>) => Promise<void>>()
   .mockResolvedValue(undefined);
 const mockApprovePlanCommand = vi.fn();
@@ -39,6 +40,9 @@ vi.mock('@conductor/shared', () => ({
   approvePlanCommand: (...args: unknown[]) => mockApprovePlanCommand(...args) as unknown,
   rejectRunCommand: (...args: unknown[]) => mockRejectRunCommand(...args) as unknown,
   revisePlanCommand: (...args: unknown[]) => mockRevisePlanCommand(...args) as unknown,
+  validateActionPhase: (...args: unknown[]) => mockValidateActionPhase(...args) as unknown,
+  pauseRunCommand: vi.fn().mockReturnValue({ outcome: 'paused', success: true }),
+  resumeRunCommand: vi.fn().mockReturnValue({ outcome: 'resumed', success: true }),
 }));
 
 vi.mock('@/lib/bootstrap', () => ({
@@ -124,6 +128,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGetProject.mockReturnValue({ projectId: 'proj_1', userId: 'user_1' });
   mockCanAccessProject.mockReturnValue(true);
+  mockValidateActionPhase.mockReturnValue(null); // default: valid
 });
 
 // ---------------------------------------------------------------------------
@@ -150,6 +155,7 @@ describe('POST /api/runs/[id]/actions — retry', () => {
         runId: 'run_1',
         action: 'resume',
         triggeredBy: 'user_1',
+        intent: 'retry',
         fromPhase: 'blocked',
         fromSequence: 12,
       }),
@@ -158,13 +164,14 @@ describe('POST /api/runs/[id]/actions — retry', () => {
 
   it('rejects when run is not blocked', async () => {
     mockGetRun.mockReturnValue(makeBlockedRun({ phase: 'planning' }));
+    mockValidateActionPhase.mockReturnValue("Action 'retry' is not valid in phase 'planning'");
 
     const response = await (POST as (req: unknown, ctx: unknown) => Promise<NextResponse>)(
       makeRequest({ action: 'retry' }),
       makeRouteContext('run_1'),
     );
 
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(409);
     expect(mockAddJob).not.toHaveBeenCalled();
   });
 });

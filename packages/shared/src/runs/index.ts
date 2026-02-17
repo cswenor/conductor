@@ -73,6 +73,7 @@ export interface Run {
   implementerBackend: ImplementerBackend;
   workflowSnapshotJson?: string;
   workflowOverlayJson?: string;
+  workflowEpoch: number;
 }
 
 export interface RunSummary {
@@ -227,6 +228,7 @@ export function createRun(db: Database, input: CreateRunInput): Run {
     updatedAt: now,
     implementerBackend,
     workflowSnapshotJson,
+    workflowEpoch: 0,
   };
 }
 
@@ -523,5 +525,6 @@ function rowToRun(row: Record<string, unknown>): Run {
     implementerBackend: (row['implementer_backend'] as ImplementerBackend | null) ?? 'raw',
     workflowSnapshotJson: (row['workflow_snapshot_json'] as string | null) ?? undefined,
     workflowOverlayJson: (row['workflow_overlay_json'] as string | null) ?? undefined,
+    workflowEpoch: (row['workflow_epoch'] as number | null) ?? 0,
   };
 }

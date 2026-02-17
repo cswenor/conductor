@@ -100,6 +100,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     implementerBackend: 'raw',
+    workflowEpoch: 0,
     ...overrides,
   };
 }

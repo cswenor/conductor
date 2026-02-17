@@ -279,6 +279,36 @@ describe('isStaleRunJob', () => {
       isStaleRunJob(blockedRun ?? run, 'blocked', blockedRun?.lastEventSequence)
     ).toBeUndefined();
   });
+
+  it('returns undefined when epoch matches', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    // Default workflowEpoch is 0; bump it to 2 to test explicit match
+    db.prepare('UPDATE runs SET workflow_epoch = 2 WHERE run_id = ?').run(run.runId);
+    const updated = mustGetRun(db, run.runId);
+
+    expect(isStaleRunJob(updated, undefined, undefined, 2)).toBeUndefined();
+  });
+
+  it('detects epoch mismatch', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    db.prepare('UPDATE runs SET workflow_epoch = 2 WHERE run_id = ?').run(run.runId);
+    const updated = mustGetRun(db, run.runId);
+
+    const reason = isStaleRunJob(updated, undefined, undefined, 1);
+    expect(reason).toContain('epoch mismatch');
+  });
+
+  it('passes through when expectedEpoch is undefined (backward compat)', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    db.prepare('UPDATE runs SET workflow_epoch = 5 WHERE run_id = ?').run(run.runId);
+    const updated = mustGetRun(db, run.runId);
+
+    // undefined epoch means no check — should not be stale regardless of run epoch
+    expect(isStaleRunJob(updated, undefined, undefined, undefined)).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -373,5 +403,24 @@ describe('shouldSkipStaleAgentJob', () => {
     // fromSequence doesn't match → stale
     const reason = shouldSkipStaleAgentJob(run, { fromSequence: 10 });
     expect(reason).toContain('sequence mismatch');
+  });
+
+  it('detects staleness when only workflowEpoch is set and mismatches', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    db.prepare('UPDATE runs SET workflow_epoch = 2 WHERE run_id = ?').run(run.runId);
+    const updated = mustGetRun(db, run.runId);
+
+    const reason = shouldSkipStaleAgentJob(updated, { workflowEpoch: 1 });
+    expect(reason).toContain('epoch mismatch');
+  });
+
+  it('passes when workflowEpoch matches', () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+    db.prepare('UPDATE runs SET workflow_epoch = 2 WHERE run_id = ?').run(run.runId);
+    const updated = mustGetRun(db, run.runId);
+
+    expect(shouldSkipStaleAgentJob(updated, { workflowEpoch: 2 })).toBeUndefined();
   });
 });

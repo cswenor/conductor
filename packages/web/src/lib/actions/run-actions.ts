@@ -12,11 +12,17 @@ import {
   createOverride,
   isValidOverrideScope,
   type OverrideScope,
+  type RunStep,
   publishTransitionEvent,
   publishOperatorActionEvent,
   approvePlanCommand,
   rejectRunCommand,
   revisePlanCommand,
+  pauseRunCommand,
+  resumeRunCommand,
+  validateActionPhase,
+  applyWorkflowOverlay,
+  rewindRun,
 } from '@conductor/shared';
 import { getDb, getQueues } from '@/lib/bootstrap';
 import { requireServerUser } from '@/lib/auth/session';
@@ -149,8 +155,10 @@ export async function retryRun(runId: string, comment?: string): Promise<ActionR
   try {
     const { user, db, run } = await getAuthorizedRun(runId);
 
-    if (run.phase !== 'blocked') {
-      return { success: false, error: 'Run is not in blocked state' };
+    // Validate before enqueue — rejects paused runs
+    const retryError = validateActionPhase('retry', run.phase, run.pausedAt);
+    if (retryError !== null) {
+      return { success: false, error: retryError };
     }
 
     // Enqueue before recording audit — matches cancel pattern.
@@ -159,19 +167,29 @@ export async function retryRun(runId: string, comment?: string): Promise<ActionR
       runId,
       action: 'resume',
       triggeredBy: user.userId,
+      intent: 'retry' as const,
       fromPhase: 'blocked',
       fromSequence: run.lastEventSequence,
+      workflowEpoch: run.workflowEpoch,
     });
 
-    recordOperatorAction(db, {
-      runId,
-      action: 'retry',
-      actorId: user.userId,
-      actorType: 'operator',
-      comment,
-      fromPhase: run.phase,
-    });
-    publishOperatorActionEvent(db, run.projectId, runId, 'retry', user.userId);
+    // Post-enqueue audit (best-effort — job already dispatched)
+    try {
+      recordOperatorAction(db, {
+        runId,
+        action: 'retry',
+        actorId: user.userId,
+        actorType: 'operator',
+        comment,
+        fromPhase: run.phase,
+      });
+      publishOperatorActionEvent(db, run.projectId, runId, 'retry', user.userId);
+    } catch (auditErr) {
+      log.error(
+        { runId, error: auditErr instanceof Error ? auditErr.message : 'Unknown' },
+        'Retry audit failed after successful enqueue — job will still run',
+      );
+    }
 
     log.info({ runId, userId: user.userId }, 'Run retry enqueued');
     revalidateRunPaths(runId);
@@ -382,6 +400,82 @@ export async function denyPolicyException(runId: string, comment: string): Promi
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to deny exception';
     log.error({ runId, error: msg }, 'denyPolicyException failed');
+    return { success: false, error: msg };
+  }
+}
+
+export async function pauseRun(runId: string, comment?: string): Promise<ActionResult> {
+  try {
+    const { user, db, run } = await getAuthorizedRun(runId);
+    const result = pauseRunCommand({ db, run, actorId: user.userId, actorType: 'operator', comment });
+
+    log.info({ runId, userId: user.userId, outcome: result.outcome }, 'pauseRun completed');
+    revalidateRunPaths(runId);
+    return { success: result.success, error: result.error, outcome: result.outcome };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to pause run';
+    log.error({ runId, error: msg }, 'pauseRun failed');
+    return { success: false, error: msg };
+  }
+}
+
+export async function resumeRun(runId: string, comment?: string): Promise<ActionResult> {
+  try {
+    const { user, db, run } = await getAuthorizedRun(runId);
+    const result = resumeRunCommand({ db, run, actorId: user.userId, actorType: 'operator', comment });
+
+    if (!result.success) {
+      log.info({ runId, userId: user.userId, outcome: result.outcome }, 'resumeRun failed');
+      revalidateRunPaths(runId);
+      return { success: false, error: result.error, outcome: result.outcome };
+    }
+
+    // Enqueue resume job with intent 'unpause'
+    const queues = await getQueues();
+    await queues.addJob('runs', `run-resume-${runId}-${Date.now()}`, {
+      runId,
+      action: 'resume',
+      triggeredBy: user.userId,
+      intent: 'unpause' as const,
+      workflowEpoch: result.run?.workflowEpoch,
+    });
+
+    log.info({ runId, userId: user.userId, outcome: result.outcome }, 'resumeRun completed');
+    revalidateRunPaths(runId);
+    return { success: true, outcome: result.outcome };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to resume run';
+    log.error({ runId, error: msg }, 'resumeRun failed');
+    return { success: false, error: msg };
+  }
+}
+
+export async function editWorkflow(runId: string, overlay: Record<string, unknown>): Promise<ActionResult> {
+  try {
+    const { user, db } = await getAuthorizedRun(runId);
+    const result = applyWorkflowOverlay(db, runId, overlay, user.userId);
+
+    log.info({ runId, userId: user.userId, success: result.success }, 'editWorkflow completed');
+    revalidateRunPaths(runId);
+    return { success: result.success, error: result.error };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to edit workflow';
+    log.error({ runId, error: msg }, 'editWorkflow failed');
+    return { success: false, error: msg };
+  }
+}
+
+export async function rewindRunAction(runId: string, toStep: RunStep): Promise<ActionResult> {
+  try {
+    const { user, db } = await getAuthorizedRun(runId);
+    const result = rewindRun(db, runId, toStep, user.userId);
+
+    log.info({ runId, userId: user.userId, toStep, success: result.success }, 'rewindRunAction completed');
+    revalidateRunPaths(runId);
+    return { success: result.success, error: result.error };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to rewind run';
+    log.error({ runId, error: msg }, 'rewindRunAction failed');
     return { success: false, error: msg };
   }
 }

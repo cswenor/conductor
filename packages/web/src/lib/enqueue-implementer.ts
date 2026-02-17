@@ -62,6 +62,7 @@ export async function enqueueImplementerAfterApproval(
       agent: 'implementer',
       action: 'apply_changes',
       context: {},
+      workflowEpoch: run.workflowEpoch,
     });
     log.info({ runId, agentInvocationId, jobId }, 'Implementer enqueued after approval');
     return { outcome: 'enqueued' };

@@ -71,6 +71,8 @@ const VALID_ACTION_TYPES: ReadonlySet<string> = new Set<OperatorActionType>([
   'pause',
   'resume',
   'cancel',
+  'edit_workflow',
+  'rewind',
   'grant_policy_exception',
   'deny_policy_exception',
 ]);
@@ -85,10 +87,12 @@ const ACTION_PHASE_RULES: Record<OperatorActionType, ReadonlySet<RunPhase> | nul
   approve_plan: new Set(['awaiting_plan_approval']),
   revise_plan: new Set(['awaiting_plan_approval']),
   reject_run: new Set(['awaiting_plan_approval']),
-  retry: new Set(['blocked']),
+  retry: null, // special: blocked + not paused
   pause: null, // valid in any non-terminal, non-blocked phase
-  resume: null, // valid only when paused_at IS NOT NULL
+  resume: null, // valid only when paused_at IS NOT NULL + non-terminal
   cancel: null, // valid in any non-terminal phase
+  edit_workflow: null, // special: paused + non-terminal
+  rewind: null, // special: paused + non-terminal
   grant_policy_exception: new Set(['blocked']),
   deny_policy_exception: new Set(['blocked']),
 };
@@ -166,14 +170,36 @@ export function validateActionPhase(
       return null;
 
     case 'resume':
+      if (TERMINAL_PHASES.has(phase)) {
+        return `Action 'resume' is not valid in terminal phase '${phase}'`;
+      }
       if (pausedAt === undefined) {
         return 'Run is not currently paused';
+      }
+      return null;
+
+    case 'retry':
+      if (phase !== 'blocked') {
+        return `Action 'retry' is not valid in phase '${phase}'`;
+      }
+      if (pausedAt !== undefined) {
+        return 'Run is paused — unpause before retrying';
       }
       return null;
 
     case 'cancel':
       if (TERMINAL_PHASES.has(phase)) {
         return `Action 'cancel' is not valid in terminal phase '${phase}'`;
+      }
+      return null;
+
+    case 'edit_workflow':
+    case 'rewind':
+      if (TERMINAL_PHASES.has(phase)) {
+        return `Action '${action}' is not valid in terminal phase '${phase}'`;
+      }
+      if (pausedAt === undefined) {
+        return 'Run must be paused for this action';
       }
       return null;
 

@@ -2,7 +2,7 @@
  * Run Actions API
  *
  * Operator actions: approve_plan, revise_plan, reject_run, retry,
- * grant_policy_exception, deny_policy_exception, cancel.
+ * pause, resume, grant_policy_exception, deny_policy_exception, cancel.
  */
 
 import { NextResponse } from 'next/server';
@@ -22,6 +22,9 @@ import {
   approvePlanCommand,
   rejectRunCommand,
   revisePlanCommand,
+  pauseRunCommand,
+  resumeRunCommand,
+  validateActionPhase,
 } from '@conductor/shared';
 import type { OverrideScope } from '@conductor/shared';
 import { ensureBootstrap, getDb, getQueues } from '@/lib/bootstrap';
@@ -226,10 +229,11 @@ export const POST = withAuth(async (
       // retry
       // =====================================================================
       case 'retry': {
-        if (run.phase !== 'blocked') {
+        const retryError = validateActionPhase('retry', run.phase, run.pausedAt);
+        if (retryError !== null) {
           return NextResponse.json(
-            { error: 'Run is not in blocked state' },
-            { status: 400 }
+            { error: retryError },
+            { status: 409 }
           );
         }
 
@@ -238,22 +242,74 @@ export const POST = withAuth(async (
           runId,
           action: 'resume',
           triggeredBy: userId,
+          intent: 'retry' as const,
           fromPhase: 'blocked',
           fromSequence: run.lastEventSequence,
+          workflowEpoch: run.workflowEpoch,
         });
 
-        recordOperatorAction(db, {
-          runId,
-          action: 'retry',
-          actorId: userId,
-          actorType: 'operator',
-          comment: body.comment,
-          fromPhase: run.phase,
-        });
-        publishOperatorActionEvent(db, run.projectId, runId, 'retry', userId);
+        // Post-enqueue audit (best-effort — job already dispatched)
+        try {
+          recordOperatorAction(db, {
+            runId,
+            action: 'retry',
+            actorId: userId,
+            actorType: 'operator',
+            comment: body.comment,
+            fromPhase: run.phase,
+          });
+          publishOperatorActionEvent(db, run.projectId, runId, 'retry', userId);
+        } catch (auditErr) {
+          log.error(
+            { runId, error: auditErr instanceof Error ? auditErr.message : 'Unknown' },
+            'Retry audit failed after successful enqueue — job will still run',
+          );
+        }
 
         log.info({ runId, userId }, 'Run retry enqueued');
         return NextResponse.json({ success: true, run: getRun(db, runId) });
+      }
+
+      // =====================================================================
+      // pause
+      // =====================================================================
+      case 'pause': {
+        const pauseResult = pauseRunCommand({ db, run, actorId: userId, actorType: 'operator', comment: body.comment });
+        if (!pauseResult.success) {
+          const status = pauseResult.outcome === 'wrong_phase' ? 400 : 409;
+          return NextResponse.json(
+            { error: pauseResult.error, outcome: pauseResult.outcome },
+            { status },
+          );
+        }
+        log.info({ runId, userId, outcome: pauseResult.outcome }, 'Run paused');
+        return NextResponse.json({ success: true, outcome: pauseResult.outcome, run: pauseResult.run });
+      }
+
+      // =====================================================================
+      // resume
+      // =====================================================================
+      case 'resume': {
+        const resumeResult = resumeRunCommand({ db, run, actorId: userId, actorType: 'operator', comment: body.comment });
+        if (!resumeResult.success) {
+          const status = resumeResult.outcome === 'wrong_phase' ? 400 : 409;
+          return NextResponse.json(
+            { error: resumeResult.error, outcome: resumeResult.outcome },
+            { status },
+          );
+        }
+
+        // Enqueue resume job with intent 'unpause'
+        await queues.addJob('runs', `run-resume-${runId}-${Date.now()}`, {
+          runId,
+          action: 'resume',
+          triggeredBy: userId,
+          intent: 'unpause' as const,
+          workflowEpoch: resumeResult.run?.workflowEpoch,
+        });
+
+        log.info({ runId, userId, outcome: resumeResult.outcome }, 'Run resumed');
+        return NextResponse.json({ success: true, outcome: resumeResult.outcome, run: resumeResult.run });
       }
 
       // =====================================================================

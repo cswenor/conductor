@@ -17,12 +17,16 @@ export function isStaleRunJob(
   run: Run,
   expectedPhase: string | undefined,
   expectedSequence: number | undefined,
+  expectedEpoch?: number,
 ): string | undefined {
   if (expectedPhase !== undefined && run.phase !== expectedPhase) {
     return `phase mismatch: expected ${expectedPhase}, got ${run.phase}`;
   }
   if (expectedSequence !== undefined && run.lastEventSequence !== expectedSequence) {
     return `sequence mismatch: expected ${expectedSequence}, got ${run.lastEventSequence}`;
+  }
+  if (expectedEpoch !== undefined && run.workflowEpoch !== expectedEpoch) {
+    return `epoch mismatch: expected ${expectedEpoch}, got ${run.workflowEpoch}`;
   }
   return undefined;
 }
@@ -34,12 +38,12 @@ export function isStaleRunJob(
  */
 export function shouldSkipStaleAgentJob(
   run: Run,
-  jobData: Pick<AgentJobData, 'fromPhase' | 'fromSequence'>,
+  jobData: Pick<AgentJobData, 'fromPhase' | 'fromSequence' | 'workflowEpoch'>,
 ): string | undefined {
-  if (jobData.fromPhase === undefined && jobData.fromSequence === undefined) {
+  if (jobData.fromPhase === undefined && jobData.fromSequence === undefined && jobData.workflowEpoch === undefined) {
     return undefined; // Normal dispatch, not a retry
   }
-  return isStaleRunJob(run, jobData.fromPhase, jobData.fromSequence);
+  return isStaleRunJob(run, jobData.fromPhase, jobData.fromSequence, jobData.workflowEpoch);
 }
 
 /**

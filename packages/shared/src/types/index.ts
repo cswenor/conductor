@@ -124,6 +124,8 @@ export type OperatorActionType =
   | 'pause'
   | 'resume'
   | 'cancel'
+  | 'edit_workflow'
+  | 'rewind'
   | 'grant_policy_exception'
   | 'deny_policy_exception';
 

@@ -11,9 +11,9 @@ import { createLogger } from '../logger/index.ts';
 import type { ActorType } from '../types/index.ts';
 import { getRun, type Run } from '../runs/index.ts';
 import { transitionPhase, evaluateGatesAndTransition } from '../orchestrator/index.ts';
-import { recordOperatorAction, getOperatorActionForDecision, type OperatorAction } from '../operator-actions/index.ts';
+import { recordOperatorAction, getOperatorActionForDecision, validateActionPhase, type OperatorAction } from '../operator-actions/index.ts';
 import { recordGateDecision, getGateDecision } from '../gates/decisions.ts';
-import { publishTransitionEvent, publishOperatorActionEvent } from '../pubsub/index.ts';
+import { publishTransitionEvent, publishOperatorActionEvent, publishRunUpdatedEvent } from '../pubsub/index.ts';
 
 const log = createLogger({ name: 'conductor:run-commands' });
 
@@ -418,4 +418,199 @@ export function revisePlanCommand(input: PlanCommandInput & { comment: string })
     const msg = err instanceof Error ? err.message : 'Failed to revise';
     return { outcome: 'transition_failed', success: false, error: msg };
   }
+}
+
+// =============================================================================
+// CAS Conflict Error
+// =============================================================================
+
+export class CasConflictError extends Error {
+  readonly code: string;
+  constructor(code: string) {
+    super(`CAS conflict: ${code}`);
+    this.name = 'CasConflictError';
+    this.code = code;
+  }
+}
+
+// =============================================================================
+// Pause / Resume Commands
+// =============================================================================
+
+export type PauseOutcome = 'paused' | 'wrong_phase' | 'already_paused';
+export type ResumeOutcome = 'resumed' | 'not_paused' | 'wrong_phase';
+
+export interface PauseResumeInput {
+  db: Database;
+  run: Run;
+  actorId: string;
+  actorType: ActorType;
+  comment?: string;
+}
+
+export interface PauseResult {
+  success: boolean;
+  error?: string;
+  outcome: PauseOutcome;
+  run?: Run;
+  operatorAction?: OperatorAction;
+}
+
+export interface ResumeResult {
+  success: boolean;
+  error?: string;
+  outcome: ResumeOutcome;
+  run?: Run;
+  operatorAction?: OperatorAction;
+}
+
+/**
+ * Pause a run (soft stop).
+ *
+ * Inside a transaction:
+ * 1. Re-read run for freshness
+ * 2. Validate via validateActionPhase
+ * 3. Record operator action FIRST (while paused_at IS NULL)
+ * 4. CAS update paused_at/paused_by
+ * 5. If CAS fails, throw CasConflictError to roll back
+ *
+ * After commit: publish events.
+ */
+export function pauseRunCommand(input: PauseResumeInput): PauseResult {
+  const { db, run, actorId, actorType, comment } = input;
+  const { runId, projectId } = run;
+
+  let operatorAction: OperatorAction | undefined;
+
+  try {
+    db.transaction(() => {
+      // Re-read for freshness
+      const freshRun = getRun(db, runId);
+      if (freshRun === null) {
+        throw new Error('Run not found');
+      }
+
+      // Validate
+      const error = validateActionPhase('pause', freshRun.phase, freshRun.pausedAt);
+      if (error !== null) {
+        // Use a non-CAS error to distinguish from CAS failures
+        throw new Error(`VALIDATION:${error}`);
+      }
+
+      // Record operator action FIRST (while paused_at IS NULL — validation passes)
+      operatorAction = recordOperatorAction(db, {
+        runId,
+        action: 'pause',
+        actorId,
+        actorType,
+        comment,
+        fromPhase: freshRun.phase,
+      });
+
+      // CAS update
+      const now = new Date().toISOString();
+      const result = db.prepare(
+        'UPDATE runs SET paused_at = ?, paused_by = ?, updated_at = ? WHERE run_id = ? AND paused_at IS NULL'
+      ).run(now, actorId, now, runId);
+
+      if (result.changes === 0) {
+        throw new CasConflictError('already_paused');
+      }
+    })();
+  } catch (err) {
+    if (err instanceof CasConflictError) {
+      return { success: false, outcome: 'already_paused' };
+    }
+    if (err instanceof Error && err.message.startsWith('VALIDATION:')) {
+      const validationError = err.message.slice('VALIDATION:'.length);
+      // Determine outcome based on error message
+      if (validationError.includes('already paused')) {
+        return { success: false, outcome: 'already_paused', error: validationError };
+      }
+      return { success: false, outcome: 'wrong_phase', error: validationError };
+    }
+    throw err; // Real failures bubble
+  }
+
+  // After successful commit: publish events
+  publishOperatorActionEvent(db, projectId, runId, 'pause', actorId);
+  publishRunUpdatedEvent(db, projectId, runId, ['pausedAt', 'pausedBy']);
+
+  const updatedRun = getRun(db, runId) ?? undefined;
+  return { success: true, outcome: 'paused', run: updatedRun, operatorAction };
+}
+
+/**
+ * Resume a paused run.
+ *
+ * Inside a transaction:
+ * 1. Re-read run for freshness
+ * 2. Validate via validateActionPhase
+ * 3. Record operator action FIRST (while paused_at IS NOT NULL)
+ * 4. CAS update to clear paused_at/paused_by
+ * 5. If CAS fails, throw CasConflictError to roll back
+ *
+ * After commit: publish events.
+ * Returns the updated run (with current workflowEpoch for caller to use in job dispatch).
+ */
+export function resumeRunCommand(input: PauseResumeInput): ResumeResult {
+  const { db, run, actorId, actorType, comment } = input;
+  const { runId, projectId } = run;
+
+  let operatorAction: OperatorAction | undefined;
+
+  try {
+    db.transaction(() => {
+      // Re-read for freshness
+      const freshRun = getRun(db, runId);
+      if (freshRun === null) {
+        throw new Error('Run not found');
+      }
+
+      // Validate
+      const error = validateActionPhase('resume', freshRun.phase, freshRun.pausedAt);
+      if (error !== null) {
+        throw new Error(`VALIDATION:${error}`);
+      }
+
+      // Record operator action FIRST (while paused_at IS NOT NULL — validation passes)
+      operatorAction = recordOperatorAction(db, {
+        runId,
+        action: 'resume',
+        actorId,
+        actorType,
+        comment,
+        fromPhase: freshRun.phase,
+      });
+
+      // CAS update
+      const now = new Date().toISOString();
+      const result = db.prepare(
+        'UPDATE runs SET paused_at = NULL, paused_by = NULL, updated_at = ? WHERE run_id = ? AND paused_at IS NOT NULL'
+      ).run(now, runId);
+
+      if (result.changes === 0) {
+        throw new CasConflictError('not_paused');
+      }
+    })();
+  } catch (err) {
+    if (err instanceof CasConflictError) {
+      return { success: false, outcome: 'not_paused' };
+    }
+    if (err instanceof Error && err.message.startsWith('VALIDATION:')) {
+      const validationError = err.message.slice('VALIDATION:'.length);
+      if (validationError.includes('not currently paused')) {
+        return { success: false, outcome: 'not_paused', error: validationError };
+      }
+      return { success: false, outcome: 'wrong_phase', error: validationError };
+    }
+    throw err; // Real failures bubble
+  }
+
+  // After successful commit: publish events
+  publishOperatorActionEvent(db, projectId, runId, 'resume', actorId);
+  publishRunUpdatedEvent(db, projectId, runId, ['pausedAt', 'pausedBy']);
+
+  const updatedRun = getRun(db, runId) ?? undefined;
+  return { success: true, outcome: 'resumed', run: updatedRun, operatorAction };
 }

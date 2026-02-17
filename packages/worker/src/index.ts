@@ -124,7 +124,8 @@ async function enqueueAgentJob(
   runId: string,
   agent: string,
   action: string,
-  context: Record<string, unknown> = {}
+  context: Record<string, unknown> = {},
+  workflowEpoch?: number,
 ): Promise<void> {
   const qm = getQueueManager();
   const agentInvocationId = generateAgentInvocationId();
@@ -134,6 +135,7 @@ async function enqueueAgentJob(
     agent,
     action,
     context,
+    workflowEpoch,
   });
   log.info({ runId, agent, action, agentInvocationId }, 'Agent job enqueued');
 }
@@ -376,9 +378,15 @@ async function processRun(job: Job<RunJobData>): Promise<void> {
   // Staleness guard: skip jobs when the run has moved on since dispatch.
   // fromPhase checks the phase hasn't changed; fromSequence checks the exact
   // event epoch so a re-blocked run isn't confused with the original episode.
-  const staleReason = isStaleRunJob(run, job.data.fromPhase, job.data.fromSequence);
+  const staleReason = isStaleRunJob(run, job.data.fromPhase, job.data.fromSequence, job.data.workflowEpoch);
   if (staleReason !== undefined) {
     log.info({ runId, action, reason: staleReason }, 'Stale run job skipped');
+    return;
+  }
+
+  // Soft-stop guard: skip start/resume if run is paused (cancel/timeout always proceed)
+  if (run.pausedAt !== undefined && action !== 'cancel' && action !== 'timeout') {
+    log.info({ runId, action }, 'Run is paused, skipping job');
     return;
   }
 
@@ -393,7 +401,7 @@ async function processRun(job: Job<RunJobData>): Promise<void> {
       handleRunTimeout(db, run);
       break;
     case 'resume':
-      await handleRunResume(db, run, triggeredBy);
+      await handleRunResume(db, run, triggeredBy, job.data.intent);
       break;
     default:
       log.warn({ runId, action }, 'Unknown run action');
@@ -436,7 +444,7 @@ async function handleRunStart(
     publishTransitionEvent(run.projectId, runId, run.phase, 'planning', db);
     try { mirrorPhaseTransition(getMirrorCtx(), transitionInput, result); } catch { /* non-fatal */ }
     // Enqueue planner agent
-    await enqueueAgentJob(runId, 'planner', 'create_plan');
+    await enqueueAgentJob(runId, 'planner', 'create_plan', {}, run.workflowEpoch);
     return;
   }
 
@@ -518,7 +526,7 @@ async function handleRunStart(
   try { mirrorPhaseTransition(getMirrorCtx(), startTransitionInput, result); } catch { /* non-fatal */ }
 
   // 9. Enqueue planner agent
-  await enqueueAgentJob(runId, 'planner', 'create_plan');
+  await enqueueAgentJob(runId, 'planner', 'create_plan', {}, run.workflowEpoch);
 
   log.info(
     { runId, worktreeId: worktree.worktreeId, branch: worktree.branchName, baseCommit: worktree.baseCommit },
@@ -669,11 +677,16 @@ function markRunFailed(
 async function handleRunResume(
   db: ReturnType<typeof getDatabase>,
   run: Run,
-  triggeredBy?: string
+  triggeredBy?: string,
+  intent?: 'unpause' | 'retry',
 ): Promise<void> {
   const { runId, phase } = run;
 
   if (phase === 'awaiting_plan_approval') {
+    if (intent === 'unpause') {
+      log.info({ runId }, 'Run unpaused in awaiting_plan_approval — waiting for approval');
+      return;
+    }
     // Evaluate gate + transition atomically via orchestrator boundary.
     // This ensures gate.evaluated events have source='orchestrator' and
     // gate persistence + phase transition happen in a single transaction.
@@ -713,9 +726,13 @@ async function handleRunResume(
     } catch { /* non-fatal */ }
 
     // Enqueue implementer agent
-    await enqueueAgentJob(runId, 'implementer', 'apply_changes');
+    await enqueueAgentJob(runId, 'implementer', 'apply_changes', {}, run.workflowEpoch);
     log.info({ runId }, 'Run resumed — implementer enqueued');
   } else if (phase === 'blocked') {
+    if (intent === 'unpause') {
+      log.info({ runId }, 'Run unpaused in blocked — waiting for operator retry');
+      return;
+    }
     // Delegate to extracted blocked-retry handler
     await handleBlockedRetry(db, run, triggeredBy, {
       enqueueAgent: enqueueAgentJob,
@@ -736,6 +753,7 @@ async function handleRunResume(
           triggeredBy: retryTriggeredBy,
           fromPhase,
           fromSequence,
+          workflowEpoch: run.workflowEpoch,
         });
       },
       mirror: (input, result) => mirrorPhaseTransition(getMirrorCtx(), input, result),
@@ -751,10 +769,32 @@ async function handleRunResume(
         triggeredBy: 'pr-creation-retry',
         fromPhase: 'awaiting_review',
         fromSequence: run.lastEventSequence,
+        workflowEpoch: run.workflowEpoch,
       }, { delay: delayMs });
     });
   } else {
-    log.warn({ runId, phase }, 'Resume not valid from this phase');
+    // Generic resume (pause-resume or post-rewind) — map step to agent
+    const RESUME_STEP_DISPATCH: Partial<Record<string, { agent: string; action: string }>> = {
+      planner_create_plan: { agent: 'planner', action: 'create_plan' },
+      reviewer_review_plan: { agent: 'reviewer', action: 'review_plan' },
+      implementer_apply_changes: { agent: 'implementer', action: 'apply_changes' },
+      reviewer_review_code: { agent: 'reviewer', action: 'review_code' },
+    };
+
+    const route = RESUME_STEP_DISPATCH[run.step];
+    if (route !== undefined) {
+      await enqueueAgentJob(runId, route.agent, route.action, {}, run.workflowEpoch);
+      log.info({ runId, phase, step: run.step }, 'Run resumed — agent enqueued for current step');
+    } else if (run.step === 'setup_worktree') {
+      const qm = getQueueManager();
+      await qm.addJob('runs', `run-restart-${runId}-${Date.now()}`, {
+        runId, action: 'start', triggeredBy: triggeredBy ?? 'system', workflowEpoch: run.workflowEpoch,
+      });
+    } else if (run.step === 'wait_plan_approval') {
+      log.info({ runId, step: run.step }, 'Resume: run waiting for human decision');
+    } else {
+      log.warn({ runId, phase, step: run.step }, 'Resume: no dispatch route for current step');
+    }
   }
 }
 
@@ -783,7 +823,7 @@ async function handlePlannerAgent(
 
   // Enqueue plan reviewer
   updateRunStep(db, runId, 'reviewer_review_plan');
-  await enqueueAgentJob(runId, 'reviewer', 'review_plan');
+  await enqueueAgentJob(runId, 'reviewer', 'review_plan', {}, run.workflowEpoch);
 }
 
 /**
@@ -836,7 +876,7 @@ async function handlePlanReviewerAgent(
     // Re-run planner with review feedback
     log.info({ runId, planRevisions: currentRun?.planRevisions }, 'Plan rejected, re-running planner');
     updateRunStep(db, runId, 'planner_create_plan');
-    await enqueueAgentJob(runId, 'planner', 'create_plan');
+    await enqueueAgentJob(runId, 'planner', 'create_plan', {}, run.workflowEpoch);
   }
 }
 
@@ -959,7 +999,7 @@ async function handleImplementerAgent(
         );
         await enqueueAgentJob(runId, 'implementer', 'apply_changes', {
           retry_reason: gateResult.reason,
-        });
+        }, run.workflowEpoch);
         return;
       }
 
@@ -1017,7 +1057,7 @@ async function handleImplementerAgent(
   try { mirrorPhaseTransition(getMirrorCtx(), reviewTransitionInput, result); } catch { /* non-fatal */ }
 
   // Enqueue code reviewer
-  await enqueueAgentJob(runId, 'reviewer', 'review_code');
+  await enqueueAgentJob(runId, 'reviewer', 'review_code', {}, run.workflowEpoch);
 }
 
 /**
@@ -1055,6 +1095,7 @@ async function handleCodeReviewerAgent(
         triggeredBy: 'pr-creation-retry',
         fromPhase: 'awaiting_review',
         fromSequence: run.lastEventSequence,
+        workflowEpoch: run.workflowEpoch,
       }, { delay: delayMs });
     });
   } else {
@@ -1084,7 +1125,7 @@ async function handleCodeReviewerAgent(
     publishTransitionEvent(run.projectId, runId, run.phase, 'executing', db);
     try { mirrorPhaseTransition(getMirrorCtx(), rejectInput, result); } catch { /* non-fatal */ }
 
-    await enqueueAgentJob(runId, 'implementer', 'apply_changes');
+    await enqueueAgentJob(runId, 'implementer', 'apply_changes', {}, run.workflowEpoch);
   }
 }
 
@@ -1132,6 +1173,7 @@ async function handleAgentError(
           rateLimitRetries: retries,
           fromPhase,
           fromSequence,
+          workflowEpoch: run.workflowEpoch,
         }, { delay });
       },
       markRunFailed,
@@ -1206,6 +1248,12 @@ async function processAgent(job: Job<AgentJobData>): Promise<void> {
   const staleReason = shouldSkipStaleAgentJob(run, job.data);
   if (staleReason !== undefined) {
     log.info({ runId, agent, action, staleReason }, 'Stale agent retry, skipping');
+    return;
+  }
+
+  // Soft-stop guard: skip agent if run is paused
+  if (run.pausedAt !== undefined) {
+    log.info({ runId, agent, action }, 'Run is paused, skipping agent job');
     return;
   }
 

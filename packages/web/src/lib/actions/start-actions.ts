@@ -107,6 +107,7 @@ export async function startWork(taskIds: string[]): Promise<StartWorkResult> {
         await queues.addJob('runs', `run:start:${runId}`, {
           runId,
           action: 'start',
+          workflowEpoch: 0,
         });
       } catch (err) {
         log.error({ runId, error: err instanceof Error ? err.message : 'Unknown' }, 'Failed to enqueue run start');

@@ -25,7 +25,8 @@ const ROOT = resolve(import.meta.dirname, '../../../..');
 const OPERATOR_ACTION_COUNTS: Record<string, number> = {
   'packages/web/src/lib/actions/run-actions.ts': 4,
   'packages/web/src/app/api/runs/[id]/actions/route.ts': 4,
-  'packages/shared/src/run-commands/index.ts': 5,
+  'packages/shared/src/run-commands/index.ts': 7,
+  'packages/shared/src/runs/workflow-mutations.ts': 2,
 };
 
 const OPERATOR_ACTION_PATTERN = /publishOperatorActionEvent\([^)]/g;
@@ -69,6 +70,8 @@ const AGENT_INVOCATION_PATTERN = /publishAgentInvocationEvent\([^)]/g;
 const RUN_UPDATED_COUNTS: Record<string, number> = {
   'packages/worker/src/pr-creation.ts': 3,
   'packages/worker/src/merge-handler.ts': 2,
+  'packages/shared/src/run-commands/index.ts': 2,
+  'packages/shared/src/runs/workflow-mutations.ts': 2,
 };
 
 const RUN_UPDATED_PATTERN = /publishRunUpdatedEvent\([^)]/g;

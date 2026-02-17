@@ -29,7 +29,7 @@ import {
   ArrowLeft, XCircle, GitBranch, Clock, Hash,
   CheckCircle, AlertTriangle, Circle, RefreshCw,
   ThumbsUp, ThumbsDown, Pencil, ShieldAlert,
-  ChevronDown, ChevronRight,
+  ChevronDown, ChevronRight, Play,
 } from 'lucide-react';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import {
@@ -56,6 +56,8 @@ import {
   cancelRun,
   grantPolicyException,
   denyPolicyException,
+  pauseRun,
+  resumeRun,
 } from '@/lib/actions/run-actions';
 import { useLiveRefresh } from '@/hooks/use-live-refresh';
 import type { RunDetailData } from '@/lib/data/run-detail';
@@ -188,6 +190,12 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
         break;
       case 'deny_policy_exception':
         result = await denyPolicyException(runId, commentOrJustification ?? '');
+        break;
+      case 'pause':
+        result = await pauseRun(runId, commentOrJustification);
+        break;
+      case 'resume':
+        result = await resumeRun(runId, commentOrJustification);
         break;
       default:
         result = { success: false, error: `Unknown action: ${action}` };
@@ -385,13 +393,17 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                       </p>
                     )}
                     <p className="text-xs text-muted-foreground">
-                      Click Retry to attempt again with a fresh retry budget.
+                      {run.pausedAt !== undefined
+                        ? 'Unpause the run, then retry to attempt again with a fresh retry budget.'
+                        : 'Click Retry to attempt again with a fresh retry budget.'}
                     </p>
                   </>
                 )}
                 {blockedContext?.['reason_code'] !== 'rate_limit_exhausted' && run.blockedReason !== 'rate_limit_exhausted' && (
                   <p className="text-xs text-muted-foreground">
-                    Use the actions bar below to retry or cancel this run.
+                    {run.pausedAt !== undefined
+                      ? 'Unpause the run, then retry to attempt again with a fresh retry budget.'
+                      : 'Use the actions bar below to retry or cancel this run.'}
                   </p>
                 )}
               </div>
@@ -846,11 +858,22 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
 
             {run.phase === 'blocked' && (
               <>
+                {run.pausedAt !== undefined && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => handleAction('resume')}
+                    disabled={isPending}
+                  >
+                    <Play className="h-4 w-4 mr-1" />
+                    Unpause
+                  </Button>
+                )}
                 <Button
-                  variant="default"
+                  variant={run.pausedAt !== undefined ? 'outline' : 'default'}
                   size="sm"
                   onClick={() => handleAction('retry')}
-                  disabled={isPending}
+                  disabled={isPending || run.pausedAt !== undefined}
                 >
                   <RefreshCw className="h-4 w-4 mr-1" />
                   Retry
@@ -868,7 +891,7 @@ export function RunDetailContent({ data }: { data: RunDetailData }) {
                       confirmLabel: 'Resume Run',
                       confirmVariant: 'default',
                     })}
-                    disabled={isPending}
+                    disabled={isPending || run.pausedAt !== undefined}
                   >
                     <Pencil className="h-4 w-4 mr-1" />
                     Manual Fix

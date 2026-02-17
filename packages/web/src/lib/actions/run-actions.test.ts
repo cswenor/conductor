@@ -13,6 +13,7 @@ const mockGetRun = vi.fn();
 const mockGetProject = vi.fn();
 const mockCanAccessProject = vi.fn();
 const mockRecordOperatorAction = vi.fn();
+const mockValidateActionPhase = vi.fn();
 const mockAddJob = vi.fn<(queue: string, jobId: string, data: Record<string, unknown>) => Promise<void>>()
   .mockResolvedValue(undefined);
 const mockApprovePlanCommand = vi.fn();
@@ -34,6 +35,11 @@ vi.mock('@conductor/shared', () => ({
   approvePlanCommand: (...args: unknown[]) => mockApprovePlanCommand(...args) as unknown,
   rejectRunCommand: vi.fn().mockReturnValue({ outcome: 'rejected', success: true }),
   revisePlanCommand: vi.fn().mockReturnValue({ outcome: 'revised', success: true }),
+  validateActionPhase: (...args: unknown[]) => mockValidateActionPhase(...args) as unknown,
+  pauseRunCommand: vi.fn().mockReturnValue({ outcome: 'paused', success: true }),
+  resumeRunCommand: vi.fn().mockReturnValue({ outcome: 'resumed', success: true }),
+  applyWorkflowOverlay: vi.fn().mockReturnValue({ success: true }),
+  rewindRun: vi.fn().mockReturnValue({ success: true }),
 }));
 
 vi.mock('next/cache', () => ({
@@ -100,6 +106,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGetProject.mockReturnValue({ projectId: 'proj_1', userId: 'user_1' });
   mockCanAccessProject.mockReturnValue(true);
+  mockValidateActionPhase.mockReturnValue(null); // default: valid
 });
 
 // ---------------------------------------------------------------------------
@@ -123,6 +130,7 @@ describe('retryRun', () => {
         runId: 'run_1',
         action: 'resume',
         triggeredBy: 'user_1',
+        intent: 'retry',
         fromPhase: 'blocked',
         fromSequence: 7,
       }),
@@ -149,11 +157,12 @@ describe('retryRun', () => {
 
   it('rejects when run is not blocked', async () => {
     mockGetRun.mockReturnValue(makeBlockedRun({ phase: 'planning' }));
+    mockValidateActionPhase.mockReturnValue("Action 'retry' is not valid in phase 'planning'");
 
     const result = await retryRun('run_1');
 
     expect(result.success).toBe(false);
-    expect(result.error).toContain('not in blocked state');
+    expect(result.error).toContain("not valid in phase 'planning'");
     expect(mockAddJob).not.toHaveBeenCalled();
   });
 });

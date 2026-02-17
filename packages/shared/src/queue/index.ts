@@ -40,6 +40,10 @@ export interface RunJobData {
   fromPhase?: string;
   /** Expected lastEventSequence at dispatch time — distinguishes blocked episodes. */
   fromSequence?: number;
+  /** Run's workflow_epoch at dispatch time — stale jobs are skipped on mismatch. */
+  workflowEpoch?: number;
+  /** Distinguishes resume-after-pause from retry-from-blocked. */
+  intent?: 'unpause' | 'retry';
 }
 
 export interface AgentJobData {
@@ -54,6 +58,8 @@ export interface AgentJobData {
   fromPhase?: string;
   /** Run lastEventSequence when this job was enqueued (stale-episode guard). */
   fromSequence?: number;
+  /** Run's workflow_epoch at dispatch time — stale jobs are skipped on mismatch. */
+  workflowEpoch?: number;
 }
 
 export interface CleanupJobData {

@@ -196,6 +196,7 @@ export const POST = withAuth(async (
       runId: run.runId,
       action: 'start',
       triggeredBy: request.user.userId,
+      workflowEpoch: run.workflowEpoch,
     });
 
     log.info(
