@@ -15,7 +15,7 @@ import type { Database } from 'better-sqlite3';
 import { createLogger } from '../logger/index.ts';
 import type { RunPhase, RunStep } from '../types/index.ts';
 import { getRun, type Run } from './index.ts';
-import { recordOperatorAction } from '../operator-actions/index.ts';
+import { recordOperatorAction, validateActionPhase } from '../operator-actions/index.ts';
 import { createEvent } from '../events/index.ts';
 import { validateWorkflowConfigStrict } from '../workflow-config/index.ts';
 import { publishOperatorActionEvent, publishRunUpdatedEvent } from '../pubsub/index.ts';
@@ -51,6 +51,16 @@ export function applyWorkflowOverlay(
   const errors = validateWorkflowConfigStrict(overlay);
   if (errors.length > 0) {
     return { success: false, error: 'Invalid workflow config', details: errors };
+  }
+
+  // Pre-validate paused state (structured error instead of throw)
+  const run = getRun(db, runId);
+  if (run === null) {
+    return { success: false, error: 'Run not found' };
+  }
+  const phaseError = validateActionPhase('edit_workflow', run.phase, run.pausedAt);
+  if (phaseError !== null) {
+    return { success: false, error: phaseError };
   }
 
   const overlayJson = JSON.stringify(overlay);

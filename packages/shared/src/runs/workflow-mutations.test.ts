@@ -124,13 +124,14 @@ describe('applyWorkflowOverlay', () => {
     expect(result.run?.workflowOverlayJson).toBe(JSON.stringify({ planner: { model: 'claude-sonnet-4-20250514' } }));
   });
 
-  it('throws when run is not paused', () => {
+  it('returns error when run is not paused', () => {
     const { runId } = seedTestData(db);
-    // Run is NOT paused — recordOperatorAction validates pause state and throws
+    // Run is NOT paused — pre-validation returns structured error
 
-    expect(() =>
-      applyWorkflowOverlay(db, runId, { planner: { model: 'claude-sonnet-4-20250514' } }, 'user_1')
-    ).toThrow(/paused/i);
+    const result = applyWorkflowOverlay(db, runId, { planner: { model: 'claude-sonnet-4-20250514' } }, 'user_1');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/paused/i);
   });
 
   it('returns validation errors for invalid overlay', () => {
