@@ -135,7 +135,7 @@ export function createMcpToolDefinitions(
  * Create an MCP server that wraps all tools from the registry.
  * Thin wrapper around `createMcpToolDefinitions()`.
  */
-export function createImplementerMcpServer(
+export function createAgentMcpServer(
   registry: ToolRegistry,
   policyRules: PolicyRule[],
   context: ToolExecutionContext,
@@ -165,3 +165,6 @@ export function createImplementerMcpServer(
 export function getAllowedToolNames(registry: ToolRegistry): string[] {
   return registry.names().map(name => `mcp__${MCP_SERVER_NAME}__${name}`);
 }
+
+/** @deprecated Use createAgentMcpServer */
+export const createImplementerMcpServer = createAgentMcpServer;

@@ -68,6 +68,9 @@ import {
   runCodeReviewer,
   runImplementerWithTools,
   runImplementerWithAgentSDK,
+  runPlannerWithAgentSDK,
+  runPlanReviewerWithAgentSDK,
+  runCodeReviewerWithAgentSDK,
   getDefaultImplementerBackend,
   getResolvedWorkflowConfig,
   AgentError,
@@ -836,7 +839,34 @@ async function handlePlannerAgent(
   updateRunStep(db, runId, 'planner_create_plan');
 
   const config = getResolvedWorkflowConfig(run);
-  const planResult = await runPlanner(db, { runId, worktreePath, stepConfig: config.planner });
+  let planResult;
+
+  if (config.planner.backend === 'agent_sdk') {
+    // Resolve and validate credentials
+    let creds: Awaited<ReturnType<typeof resolveCredentials>>;
+    try {
+      creds = await resolveCredentials(db, { runId, step: 'planner_create_plan' });
+    } catch (credErr) {
+      const msg = credErr instanceof Error ? credErr.message : 'Credential resolution failed';
+      markRunFailed(db, runId, msg);
+      return;
+    }
+    if (creds.mode !== 'ai_provider') {
+      markRunFailed(db, runId, 'Planner SDK requires AI provider credentials');
+      return;
+    }
+    if (creds.provider !== 'anthropic') {
+      markRunFailed(db, runId, `Planner SDK requires Anthropic provider (got: ${creds.provider})`);
+      return;
+    }
+
+    planResult = await runPlannerWithAgentSDK(db, {
+      runId, worktreePath, apiKey: creds.apiKey,
+      stepConfig: config.planner,
+    });
+  } else {
+    planResult = await runPlanner(db, { runId, worktreePath, stepConfig: config.planner });
+  }
 
   log.info(
     { runId, artifactId: planResult.artifactId, invocationId: planResult.agentInvocationId },
@@ -859,7 +889,33 @@ async function handlePlanReviewerAgent(
   const { runId } = run;
 
   const planReviewConfig = getResolvedWorkflowConfig(run);
-  const reviewResult = await runPlanReviewer(db, { runId, worktreePath, stepConfig: planReviewConfig.reviewerPlan });
+  let reviewResult;
+
+  if (planReviewConfig.reviewerPlan.backend === 'agent_sdk') {
+    let creds: Awaited<ReturnType<typeof resolveCredentials>>;
+    try {
+      creds = await resolveCredentials(db, { runId, step: 'reviewer_review_plan' });
+    } catch (credErr) {
+      const msg = credErr instanceof Error ? credErr.message : 'Credential resolution failed';
+      markRunFailed(db, runId, msg);
+      return;
+    }
+    if (creds.mode !== 'ai_provider') {
+      markRunFailed(db, runId, 'Plan reviewer SDK requires AI provider credentials');
+      return;
+    }
+    if (creds.provider !== 'anthropic') {
+      markRunFailed(db, runId, `Plan reviewer SDK requires Anthropic provider (got: ${creds.provider})`);
+      return;
+    }
+
+    reviewResult = await runPlanReviewerWithAgentSDK(db, {
+      runId, worktreePath, apiKey: creds.apiKey,
+      stepConfig: planReviewConfig.reviewerPlan,
+    });
+  } else {
+    reviewResult = await runPlanReviewer(db, { runId, worktreePath, stepConfig: planReviewConfig.reviewerPlan });
+  }
 
   log.info(
     { runId, approved: reviewResult.approved, artifactId: reviewResult.artifactId },
@@ -943,6 +999,10 @@ async function handleImplementerAgent(
 
   switch (backend) {
     case 'agent_sdk':
+      if (creds.provider !== 'anthropic') {
+        markRunFailed(db, runId, `Implementer SDK requires Anthropic provider (got: ${creds.provider})`);
+        return;
+      }
       implResult = await runImplementerWithAgentSDK(db, {
         runId, worktreePath, apiKey: creds.apiKey,
         stepConfig: implConfig.implementer,
@@ -1099,7 +1159,33 @@ async function handleCodeReviewerAgent(
   const { runId } = run;
 
   const codeReviewConfig = getResolvedWorkflowConfig(run);
-  const reviewResult = await runCodeReviewer(db, { runId, worktreePath, stepConfig: codeReviewConfig.reviewerCode });
+  let reviewResult;
+
+  if (codeReviewConfig.reviewerCode.backend === 'agent_sdk') {
+    let creds: Awaited<ReturnType<typeof resolveCredentials>>;
+    try {
+      creds = await resolveCredentials(db, { runId, step: 'reviewer_review_code' });
+    } catch (credErr) {
+      const msg = credErr instanceof Error ? credErr.message : 'Credential resolution failed';
+      markRunFailed(db, runId, msg);
+      return;
+    }
+    if (creds.mode !== 'ai_provider') {
+      markRunFailed(db, runId, 'Code reviewer SDK requires AI provider credentials');
+      return;
+    }
+    if (creds.provider !== 'anthropic') {
+      markRunFailed(db, runId, `Code reviewer SDK requires Anthropic provider (got: ${creds.provider})`);
+      return;
+    }
+
+    reviewResult = await runCodeReviewerWithAgentSDK(db, {
+      runId, worktreePath, apiKey: creds.apiKey,
+      stepConfig: codeReviewConfig.reviewerCode,
+    });
+  } else {
+    reviewResult = await runCodeReviewer(db, { runId, worktreePath, stepConfig: codeReviewConfig.reviewerCode });
+  }
 
   log.info(
     { runId, approved: reviewResult.approved, artifactId: reviewResult.artifactId },

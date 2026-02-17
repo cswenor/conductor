@@ -81,13 +81,13 @@ vi.mock('../tools/registry.ts', () => ({
   createToolRegistry: vi.fn().mockReturnValue({ register: vi.fn(), get: vi.fn(), list: vi.fn().mockReturnValue([]) }),
 }));
 
-vi.mock('../tools/filesystem.ts', () => ({
-  registerFilesystemTools: vi.fn(),
-}));
-
-vi.mock('../tools/test-runner.ts', () => ({
-  registerTestRunnerTool: vi.fn(),
-}));
+vi.mock('../tools/profiles.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../tools/profiles.ts')>();
+  return {
+    ...actual,
+    registerToolsForProfile: vi.fn(),
+  };
+});
 
 vi.mock('../tools/policy.ts', () => ({
   DEFAULT_POLICY_RULES: [],
@@ -98,7 +98,7 @@ vi.mock('../policy-definitions.ts', () => ({
 }));
 
 vi.mock('../tools/mcp-adapter.ts', () => ({
-  createImplementerMcpServer: vi.fn().mockReturnValue({}),
+  createAgentMcpServer: vi.fn().mockReturnValue({}),
   getAllowedToolNames: vi.fn().mockReturnValue([]),
 }));
 

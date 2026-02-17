@@ -153,6 +153,22 @@ export {
   resolveImplementerBackend,
 } from './agents/implementer-sdk.ts';
 
+// Planner — Agent SDK backend
+export {
+  runPlannerWithAgentSDK,
+} from './agents/planner-sdk.ts';
+
+// Reviewer — Agent SDK backend
+export {
+  runPlanReviewerWithAgentSDK,
+  runCodeReviewerWithAgentSDK,
+} from './agents/reviewer-sdk.ts';
+
+// SDK result extraction
+export {
+  extractTerminalAssistantText,
+} from './agents/sdk-result.ts';
+
 // Agent messages CRUD
 export {
   type AgentMessage,

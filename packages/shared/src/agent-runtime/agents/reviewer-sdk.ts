@@ -1,11 +1,11 @@
 /**
- * Implementer Agent — Agent SDK Backend
+ * Reviewer Agent — Agent SDK Backend
  *
- * Runs the implementer via the Claude Agent SDK `query()` function.
- * The SDK manages the conversation loop, context compaction, and
- * automatic rate-limit retries. Our custom tools are exposed as MCP
- * tools via the shared `executeAuditedToolCall()` function so audit,
- * policy, and telemetry contracts are preserved.
+ * Runs plan reviewer and code reviewer via the Claude Agent SDK `query()`.
+ * Unlike the raw path (single-call executeAgent), this runs as a
+ * multi-turn SDK conversation with MCP tools — enabling the reviewer
+ * to verify file paths, function names, and technical claims by
+ * reading the actual codebase.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -13,16 +13,14 @@ import type { Database } from 'better-sqlite3';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createLogger } from '../../logger/index.ts';
-import type { ImplementerBackend, Run } from '../../runs/index.ts';
-import { getResolvedWorkflowConfig, MVP_DEFAULTS } from '../../workflow-config/index.ts';
+import { MVP_DEFAULTS } from '../../workflow-config/index.ts';
 import { getRun } from '../../runs/index.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
 import { publishAgentInvocationEvent } from '../../pubsub/index.ts';
-import { assembleContext, formatContextForPrompt, resolveImplementerBudgets } from '../context.ts';
+import { assembleContext, formatContextForPrompt } from '../context.ts';
 import { createAgentInvocation, markAgentRunning, completeAgentInvocation, failAgentInvocation } from '../invocations.ts';
 import { createArtifact } from '../artifacts.ts';
 import { createAgentMessage } from '../agent-messages.ts';
-import { listToolInvocations } from '../tool-invocations.ts';
 import { createToolRegistry } from '../tools/registry.ts';
 import { isValidToolProfile, validateProfileForStep, registerToolsForProfile } from '../tools/profiles.ts';
 import { DEFAULT_POLICY_RULES } from '../tools/policy.ts';
@@ -32,119 +30,155 @@ import type { ToolResultEntry } from '../tools/protocol.ts';
 import { flushToolResults as flushToolResultsHelper } from '../tools/protocol.ts';
 import { AgentError, AgentAuthError, AgentRateLimitError, AgentContextLengthError, AgentCancelledError, AgentTimeoutError } from '../provider.ts';
 import { extractRetryAfterMs } from '../retry-after.ts';
-import type { FileOperation, ImplementerInput, ImplementerResult } from './implementer.ts';
+import { extractTerminalAssistantText } from './sdk-result.ts';
+import { parseVerdict } from './reviewer.ts';
+import type { ReviewerInput, ReviewerResult } from './reviewer.ts';
 
-const log = createLogger({ name: 'conductor:implementer-sdk' });
+const log = createLogger({ name: 'conductor:reviewer-sdk' });
 
 // =============================================================================
-// System Prompt (same as raw path)
+// System Prompts
 // =============================================================================
 
-const IMPLEMENTER_TOOLS_SYSTEM_PROMPT = `You are a software implementer working as part of an automated orchestration system.
+const PLAN_REVIEWER_SDK_SYSTEM_PROMPT = `You are a senior software engineer reviewing an implementation plan.
 
-Your task is to implement the approved plan by producing file changes.
+## Your Task
+Review the proposed plan for the given issue and provide structured feedback.
+Use the provided tools to verify file paths, function names, and technical claims in the plan.
 
 ## Available Tools
+- **read_file**: Read file contents to verify plan references.
+- **read_file_range**: Read specific lines from a file.
+- **search_in_file**: Search for patterns to verify code references.
+- **list_files**: List repository files to verify file paths in the plan.
+- **run_tests**: Run test commands to verify current test state.
 
-You have access to the following tools:
-- **read_file**: Read the contents of a file to understand existing code.
-- **read_file_range**: Read specific lines from a file (e.g., a function or class definition).
-- **search_in_file**: Search for a literal string in a file. Returns matching lines with line numbers. Use /pattern/flags syntax for regex.
-- **write_file**: Write or overwrite a file with complete content.
-- **delete_file**: Delete a file that is no longer needed.
-- **list_files**: List files in the repository to understand its structure.
-- **run_tests**: Run test commands to verify your changes work.
+## Process
+1. Read the plan and review feedback sections from the context.
+2. Use tools to verify file paths, function names, and technical claims in the plan.
+3. Run tests if needed to understand current project state.
+4. Produce your verdict as your FINAL response.
+
+## Response Format
+Your response MUST begin with one of these verdicts on the first line:
+
+APPROVED — The plan is ready for implementation.
+CHANGES_REQUESTED — The plan needs revisions.
+
+After the verdict, provide your review:
+
+### Strengths
+- What the plan does well
+
+### Issues (if CHANGES_REQUESTED)
+- Specific problems that must be addressed
+- Each issue must be actionable
+
+### Suggestions (optional)
+- Non-blocking improvements
 
 ## Rules
-- Prefer read_file_range and search_in_file for targeted inspection before reading entire files with read_file. This reduces token usage significantly.
-- Follow the plan exactly. Implement all planned changes.
-- Write COMPLETE files, not diffs or patches.
-- Use relative paths from the repository root. No absolute paths.
-- Include all necessary imports and type declarations.
-- Follow existing code patterns and conventions in the repository.
-- Do not modify files outside the scope of the plan.
-- Do not create or modify .git/ directory files.
-- Ensure all code compiles/parses correctly.
-- Use read_file and list_files to understand existing code before making changes.
-- After writing files, consider running tests to verify your changes.
+- Be specific: reference file paths, function names, and steps.
+- APPROVED means you're confident the plan will produce correct, complete code.
+- CHANGES_REQUESTED means there are blocking issues. Be clear about what to fix.
+- If the plan is borderline, default to CHANGES_REQUESTED. Better to iterate than ship bad code.
+- Your FINAL response MUST contain the verdict. Do not end with a tool call.`;
 
-## Context
-Context sections (plan, review, file tree, issue body) may be truncated to save tokens.
-When you see "[...truncated]", use your tools to fetch the full details:
-- Use list_files to explore the repository structure.
-- Use read_file or read_file_range to inspect specific files.
-- Use search_in_file to locate specific patterns.`;
+const CODE_REVIEWER_SDK_SYSTEM_PROMPT = `You are a senior software engineer reviewing code changes.
+
+## Your Task
+Review the code diff against the approved plan and provide structured feedback.
+Use the provided tools to verify the implementation details.
+
+## Available Tools
+- **read_file**: Read file contents to verify implementation.
+- **read_file_range**: Read specific lines from a file.
+- **search_in_file**: Search for patterns to verify code changes.
+- **list_files**: List repository files to verify file structure.
+- **run_tests**: Run test commands to verify the changes work.
+
+## Process
+1. Review the code diff provided in the context.
+2. Use tools to verify the implementation matches the plan.
+3. Run tests to verify correctness.
+4. Produce your verdict as your FINAL response.
+
+## Response Format
+Your response MUST begin with one of these verdicts on the first line:
+
+APPROVED — The code is ready for PR.
+CHANGES_REQUESTED — The code needs revisions.
+
+After the verdict, provide your review:
+
+### Correctness
+- Does the code correctly implement the plan?
+- Are there logic errors or edge cases?
+
+### Completeness
+- Are all planned changes implemented?
+- Are tests included?
+
+### Issues (if CHANGES_REQUESTED)
+- Specific problems with file paths and descriptions
+- Each issue must be actionable
+
+## Rules
+- Check for: correctness, completeness, security issues, missing error handling.
+- APPROVED means the code is ready for human review as a PR.
+- CHANGES_REQUESTED means there are blocking issues the implementer must fix.
+- Your FINAL response MUST contain the verdict. Do not end with a tool call.`;
 
 // =============================================================================
-// Backend Resolver
+// Shared SDK Runner
 // =============================================================================
 
-export function resolveImplementerBackend(run: Run): ImplementerBackend {
-  const resolved = getResolvedWorkflowConfig(run);
-  return resolved.implementer.backend;
-}
-
-// =============================================================================
-// Main Entry Point
-// =============================================================================
-
-export async function runImplementerWithAgentSDK(
+async function runReviewerSdk(
   db: Database,
-  input: ImplementerInput & { apiKey: string },
-): Promise<ImplementerResult> {
+  input: ReviewerInput & { apiKey: string },
+  agent: string,
+  action: string,
+  stepName: string,
+  systemPrompt: string,
+  userPrompt: string,
+  defaultsRef: typeof MVP_DEFAULTS.reviewerPlan,
+): Promise<ReviewerResult> {
   ensureBuiltInPolicyDefinitions(db);
 
   const runRecord = getRun(db, input.runId);
   if (runRecord === null) throw new Error(`Run not found: ${input.runId}`);
   const projectId = runRecord.projectId;
 
-  // Assemble context
-  const assembledContext = assembleContext(db, {
-    runId: input.runId,
-    worktreePath: input.worktreePath,
-  });
-  const userPrompt = formatContextForPrompt(assembledContext, resolveImplementerBudgets());
+  // Resolve tool profile with step-specific constraint enforcement
+  const profileName = input.stepConfig?.toolProfile ?? 'inspect';
+  if (!isValidToolProfile(profileName)) {
+    throw new AgentError(`Invalid tool profile: '${profileName}'`, 'invalid_tool_profile');
+  }
+  const constraintError = validateProfileForStep(profileName, stepName);
+  if (constraintError !== null) {
+    throw new AgentError(constraintError, 'invalid_tool_profile');
+  }
 
   // Create agent invocation
   const invocation = createAgentInvocation(db, {
     runId: input.runId,
-    agent: 'implementer',
-    action: 'apply_changes',
-    contextSummary: 'step=implementer_apply_changes (agent-sdk mode)',
+    agent,
+    action,
+    contextSummary: `step=${stepName} (agent-sdk mode)`,
   });
   const agentInvocationId = invocation.agentInvocationId;
-  publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, 'implementer', 'apply_changes', 'pending');
+  publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, agent, action, 'pending');
 
   markAgentRunning(db, agentInvocationId);
-  publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, 'implementer', 'apply_changes', 'running');
+  publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, agent, action, 'running');
 
-  // Snapshot existing files for create-vs-edit detection
-  const existingFiles = new Set<string>();
-  try {
-    const output = execFileSync('git', ['ls-files'], { cwd: input.worktreePath, encoding: 'utf8' });
-    for (const f of output.split('\n')) {
-      if (f.length > 0) existingFiles.add(f);
-    }
-  } catch {
-    // If git ls-files fails, all writes treated as 'create'
-  }
-
-  // Set up tool registry + MCP server (profile-based)
-  const profileName = input.stepConfig?.toolProfile ?? 'full';
-  if (!isValidToolProfile(profileName)) {
-    throw new AgentError(`Invalid tool profile: '${profileName}'`, 'invalid_tool_profile');
-  }
-  const constraintError = validateProfileForStep(profileName, 'implementer');
-  if (constraintError !== null) {
-    throw new AgentError(constraintError, 'invalid_tool_profile');
-  }
+  // Set up tool registry
   const registry = createToolRegistry();
   registerToolsForProfile(registry, profileName);
 
   const abortSignal = getAbortSignal(input.runId);
   const abortController = new AbortController();
 
-  // Forward existing abort signal
   if (abortSignal?.aborted === true) {
     abortController.abort();
   } else if (abortSignal !== undefined) {
@@ -154,13 +188,12 @@ export async function runImplementerWithAgentSDK(
   const toolContext = {
     runId: input.runId,
     agentInvocationId,
-    worktreePath: input.worktreePath,
+    worktreePath: input.worktreePath ?? '',
     db,
     projectId,
     abortSignal: abortController.signal,
   };
 
-  // Shared state between stream iterator and MCP adapter
   const pendingToolUseIds: string[] = [];
   const pendingToolResults: ToolResultEntry[] = [];
 
@@ -173,7 +206,6 @@ export async function runImplementerWithAgentSDK(
     pendingToolUseIds,
   );
 
-  // DB phase polling interval
   const phaseCheckInterval = setInterval(() => {
     try {
       const phaseRow = db.prepare('SELECT phase FROM runs WHERE run_id = ?')
@@ -186,17 +218,15 @@ export async function runImplementerWithAgentSDK(
     }
   }, 5000);
 
-  // Turn index allocator
   let turnIndex = 0;
   const nextTurnIndex = () => turnIndex++;
 
-  // Persist system + user prompts
   try {
     createAgentMessage(db, {
       agentInvocationId,
       turnIndex: nextTurnIndex(),
       role: 'system',
-      contentJson: JSON.stringify(IMPLEMENTER_TOOLS_SYSTEM_PROMPT),
+      contentJson: JSON.stringify(systemPrompt),
     });
   } catch (e) {
     log.warn({ err: e }, 'Failed to persist system prompt message');
@@ -212,16 +242,14 @@ export async function runImplementerWithAgentSDK(
     log.warn({ err: e }, 'Failed to persist user prompt message');
   }
 
-  // Flush accumulated tool results as one agent_message
   function flushToolResults(): void {
     flushToolResultsHelper(pendingToolResults, pendingToolUseIds, db, agentInvocationId, nextTurnIndex);
   }
 
-  // Warn if non-default maxTokens/temperature are configured (SDK doesn't support them)
-  const implDefaults = MVP_DEFAULTS.implementer;
+  // Warn if non-default maxTokens/temperature
   if (
-    (input.stepConfig?.maxTokens !== undefined && input.stepConfig.maxTokens !== implDefaults.maxTokens) ||
-    (input.stepConfig?.temperature !== undefined && input.stepConfig.temperature !== implDefaults.temperature)
+    (input.stepConfig?.maxTokens !== undefined && input.stepConfig.maxTokens !== defaultsRef.maxTokens) ||
+    (input.stepConfig?.temperature !== undefined && input.stepConfig.temperature !== defaultsRef.temperature)
   ) {
     log.warn(
       { runId: input.runId, maxTokens: input.stepConfig?.maxTokens, temperature: input.stepConfig?.temperature },
@@ -229,7 +257,6 @@ export async function runImplementerWithAgentSDK(
     );
   }
 
-  // Budget timeout: abort SDK query after maxDurationMs
   let budgetTimedOut = false;
   let budgetTimer: ReturnType<typeof setTimeout> | undefined;
   const budgetDurationMs = input.stepConfig?.budgets?.maxDurationMs;
@@ -243,15 +270,16 @@ export async function runImplementerWithAgentSDK(
   const startTime = Date.now();
   let totalTokensInput = 0;
   let totalTokensOutput = 0;
+  let lastAssistantSnapshot: { content: unknown[]; stopReason: string | undefined } | undefined;
 
   try {
     const queryStream = sdkQuery({
       prompt: userPrompt,
       options: {
-        systemPrompt: IMPLEMENTER_TOOLS_SYSTEM_PROMPT,
+        systemPrompt,
         model: input.stepConfig?.model ?? 'claude-sonnet-4-20250514',
-        maxTurns: 50,
-        cwd: input.worktreePath,
+        maxTurns: 20,
+        cwd: input.worktreePath ?? process.cwd(),
         env: { ...process.env, ANTHROPIC_API_KEY: input.apiKey },
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
@@ -268,10 +296,8 @@ export async function runImplementerWithAgentSDK(
 
     for await (const message of queryStream as AsyncIterable<SDKMessage>) {
       if (message.type === 'assistant') {
-        // Flush tool results from the PREVIOUS turn (batch boundary)
         flushToolResults();
 
-        // Extract tool_use IDs for the MCP adapter to dequeue
         pendingToolUseIds.length = 0;
         for (const block of message.message.content) {
           if (block.type === 'tool_use') {
@@ -279,7 +305,11 @@ export async function runImplementerWithAgentSDK(
           }
         }
 
-        // Persist assistant message
+        lastAssistantSnapshot = {
+          content: message.message.content,
+          stopReason: message.message.stop_reason ?? undefined,
+        };
+
         try {
           const usage = message.message.usage;
           totalTokensInput += usage?.input_tokens ?? 0;
@@ -298,16 +328,13 @@ export async function runImplementerWithAgentSDK(
           log.warn({ err: e }, 'Failed to persist assistant message');
         }
       } else if (message.type === 'result') {
-        // Flush remaining tool results (final turn)
         flushToolResults();
 
-        // Capture usage from result
         if (message.usage !== undefined) {
           totalTokensInput = message.usage.input_tokens ?? totalTokensInput;
           totalTokensOutput = message.usage.output_tokens ?? totalTokensOutput;
         }
 
-        // Check for error results
         if (message.subtype !== 'success') {
           const errors = 'errors' in message ? (message.errors ?? []) : [];
           throw new AgentError(
@@ -316,10 +343,13 @@ export async function runImplementerWithAgentSDK(
           );
         }
       }
-      // Ignore other message types (system, stream_event, tool_progress, etc.)
     }
 
     const durationMs = Date.now() - startTime;
+
+    // Extract review from terminal assistant message
+    const review = extractTerminalAssistantText(lastAssistantSnapshot, 'Reviewer');
+    const approved = parseVerdict(review);
 
     // Record success
     completeAgentInvocation(db, agentInvocationId, {
@@ -327,62 +357,41 @@ export async function runImplementerWithAgentSDK(
       tokensOutput: totalTokensOutput,
       durationMs,
     });
-    publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, 'implementer', 'apply_changes', 'completed');
+    publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, agent, action, 'completed');
 
-    // Derive file operations from tool invocation records
-    const toolInvocations = listToolInvocations(db, agentInvocationId);
-    const files: FileOperation[] = [];
-
-    for (const ti of toolInvocations) {
-      if (ti.status !== 'completed') continue;
-      if (ti.tool === 'write_file' && ti.target !== undefined) {
-        files.push({
-          op: existingFiles.has(ti.target) ? 'edit' : 'create',
-          path: ti.target,
-          content: '',
-        });
-      } else if (ti.tool === 'delete_file' && ti.target !== undefined) {
-        files.push({ op: 'delete', path: ti.target });
-      }
-    }
-
-    // Store summary as artifact
-    const summary = files.map((f) => `${f.op}: ${f.path}`).join('\n');
+    // Store review as artifact
     const artifact = createArtifact(db, {
       runId: input.runId,
-      type: 'other',
-      contentMarkdown: `# Implementation Changes (Agent SDK Mode)\n\n${summary}\n\nTokens: ${totalTokensInput} in / ${totalTokensOutput} out\nDuration: ${Math.round(durationMs / 1000)}s`,
-      createdBy: 'implementer',
+      type: 'review',
+      contentMarkdown: review,
+      createdBy: 'reviewer',
     });
 
     log.info(
-      { runId: input.runId, agentInvocationId, fileCount: files.length },
-      'Implementer (agent-sdk) completed',
+      { runId: input.runId, agentInvocationId, approved, artifactId: artifact.artifactId },
+      `Reviewer (agent-sdk, ${action}) completed`,
     );
 
     return {
       agentInvocationId,
       artifactId: artifact.artifactId,
-      files,
+      review,
+      approved,
     };
   } catch (err) {
-    // Best-effort: persist any pending tool results before failing
     flushToolResults();
 
-    // Determine final error — budget timeout takes precedence over generic abort
     let finalError: AgentError;
 
     if (budgetTimedOut) {
-      // budgetTimedOut is only true when budgetDurationMs was defined
       finalError = new AgentTimeoutError(
         budgetDurationMs ?? 0,
-        'implementer',
-        'apply_changes',
+        agent,
+        action,
       );
     } else if (abortController.signal.aborted) {
       finalError = new AgentCancelledError(input.runId);
     } else {
-      // Check SDK error structure
       let mappedError: AgentError | undefined;
       if (err instanceof Error && 'status' in err) {
         const status = (err as { status: number }).status;
@@ -405,7 +414,6 @@ export async function runImplementerWithAgentSDK(
       );
     }
 
-    // Shared persistence — derive errorCode from finalError to avoid drift
     const errorCode = finalError.code;
     const errorMessage = finalError.message;
 
@@ -414,11 +422,83 @@ export async function runImplementerWithAgentSDK(
     } catch {
       // May already be terminal
     }
-    publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, 'implementer', 'apply_changes', 'failed', errorCode);
+    publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, agent, action, 'failed', errorCode);
 
     throw finalError;
   } finally {
     if (budgetTimer !== undefined) clearTimeout(budgetTimer);
     clearInterval(phaseCheckInterval);
   }
+}
+
+// =============================================================================
+// Public API
+// =============================================================================
+
+/**
+ * Run plan reviewer via Agent SDK.
+ */
+export async function runPlanReviewerWithAgentSDK(
+  db: Database,
+  input: ReviewerInput & { apiKey: string },
+): Promise<ReviewerResult> {
+  const assembledContext = assembleContext(db, {
+    runId: input.runId,
+    worktreePath: input.worktreePath,
+  });
+  const userPrompt = formatContextForPrompt(assembledContext);
+
+  return runReviewerSdk(
+    db, input,
+    'reviewer', 'review_plan', 'reviewerPlan',
+    PLAN_REVIEWER_SDK_SYSTEM_PROMPT,
+    userPrompt,
+    MVP_DEFAULTS.reviewerPlan,
+  );
+}
+
+/**
+ * Run code reviewer via Agent SDK.
+ */
+export async function runCodeReviewerWithAgentSDK(
+  db: Database,
+  input: ReviewerInput & { apiKey: string },
+): Promise<ReviewerResult> {
+  // Get code diff if worktree available
+  let diffContent = '';
+  if (input.worktreePath !== undefined) {
+    try {
+      diffContent = execFileSync('git', ['diff', 'HEAD~1'], {
+        cwd: input.worktreePath,
+        encoding: 'utf8',
+        maxBuffer: 512 * 1024,
+      });
+    } catch {
+      diffContent = '[diff unavailable]';
+    }
+  }
+
+  const assembledContext = assembleContext(db, {
+    runId: input.runId,
+    worktreePath: input.worktreePath,
+  });
+
+  let userPrompt = formatContextForPrompt(assembledContext);
+
+  if (diffContent.length > 0) {
+    userPrompt += '\n\n## Code Diff\n```diff\n' + diffContent + '\n```';
+  }
+
+  // Update review_rounds counter
+  db.prepare(
+    'UPDATE runs SET review_rounds = review_rounds + 1, updated_at = ? WHERE run_id = ?'
+  ).run(new Date().toISOString(), input.runId);
+
+  return runReviewerSdk(
+    db, input,
+    'reviewer', 'review_code', 'reviewerCode',
+    CODE_REVIEWER_SDK_SYSTEM_PROMPT,
+    userPrompt,
+    MVP_DEFAULTS.reviewerCode,
+  );
 }

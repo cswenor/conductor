@@ -28,11 +28,11 @@ export interface StepConfig {
   toolProfile?: string;
   sandboxProfile?: string;
   budgets?: StepBudgets;
-}
-
-export interface ImplementerStepConfig extends StepConfig {
   backend?: 'raw' | 'agent_sdk';
 }
+
+/** @deprecated Use StepConfig — backend is now on all steps */
+export type ImplementerStepConfig = StepConfig;
 
 /**
  * Partial workflow config — used for project-level and overlay storage.
@@ -43,7 +43,7 @@ export interface ImplementerStepConfig extends StepConfig {
 export interface WorkflowConfig {
   planner?: StepConfig;
   reviewerPlan?: StepConfig;
-  implementer?: ImplementerStepConfig;
+  implementer?: StepConfig;
   reviewerCode?: StepConfig;
 }
 
@@ -54,16 +54,16 @@ export interface ResolvedStepConfig {
   toolProfile?: string;
   sandboxProfile?: string;
   budgets: StepBudgets;
-}
-
-export interface ResolvedImplementerStepConfig extends ResolvedStepConfig {
   backend: 'raw' | 'agent_sdk';
 }
+
+/** @deprecated Use ResolvedStepConfig — backend is now on all steps */
+export type ResolvedImplementerStepConfig = ResolvedStepConfig;
 
 export interface ResolvedWorkflowConfig {
   planner: ResolvedStepConfig;
   reviewerPlan: ResolvedStepConfig;
-  implementer: ResolvedImplementerStepConfig;
+  implementer: ResolvedStepConfig;
   reviewerCode: ResolvedStepConfig;
 }
 
@@ -75,10 +75,10 @@ export interface ResolvedWorkflowConfig {
 // Raw legacy path uses 16384 — runtime wiring PR must handle this divergence.
 // See implementer.ts:250
 export const MVP_DEFAULTS: ResolvedWorkflowConfig = {
-  planner:      { model: 'claude-sonnet-4-20250514', maxTokens: 8192, temperature: 0.3, budgets: {} },
-  reviewerPlan: { model: 'claude-sonnet-4-20250514', maxTokens: 4096, temperature: 0.2, budgets: {} },
-  implementer:  { model: 'claude-sonnet-4-20250514', maxTokens: 8192, temperature: 0.2, backend: 'raw', budgets: {} },
-  reviewerCode: { model: 'claude-sonnet-4-20250514', maxTokens: 4096, temperature: 0.2, budgets: {} },
+  planner:      { model: 'claude-sonnet-4-20250514', maxTokens: 8192, temperature: 0.3, backend: 'raw', toolProfile: 'inspect', budgets: {} },
+  reviewerPlan: { model: 'claude-sonnet-4-20250514', maxTokens: 4096, temperature: 0.2, backend: 'raw', toolProfile: 'inspect', budgets: {} },
+  implementer:  { model: 'claude-sonnet-4-20250514', maxTokens: 8192, temperature: 0.2, backend: 'raw', toolProfile: 'full', budgets: {} },
+  reviewerCode: { model: 'claude-sonnet-4-20250514', maxTokens: 4096, temperature: 0.2, backend: 'raw', toolProfile: 'inspect', budgets: {} },
 };
 
 // =============================================================================
@@ -101,11 +101,7 @@ export class WorkflowConfigError extends Error {
 const VALID_STEP_KEYS = new Set(['planner', 'reviewerPlan', 'implementer', 'reviewerCode']);
 
 const KNOWN_STEP_FIELDS = new Set([
-  'model', 'maxTokens', 'temperature', 'toolProfile', 'sandboxProfile', 'budgets',
-]);
-
-const KNOWN_IMPLEMENTER_FIELDS = new Set([
-  ...KNOWN_STEP_FIELDS, 'backend',
+  'model', 'maxTokens', 'temperature', 'toolProfile', 'sandboxProfile', 'budgets', 'backend',
 ]);
 
 const KNOWN_BUDGET_FIELDS = new Set(['maxInputTokens', 'maxOutputTokens', 'maxDurationMs']);
@@ -142,13 +138,36 @@ export function validateStepFields(step: unknown, stepName: string): string[] {
       errors.push(`${stepName}.temperature: must be a number in [0, 1]`);
     }
   }
-  if ('toolProfile' in s && typeof s['toolProfile'] !== 'string') {
-    errors.push(`${stepName}.toolProfile: must be a string`);
+  if ('toolProfile' in s) {
+    const tp = s['toolProfile'];
+    if (typeof tp !== 'string') {
+      errors.push(`${stepName}.toolProfile: must be a string`);
+    } else {
+      // Tool profile validation — constants mirror profiles.ts (single source of truth).
+      // Kept inline to avoid circular dependency:
+      //   profiles.ts → filesystem.ts → implementer.ts → workflow-config → profiles.ts
+      // profiles.test.ts validates these stay in sync.
+      const validProfiles = new Set(['readonly', 'inspect', 'full']);
+      const writeCapable = new Set(['full']);
+      const nonWrite = new Set(['readonly', 'inspect']);
+
+      if (!validProfiles.has(tp)) {
+        errors.push(`${stepName}.toolProfile: must be one of: ${[...validProfiles].join(', ')}`);
+      } else {
+        // Step-specific constraints
+        const nonMutatingSteps = new Set(['planner', 'reviewerPlan', 'reviewerCode']);
+        if (nonMutatingSteps.has(stepName) && !nonWrite.has(tp)) {
+          errors.push(`${stepName}.toolProfile: '${tp}' is not allowed for ${stepName} (${stepName} is non-mutating). Allowed: ${[...nonWrite].join(', ')}`);
+        } else if (stepName === 'implementer' && !writeCapable.has(tp)) {
+          errors.push(`${stepName}.toolProfile: '${tp}' is not allowed for ${stepName} (implementer requires write capability). Allowed: ${[...writeCapable].join(', ')}`);
+        }
+      }
+    }
   }
   if ('sandboxProfile' in s && typeof s['sandboxProfile'] !== 'string') {
     errors.push(`${stepName}.sandboxProfile: must be a string`);
   }
-  if ('backend' in s && stepName === 'implementer') {
+  if ('backend' in s) {
     if (s['backend'] !== 'raw' && s['backend'] !== 'agent_sdk') {
       errors.push(`${stepName}.backend: must be 'raw' or 'agent_sdk'`);
     }
@@ -255,9 +274,9 @@ function sanitizeStepConfig(
   step: Record<string, unknown>,
   stepName: string,
   source: string,
-  isImplementer: boolean,
-): StepConfig | ImplementerStepConfig {
-  const knownFields = isImplementer ? KNOWN_IMPLEMENTER_FIELDS : KNOWN_STEP_FIELDS;
+  _isImplementer?: boolean,
+): StepConfig {
+  const knownFields = KNOWN_STEP_FIELDS;
   const result: Record<string, unknown> = {};
 
   for (const key of Object.keys(step)) {
@@ -284,7 +303,7 @@ function sanitizeStepConfig(
     }
   }
 
-  return result as StepConfig | ImplementerStepConfig;
+  return result as StepConfig;
 }
 
 // =============================================================================

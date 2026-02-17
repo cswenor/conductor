@@ -389,4 +389,120 @@ describe('MVP_DEFAULTS guards', () => {
     // Runtime wiring PR must handle this divergence
     expect(MVP_DEFAULTS.implementer.maxTokens).toBe(8192);
   });
+
+  it('all steps have backend: raw by default', () => {
+    expect(MVP_DEFAULTS.planner.backend).toBe('raw');
+    expect(MVP_DEFAULTS.reviewerPlan.backend).toBe('raw');
+    expect(MVP_DEFAULTS.implementer.backend).toBe('raw');
+    expect(MVP_DEFAULTS.reviewerCode.backend).toBe('raw');
+  });
+
+  it('planner/reviewer have toolProfile: inspect, implementer has full', () => {
+    expect(MVP_DEFAULTS.planner.toolProfile).toBe('inspect');
+    expect(MVP_DEFAULTS.reviewerPlan.toolProfile).toBe('inspect');
+    expect(MVP_DEFAULTS.implementer.toolProfile).toBe('full');
+    expect(MVP_DEFAULTS.reviewerCode.toolProfile).toBe('inspect');
+  });
+});
+
+// =============================================================================
+// backend on all steps
+// =============================================================================
+
+describe('backend on all steps', () => {
+  it('backend accepted for planner', () => {
+    const errors = validateWorkflowConfigStrict({
+      planner: { backend: 'agent_sdk' },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it('backend accepted for reviewerPlan', () => {
+    const errors = validateWorkflowConfigStrict({
+      reviewerPlan: { backend: 'raw' },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it('backend accepted for reviewerCode', () => {
+    const errors = validateWorkflowConfigStrict({
+      reviewerCode: { backend: 'agent_sdk' },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it('invalid backend value rejected for planner', () => {
+    const errors = validateWorkflowConfigStrict({
+      planner: { backend: 'invalid' },
+    });
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some(e => e.includes('backend'))).toBe(true);
+  });
+
+  it('invalid backend value rejected for reviewerCode', () => {
+    const errors = validateWorkflowConfigStrict({
+      reviewerCode: { backend: 'invalid' },
+    });
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('resolved config includes backend for all steps', () => {
+    const result = resolveWorkflowConfig({ planner: { backend: 'agent_sdk' } });
+    expect(result.planner.backend).toBe('agent_sdk');
+    expect(result.reviewerPlan.backend).toBe('raw');
+    expect(result.implementer.backend).toBe('raw');
+    expect(result.reviewerCode.backend).toBe('raw');
+  });
+});
+
+// =============================================================================
+// toolProfile validation
+// =============================================================================
+
+describe('toolProfile validation', () => {
+  it('valid toolProfile accepted', () => {
+    const errors = validateWorkflowConfigStrict({
+      planner: { toolProfile: 'inspect' },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it('invalid toolProfile rejected', () => {
+    const errors = validateWorkflowConfigStrict({
+      planner: { toolProfile: 'nonexistent' },
+    });
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some(e => e.includes('toolProfile'))).toBe(true);
+  });
+
+  it('full toolProfile rejected for planner (non-mutating step)', () => {
+    const errors = validateWorkflowConfigStrict({
+      planner: { toolProfile: 'full' },
+    });
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some(e => e.includes('toolProfile') && e.includes('non-mutating'))).toBe(true);
+  });
+
+  it('full toolProfile accepted for implementer', () => {
+    const errors = validateWorkflowConfigStrict({
+      implementer: { toolProfile: 'full' },
+    });
+    expect(errors).toEqual([]);
+  });
+
+  it('readonly toolProfile rejected for implementer (requires write capability)', () => {
+    const errors = validateWorkflowConfigStrict({
+      implementer: { toolProfile: 'readonly' },
+    });
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some(e => e.includes('toolProfile') && e.includes('implementer'))).toBe(true);
+  });
+
+  it('non-string toolProfile rejected', () => {
+    const errors = validateWorkflowConfigStrict({
+      planner: { toolProfile: 123 },
+    });
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some(e => e.includes('toolProfile') && e.includes('string'))).toBe(true);
+  });
 });

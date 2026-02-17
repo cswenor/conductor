@@ -614,6 +614,13 @@ const listFilesTool: ToolDefinition = {
 // Registration
 // =============================================================================
 
+export function registerReadOnlyFilesystemTools(registry: ToolRegistry): void {
+  registry.register(readFileTool);
+  registry.register(readFileRangeTool);
+  registry.register(searchInFileTool);
+  registry.register(listFilesTool);
+}
+
 export function registerFilesystemTools(registry: ToolRegistry): void {
   registry.register(readFileTool);
   registry.register(readFileRangeTool);

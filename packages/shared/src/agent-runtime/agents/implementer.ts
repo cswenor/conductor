@@ -12,13 +12,12 @@ import { resolve, relative, dirname, isAbsolute } from 'node:path';
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../../logger/index.ts';
 import type { AgentProvider } from '../provider.ts';
-import { executeAgent } from '../provider.ts';
+import { executeAgent, AgentError } from '../provider.ts';
 import { assembleContext, formatContextForPrompt, resolveImplementerBudgets } from '../context.ts';
 import { createArtifact } from '../artifacts.ts';
 import { createAgentInvocation, markAgentRunning, completeAgentInvocation, failAgentInvocation } from '../invocations.ts';
 import { createToolRegistry } from '../tools/registry.ts';
-import { registerFilesystemTools } from '../tools/filesystem.ts';
-import { registerTestRunnerTool } from '../tools/test-runner.ts';
+import { isValidToolProfile, validateProfileForStep, registerToolsForProfile } from '../tools/profiles.ts';
 import { DEFAULT_POLICY_RULES } from '../tools/policy.ts';
 import { runToolLoop } from '../executor.ts';
 import { listToolInvocations } from '../tool-invocations.ts';
@@ -353,10 +352,17 @@ export async function runImplementerWithTools(
   markAgentRunning(db, invocation.agentInvocationId);
   publishAgentInvocationEvent(db, projectId, input.runId, invocation.agentInvocationId, 'implementer', 'apply_changes', 'running');
 
-  // Set up tool registry
+  // Set up tool registry (profile-based)
+  const profileName = input.stepConfig?.toolProfile ?? 'full';
+  if (!isValidToolProfile(profileName)) {
+    throw new AgentError(`Invalid tool profile: '${profileName}'`, 'invalid_tool_profile');
+  }
+  const constraintError = validateProfileForStep(profileName, 'implementer');
+  if (constraintError !== null) {
+    throw new AgentError(constraintError, 'invalid_tool_profile');
+  }
   const registry = createToolRegistry();
-  registerFilesystemTools(registry);
-  registerTestRunnerTool(registry);
+  registerToolsForProfile(registry, profileName);
 
   // Snapshot existing files so we can distinguish create vs edit after tool loop
   const existingFiles = new Set<string>();
