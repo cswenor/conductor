@@ -313,6 +313,8 @@ export interface ExecuteAgentInput {
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
+  /** Override default model from workflow config */
+  model?: string;
   /** Abort signal for cancellation */
   abortSignal?: AbortSignal;
 }
@@ -398,7 +400,7 @@ export async function executeAgent(
     }
 
     // 4. Create provider and invoke
-    const provider = createProvider(creds.provider, creds.apiKey);
+    const provider = createProvider(creds.provider, creds.apiKey, input.model);
     const timeoutMs = input.timeoutMs ?? getDefaultTimeout(input.agent);
 
     const output = await provider.invoke({

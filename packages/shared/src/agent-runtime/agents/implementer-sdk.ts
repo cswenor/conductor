@@ -14,7 +14,7 @@ import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { createLogger } from '../../logger/index.ts';
 import type { ImplementerBackend, Run } from '../../runs/index.ts';
-import { getResolvedWorkflowConfig } from '../../workflow-config/index.ts';
+import { getResolvedWorkflowConfig, MVP_DEFAULTS } from '../../workflow-config/index.ts';
 import { getRun } from '../../runs/index.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
 import { publishAgentInvocationEvent } from '../../pubsub/index.ts';
@@ -31,7 +31,7 @@ import { ensureBuiltInPolicyDefinitions } from '../policy-definitions.ts';
 import { createImplementerMcpServer, getAllowedToolNames } from '../tools/mcp-adapter.ts';
 import type { ToolResultEntry } from '../tools/protocol.ts';
 import { flushToolResults as flushToolResultsHelper } from '../tools/protocol.ts';
-import { AgentError, AgentAuthError, AgentRateLimitError, AgentContextLengthError, AgentCancelledError } from '../provider.ts';
+import { AgentError, AgentAuthError, AgentRateLimitError, AgentContextLengthError, AgentCancelledError, AgentTimeoutError } from '../provider.ts';
 import { extractRetryAfterMs } from '../retry-after.ts';
 import type { FileOperation, ImplementerInput, ImplementerResult } from './implementer.ts';
 
@@ -211,6 +211,29 @@ export async function runImplementerWithAgentSDK(
     flushToolResultsHelper(pendingToolResults, pendingToolUseIds, db, agentInvocationId, nextTurnIndex);
   }
 
+  // Warn if non-default maxTokens/temperature are configured (SDK doesn't support them)
+  const implDefaults = MVP_DEFAULTS.implementer;
+  if (
+    (input.stepConfig?.maxTokens !== undefined && input.stepConfig.maxTokens !== implDefaults.maxTokens) ||
+    (input.stepConfig?.temperature !== undefined && input.stepConfig.temperature !== implDefaults.temperature)
+  ) {
+    log.warn(
+      { runId: input.runId, maxTokens: input.stepConfig?.maxTokens, temperature: input.stepConfig?.temperature },
+      'agent_sdk backend does not support maxTokens/temperature overrides — values ignored',
+    );
+  }
+
+  // Budget timeout: abort SDK query after maxDurationMs
+  let budgetTimedOut = false;
+  let budgetTimer: ReturnType<typeof setTimeout> | undefined;
+  const budgetDurationMs = input.stepConfig?.budgets?.maxDurationMs;
+  if (budgetDurationMs !== undefined) {
+    budgetTimer = setTimeout(() => {
+      budgetTimedOut = true;
+      abortController.abort();
+    }, budgetDurationMs);
+  }
+
   const startTime = Date.now();
   let totalTokensInput = 0;
   let totalTokensOutput = 0;
@@ -220,7 +243,7 @@ export async function runImplementerWithAgentSDK(
       prompt: userPrompt,
       options: {
         systemPrompt: IMPLEMENTER_TOOLS_SYSTEM_PROMPT,
-        model: 'claude-sonnet-4-20250514',
+        model: input.stepConfig?.model ?? 'claude-sonnet-4-20250514',
         maxTurns: 50,
         cwd: input.worktreePath,
         env: { ...process.env, ANTHROPIC_API_KEY: input.apiKey },
@@ -340,43 +363,43 @@ export async function runImplementerWithAgentSDK(
     // Best-effort: persist any pending tool results before failing
     flushToolResults();
 
-    // Error mapping
-    if (abortController.signal.aborted) {
-      const cancelErr = new AgentCancelledError(input.runId);
-      try {
-        failAgentInvocation(db, agentInvocationId, {
-          errorCode: 'cancelled',
-          errorMessage: cancelErr.message,
-        });
-      } catch {
-        // May already be terminal
+    // Determine final error — budget timeout takes precedence over generic abort
+    let finalError: AgentError;
+
+    if (budgetTimedOut) {
+      // budgetTimedOut is only true when budgetDurationMs was defined
+      finalError = new AgentTimeoutError(
+        budgetDurationMs ?? 0,
+        'implementer',
+        'apply_changes',
+      );
+    } else if (abortController.signal.aborted) {
+      finalError = new AgentCancelledError(input.runId);
+    } else {
+      // Check SDK error structure
+      let mappedError: AgentError | undefined;
+      if (err instanceof Error && 'status' in err) {
+        const status = (err as { status: number }).status;
+        if (status === 401 || status === 403) {
+          mappedError = new AgentAuthError(err.message);
+        } else if (status === 429) {
+          const retryAfter = extractRetryAfterMs(err);
+          mappedError = new AgentRateLimitError(err.message, retryAfter);
+        } else if (status === 400) {
+          mappedError = new AgentContextLengthError(err.message);
+        }
       }
-      publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, 'implementer', 'apply_changes', 'failed', 'cancelled');
-      throw cancelErr;
-    }
 
-    // Check SDK error structure
-    let mappedError: AgentError | undefined;
-    if (err instanceof Error && 'status' in err) {
-      const status = (err as { status: number }).status;
-      if (status === 401 || status === 403) {
-        mappedError = new AgentAuthError(err.message);
-      } else if (status === 429) {
-        const retryAfter = extractRetryAfterMs(err);
-        mappedError = new AgentRateLimitError(err.message, retryAfter);
-      } else if (status === 400) {
-        mappedError = new AgentContextLengthError(err.message);
+      if (mappedError === undefined && err instanceof AgentError) {
+        mappedError = err;
       }
+
+      finalError = mappedError ?? new AgentError(
+        err instanceof Error ? err.message : 'Unknown SDK error',
+      );
     }
 
-    if (mappedError === undefined && err instanceof AgentError) {
-      mappedError = err;
-    }
-
-    const finalError = mappedError ?? new AgentError(
-      err instanceof Error ? err.message : 'Unknown SDK error',
-    );
-
+    // Shared persistence — derive errorCode from finalError to avoid drift
     const errorCode = finalError.code;
     const errorMessage = finalError.message;
 
@@ -389,6 +412,7 @@ export async function runImplementerWithAgentSDK(
 
     throw finalError;
   } finally {
+    if (budgetTimer !== undefined) clearTimeout(budgetTimer);
     clearInterval(phaseCheckInterval);
   }
 }

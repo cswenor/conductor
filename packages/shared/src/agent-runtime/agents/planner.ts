@@ -10,6 +10,7 @@ import { assembleContext, formatContextForPrompt } from '../context.ts';
 import { createArtifact } from '../artifacts.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
 import { getRun } from '../../runs/index.ts';
+import type { ResolvedStepConfig } from '../../workflow-config/index.ts';
 
 // =============================================================================
 // Types
@@ -18,6 +19,7 @@ import { getRun } from '../../runs/index.ts';
 export interface PlannerInput {
   runId: string;
   worktreePath?: string;
+  stepConfig?: ResolvedStepConfig;
 }
 
 export interface PlannerResult {
@@ -95,8 +97,10 @@ export async function runPlanner(
     step: 'planner_create_plan',
     systemPrompt: PLANNER_SYSTEM_PROMPT,
     userPrompt,
-    maxTokens: 8192,
-    temperature: 0.3,
+    maxTokens: input.stepConfig?.maxTokens ?? 8192,
+    temperature: input.stepConfig?.temperature ?? 0.3,
+    model: input.stepConfig?.model,
+    timeoutMs: input.stepConfig?.budgets?.maxDurationMs,
     abortSignal: getAbortSignal(input.runId),
   });
 

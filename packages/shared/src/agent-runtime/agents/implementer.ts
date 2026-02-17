@@ -25,6 +25,7 @@ import { listToolInvocations } from '../tool-invocations.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
 import { getRun } from '../../runs/index.ts';
 import { publishAgentInvocationEvent } from '../../pubsub/index.ts';
+import type { ResolvedStepConfig } from '../../workflow-config/index.ts';
 
 const log = createLogger({ name: 'conductor:implementer' });
 
@@ -62,6 +63,7 @@ export type FileOperation =
 export interface ImplementerInput {
   runId: string;
   worktreePath: string;
+  stepConfig?: ResolvedStepConfig;
 }
 
 export interface ImplementerResult {
@@ -247,8 +249,10 @@ export async function runImplementer(
     step: 'implementer_apply_changes',
     systemPrompt: IMPLEMENTER_SYSTEM_PROMPT,
     userPrompt,
-    maxTokens: 16384,
-    temperature: 0.2,
+    maxTokens: input.stepConfig?.maxTokens ?? 16384,
+    temperature: input.stepConfig?.temperature ?? 0.2,
+    model: input.stepConfig?.model,
+    timeoutMs: input.stepConfig?.budgets?.maxDurationMs,
   });
 
   // Parse file operations from response
@@ -384,8 +388,10 @@ export async function runImplementerWithTools(
         projectId,
         abortSignal,
       },
-      maxTokens: resolveImplementerMaxTokens(),
-      temperature: 0.2,
+      maxTokens: input.stepConfig?.maxTokens ?? resolveImplementerMaxTokens(),
+      temperature: input.stepConfig?.temperature ?? 0.2,
+      maxInputTokens: input.stepConfig?.budgets?.maxInputTokens,
+      totalTimeoutMs: input.stepConfig?.budgets?.maxDurationMs,
       abortSignal,
     });
 

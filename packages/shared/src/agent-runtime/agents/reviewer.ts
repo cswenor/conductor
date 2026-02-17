@@ -15,6 +15,7 @@ import { assembleContext, formatContextForPrompt } from '../context.ts';
 import { createArtifact } from '../artifacts.ts';
 import { getAbortSignal } from '../../cancellation/index.ts';
 import { getRun } from '../../runs/index.ts';
+import type { ResolvedStepConfig } from '../../workflow-config/index.ts';
 
 // =============================================================================
 // Types
@@ -23,6 +24,7 @@ import { getRun } from '../../runs/index.ts';
 export interface ReviewerInput {
   runId: string;
   worktreePath?: string;
+  stepConfig?: ResolvedStepConfig;
 }
 
 export interface ReviewerResult {
@@ -146,8 +148,10 @@ export async function runPlanReviewer(
     step: 'reviewer_review_plan',
     systemPrompt: PLAN_REVIEWER_SYSTEM_PROMPT,
     userPrompt,
-    maxTokens: 4096,
-    temperature: 0.2,
+    maxTokens: input.stepConfig?.maxTokens ?? 4096,
+    temperature: input.stepConfig?.temperature ?? 0.2,
+    model: input.stepConfig?.model,
+    timeoutMs: input.stepConfig?.budgets?.maxDurationMs,
     abortSignal: getAbortSignal(input.runId),
   });
 
@@ -213,8 +217,10 @@ export async function runCodeReviewer(
     step: 'reviewer_review_code',
     systemPrompt: CODE_REVIEWER_SYSTEM_PROMPT,
     userPrompt,
-    maxTokens: 4096,
-    temperature: 0.2,
+    maxTokens: input.stepConfig?.maxTokens ?? 4096,
+    temperature: input.stepConfig?.temperature ?? 0.2,
+    model: input.stepConfig?.model,
+    timeoutMs: input.stepConfig?.budgets?.maxDurationMs,
     abortSignal: getAbortSignal(input.runId),
   });
 

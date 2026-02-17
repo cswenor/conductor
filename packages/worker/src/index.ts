@@ -60,6 +60,7 @@ import {
   transitionPhase,
   TERMINAL_PHASES,
   type Run,
+  type RunStep,
   // Agent Runtime (WP6)
   generateAgentInvocationId,
   runPlanner,
@@ -67,8 +68,8 @@ import {
   runCodeReviewer,
   runImplementerWithTools,
   runImplementerWithAgentSDK,
-  resolveImplementerBackend,
   getDefaultImplementerBackend,
+  getResolvedWorkflowConfig,
   AgentError,
   AgentAuthError,
   AgentRateLimitError,
@@ -108,6 +109,7 @@ import { dispatchPrWebhook } from './webhook-dispatch.ts';
 import { handleBlockedRetry } from './blocked-retry.ts';
 import { handleRateLimitRetry } from './rate-limit-retry.ts';
 import { dispatchDbCleanup } from './cleanup-dispatch.ts';
+import { STEP_REGISTRY, getRouteForStep, resolveDispatch } from './step-registry.ts';
 
 const log = createLogger({ name: 'conductor:worker' });
 
@@ -116,6 +118,32 @@ const MAX_PLAN_REVISIONS = 3;
 
 /** Max code review rounds before blocking */
 const MAX_REVIEW_ROUNDS = 3;
+
+// =============================================================================
+// Step→Handler Map (bidirectional parity with STEP_REGISTRY)
+// =============================================================================
+
+type StepHandler = (db: ReturnType<typeof getDatabase>, run: Run, worktreePath?: string) => Promise<void>;
+
+/** Handler map keyed by RunStep (stays in index.ts — handlers use worker internals) */
+const STEP_HANDLERS: Partial<Record<RunStep, StepHandler>> = {
+  planner_create_plan:       handlePlannerAgent,
+  reviewer_review_plan:      handlePlanReviewerAgent,
+  implementer_apply_changes: handleImplementerAgent,
+  reviewer_review_code:      handleCodeReviewerAgent,
+};
+
+// Bidirectional parity check at module load (fails fast at startup)
+for (const step of Object.keys(STEP_REGISTRY)) {
+  if (!(step in STEP_HANDLERS)) {
+    throw new Error(`STEP_REGISTRY has step '${step}' but STEP_HANDLERS does not — add a handler`);
+  }
+}
+for (const step of Object.keys(STEP_HANDLERS)) {
+  if (!(step in STEP_REGISTRY)) {
+    throw new Error(`STEP_HANDLERS has step '${step}' but STEP_REGISTRY does not — orphan handler`);
+  }
+}
 
 /**
  * Enqueue an agent job on the agents queue.
@@ -773,15 +801,8 @@ async function handleRunResume(
       }, { delay: delayMs });
     });
   } else {
-    // Generic resume (pause-resume or post-rewind) — map step to agent
-    const RESUME_STEP_DISPATCH: Partial<Record<string, { agent: string; action: string }>> = {
-      planner_create_plan: { agent: 'planner', action: 'create_plan' },
-      reviewer_review_plan: { agent: 'reviewer', action: 'review_plan' },
-      implementer_apply_changes: { agent: 'implementer', action: 'apply_changes' },
-      reviewer_review_code: { agent: 'reviewer', action: 'review_code' },
-    };
-
-    const route = RESUME_STEP_DISPATCH[run.step];
+    // Generic resume (pause-resume or post-rewind) — map step to agent via registry
+    const route = getRouteForStep(run.step);
     if (route !== undefined) {
       await enqueueAgentJob(runId, route.agent, route.action, {}, run.workflowEpoch);
       log.info({ runId, phase, step: run.step }, 'Run resumed — agent enqueued for current step');
@@ -814,7 +835,8 @@ async function handlePlannerAgent(
 
   updateRunStep(db, runId, 'planner_create_plan');
 
-  const planResult = await runPlanner(db, { runId, worktreePath });
+  const config = getResolvedWorkflowConfig(run);
+  const planResult = await runPlanner(db, { runId, worktreePath, stepConfig: config.planner });
 
   log.info(
     { runId, artifactId: planResult.artifactId, invocationId: planResult.agentInvocationId },
@@ -836,7 +858,8 @@ async function handlePlanReviewerAgent(
 ): Promise<void> {
   const { runId } = run;
 
-  const reviewResult = await runPlanReviewer(db, { runId, worktreePath });
+  const planReviewConfig = getResolvedWorkflowConfig(run);
+  const reviewResult = await runPlanReviewer(db, { runId, worktreePath, stepConfig: planReviewConfig.reviewerPlan });
 
   log.info(
     { runId, approved: reviewResult.approved, artifactId: reviewResult.artifactId },
@@ -913,19 +936,24 @@ async function handleImplementerAgent(
     return;
   }
 
-  // Dispatch based on run's immutable backend selection
-  const backend = resolveImplementerBackend(run);
+  // Resolve config once — used for both backend routing and agent call
+  const implConfig = getResolvedWorkflowConfig(run);
+  const backend = implConfig.implementer.backend;
   let implResult;
 
   switch (backend) {
     case 'agent_sdk':
       implResult = await runImplementerWithAgentSDK(db, {
         runId, worktreePath, apiKey: creds.apiKey,
+        stepConfig: implConfig.implementer,
       });
       break;
     case 'raw': {
-      const provider = createProvider(creds.provider, creds.apiKey);
-      implResult = await runImplementerWithTools(db, { runId, worktreePath, provider });
+      const provider = createProvider(creds.provider, creds.apiKey, implConfig.implementer.model);
+      implResult = await runImplementerWithTools(db, {
+        runId, worktreePath, provider,
+        stepConfig: implConfig.implementer,
+      });
       break;
     }
   }
@@ -1070,7 +1098,8 @@ async function handleCodeReviewerAgent(
 ): Promise<void> {
   const { runId } = run;
 
-  const reviewResult = await runCodeReviewer(db, { runId, worktreePath });
+  const codeReviewConfig = getResolvedWorkflowConfig(run);
+  const reviewResult = await runCodeReviewer(db, { runId, worktreePath, stepConfig: codeReviewConfig.reviewerCode });
 
   log.info(
     { runId, approved: reviewResult.approved, artifactId: reviewResult.artifactId },
@@ -1257,75 +1286,75 @@ async function processAgent(job: Job<AgentJobData>): Promise<void> {
     return;
   }
 
-  // Emit agent.started event
-  emitAgentEvent(db, run, 'agent.started', agent, action);
+  // Step-authoritative dispatch — resolve BEFORE emitting agent.started
+  const decision = resolveDispatch(agent, action, run.step);
 
-  // Get worktree path
-  const worktree = getWorktreeForRun(db, runId);
-  const worktreePath = worktree?.path;
-
-  registerCancellable(runId);
-
-  try {
-    const routeKey = `${agent}:${action}`;
-    switch (routeKey) {
-      case 'planner:create_plan':
-        await handlePlannerAgent(db, run, worktreePath);
-        break;
-      case 'reviewer:review_plan':
-        await handlePlanReviewerAgent(db, run, worktreePath);
-        break;
-      case 'implementer:apply_changes':
-        await handleImplementerAgent(db, run, worktreePath);
-        break;
-      case 'reviewer:review_code':
-        await handleCodeReviewerAgent(db, run, worktreePath);
-        break;
-      default:
-        // Unknown routes fail deterministically rather than leaving runs hanging
-        emitAgentEvent(db, run, 'agent.failed', agent, action, {
-          errorCode: 'unknown_route',
-          errorMessage: `Unknown agent:action combination '${routeKey}'`,
-        });
-        markRunFailed(db, runId, `Unknown agent:action combination '${routeKey}'`);
-        return;
-    }
-
-    // Emit agent.completed event
-    emitAgentEvent(db, run, 'agent.completed', agent, action);
-  } catch (err) {
-    if (err instanceof AgentCancelledError) {
-      log.info({ runId, agent, action }, 'Agent cancelled mid-execution');
+  switch (decision.action) {
+    case 'fail_unknown':
       emitAgentEvent(db, run, 'agent.failed', agent, action, {
-        errorCode: 'cancelled',
-        errorMessage: 'Agent cancelled by operator',
+        errorCode: 'unknown_route',
+        errorMessage: `Unknown agent:action combination '${agent}:${action}'`,
       });
+      markRunFailed(db, runId, `Unknown agent:action combination '${agent}:${action}'`);
       return;
-    }
-    // Emit agent.failed event
-    emitAgentEvent(db, run, 'agent.failed', agent, action, {
-      errorCode: err instanceof AgentError ? err.code : 'unknown',
-      errorMessage: err instanceof Error ? err.message : 'Unknown error',
-    });
-    await handleAgentError(db, run, agent, action, err, job.data.rateLimitRetries ?? 0);
-  } finally {
-    unregisterCancellable(runId);
-    // Clear rewind context after agent dispatch (best-effort once per normal flow).
-    // assembleContext re-reads the run from DB during the handler, so the summary
-    // must still be present in DB at that point. Clearing in finally guarantees
-    // cleanup on success, failure, and exceptions.
-    if (run.rewindContextMode !== undefined) {
-      try {
-        db.prepare(
-          'UPDATE runs SET rewind_context_mode = NULL, rewind_context_summary = NULL, updated_at = ? WHERE run_id = ?'
-        ).run(new Date().toISOString(), runId);
-        log.info({ runId }, 'Cleared rewind context after agent dispatch');
-      } catch (clearErr) {
-        log.error(
-          { runId, error: clearErr instanceof Error ? clearErr.message : 'Unknown' },
-          'Failed to clear rewind context (non-fatal)',
-        );
+
+    case 'skip_stale':
+      log.warn(
+        { runId, expectedStep: decision.expectedStep, runStep: decision.actualStep, agent, action },
+        'Stale agent job: run.step does not match expected step — skipping',
+      );
+      return;
+
+    case 'dispatch': {
+      const handler = STEP_HANDLERS[decision.step];
+      if (handler === undefined) {
+        markRunFailed(db, runId, `No handler registered for step '${decision.step}'`);
+        return;
       }
+
+      // Only emit agent.started for jobs that will actually execute
+      emitAgentEvent(db, run, 'agent.started', agent, action);
+
+      const worktree = getWorktreeForRun(db, runId);
+      const worktreePath = worktree?.path;
+
+      registerCancellable(runId);
+
+      try {
+        await handler(db, run, worktreePath);
+        emitAgentEvent(db, run, 'agent.completed', agent, action);
+      } catch (err) {
+        if (err instanceof AgentCancelledError) {
+          log.info({ runId, agent, action }, 'Agent cancelled mid-execution');
+          emitAgentEvent(db, run, 'agent.failed', agent, action, {
+            errorCode: 'cancelled',
+            errorMessage: 'Agent cancelled by operator',
+          });
+          return;
+        }
+        emitAgentEvent(db, run, 'agent.failed', agent, action, {
+          errorCode: err instanceof AgentError ? err.code : 'unknown',
+          errorMessage: err instanceof Error ? err.message : 'Unknown error',
+        });
+        await handleAgentError(db, run, agent, action, err, job.data.rateLimitRetries ?? 0);
+      } finally {
+        unregisterCancellable(runId);
+        // Clear rewind context after agent dispatch (best-effort once per normal flow).
+        if (run.rewindContextMode !== undefined) {
+          try {
+            db.prepare(
+              'UPDATE runs SET rewind_context_mode = NULL, rewind_context_summary = NULL, updated_at = ? WHERE run_id = ?'
+            ).run(new Date().toISOString(), runId);
+            log.info({ runId }, 'Cleared rewind context after agent dispatch');
+          } catch (clearErr) {
+            log.error(
+              { runId, error: clearErr instanceof Error ? clearErr.message : 'Unknown' },
+              'Failed to clear rewind context (non-fatal)',
+            );
+          }
+        }
+      }
+      break;
     }
   }
 }

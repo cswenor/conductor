@@ -12,7 +12,7 @@ import { createLogger } from '../logger/index.ts';
 import { redact } from '../redact/index.ts';
 import { createEvent } from '../events/index.ts';
 import type { AgentProvider, AgentOutput } from './provider.ts';
-import { AgentError, AgentCancelledError, AgentBudgetExceededError, AgentRateLimitError } from './provider.ts';
+import { AgentError, AgentCancelledError, AgentBudgetExceededError, AgentRateLimitError, AgentTimeoutError } from './provider.ts';
 import type { ToolRegistry } from './tools/registry.ts';
 import type { PolicyRule } from './tools/policy.ts';
 import { evaluatePolicy } from './tools/policy.ts';
@@ -155,6 +155,10 @@ export interface ExecutorInput {
    *  If unset, derived from context window: (CONDUCTOR_CONTEXT_WINDOW ?? 200k) * 0.65.
    *  Operator override: env CONDUCTOR_MAX_INPUT_TOKENS. */
   maxInputTokens?: number;
+  /** Best-effort total wall-clock timeout for entire tool loop.
+   *  Checked at iteration boundaries + remaining time clamped onto per-call timeout.
+   *  A long in-flight provider call may slightly exceed this budget. */
+  totalTimeoutMs?: number;
 }
 
 export interface ExecutorResult {
@@ -820,6 +824,8 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
     { role: 'user', content: input.userPrompt },
   ];
 
+  const deadline = input.totalTimeoutMs !== undefined ? Date.now() + input.totalTimeoutMs : undefined;
+
   const budgetCfg = resolveBudgetConfig(input.maxInputTokens);
   let effectiveBudget = budgetCfg.contextCap;
   log.info(
@@ -858,6 +864,14 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
       throw new AgentCancelledError(input.context.runId);
     }
 
+    // Best-effort total wall-clock timeout check at iteration boundary
+    if (deadline !== undefined) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new AgentTimeoutError(input.totalTimeoutMs ?? 0, 'executor', 'tool_loop');
+      }
+    }
+
     // DB phase check fallback (cross-process cancellation)
     const phaseRow = input.db.prepare('SELECT phase FROM runs WHERE run_id = ?')
       .get(input.context.runId) as { phase: string } | undefined;
@@ -894,6 +908,18 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
     let response: AgentOutput;
     for (let retry = 0; ; retry++) {
       try {
+        // Clamp per-call timeout to remaining wall-clock budget
+        let effectiveTimeout = input.timeoutMs;
+        if (deadline !== undefined) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            throw new AgentTimeoutError(input.totalTimeoutMs ?? 0, 'executor', 'tool_loop');
+          }
+          effectiveTimeout = effectiveTimeout !== undefined
+            ? Math.min(effectiveTimeout, remaining)
+            : remaining;
+        }
+
         response = await input.provider.invoke({
           systemPrompt: input.systemPrompt,
           userPrompt: input.userPrompt,
@@ -901,7 +927,7 @@ export async function runToolLoop(input: ExecutorInput): Promise<ExecutorResult>
           tools: toolDefs,
           maxTokens: input.maxTokens,
           temperature: input.temperature,
-          timeoutMs: input.timeoutMs,
+          timeoutMs: effectiveTimeout,
           abortSignal: input.abortSignal,
           runId: input.context.runId,
         });
