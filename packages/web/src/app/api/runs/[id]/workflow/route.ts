@@ -1,8 +1,8 @@
 /**
  * Run Workflow API
  *
- * Mutation endpoints for workflow overlay edits and rewinds.
- * Both require the run to be paused and have no active agent invocations.
+ * Mutation endpoints for workflow overlay edits, step rewinds, and checkpoint rewinds.
+ * All require the run to be paused and have no active agent invocations.
  */
 
 import { NextResponse } from 'next/server';
@@ -13,8 +13,10 @@ import {
   canAccessProject,
   applyWorkflowOverlay,
   rewindRun,
+  rewindToCheckpoint,
+  isValidContextMode,
 } from '@conductor/shared';
-import type { RunStep } from '@conductor/shared';
+import type { RunStep, RewindContextMode } from '@conductor/shared';
 import { ensureBootstrap, getDb } from '@/lib/bootstrap';
 import { withAuth, type AuthenticatedRequest } from '@/lib/auth';
 
@@ -27,16 +29,20 @@ interface RouteParams {
 interface WorkflowBody {
   overlay?: Record<string, unknown>;
   rewindToStep?: string;
+  rewindToCheckpoint?: string;
+  contextMode?: string;
+  reason?: string;
 }
 
 /**
  * PUT /api/runs/[id]/workflow
  *
- * Edit workflow overlay or rewind run step.
+ * Edit workflow overlay, rewind to step, or rewind to checkpoint.
  * Protected: requires authentication.
  * Enforces ownership through project access.
  *
- * Body: { overlay: {...} } OR { rewindToStep: "step_name" } (mutually exclusive)
+ * Body: { overlay: {...} } OR { rewindToStep: "step_name" } OR { rewindToCheckpoint: "checkpoint_name", contextMode?, reason? }
+ * (mutually exclusive — exactly one of overlay, rewindToStep, rewindToCheckpoint)
  */
 export const PUT = withAuth(async (
   request: AuthenticatedRequest,
@@ -60,20 +66,23 @@ export const PUT = withAuth(async (
     const body = await request.json() as WorkflowBody;
     const userId = request.user.userId;
 
-    // Validate request shape: exactly one of overlay or rewindToStep
+    // Validate request shape: exactly one of overlay, rewindToStep, rewindToCheckpoint
     const hasOverlay = body.overlay !== undefined;
     const hasRewind = body.rewindToStep !== undefined;
+    const hasCheckpoint = body.rewindToCheckpoint !== undefined;
 
-    if (hasOverlay && hasRewind) {
+    const opCount = [hasOverlay, hasRewind, hasCheckpoint].filter(Boolean).length;
+    if (opCount !== 1) {
       return NextResponse.json(
-        { error: 'Cannot specify both overlay and rewindToStep' },
+        { error: 'Must specify exactly one of overlay, rewindToStep, or rewindToCheckpoint' },
         { status: 400 },
       );
     }
 
-    if (!hasOverlay && !hasRewind) {
+    // Reject contextMode/reason on non-checkpoint operations
+    if (!hasCheckpoint && (body.contextMode !== undefined || body.reason !== undefined)) {
       return NextResponse.json(
-        { error: 'Must specify either overlay or rewindToStep' },
+        { error: 'contextMode and reason are only valid with rewindToCheckpoint' },
         { status: 400 },
       );
     }
@@ -91,12 +100,32 @@ export const PUT = withAuth(async (
       return NextResponse.json({ success: true, run: result.run });
     }
 
-    // Rewind
-    const result = rewindRun(db, runId, body.rewindToStep as RunStep, userId);
+    if (hasRewind) {
+      const result = rewindRun(db, runId, body.rewindToStep as RunStep, userId);
+      if (!result.success) {
+        return NextResponse.json({ error: result.error }, { status: 409 });
+      }
+      log.info({ runId, userId, toStep: body.rewindToStep }, 'Run rewound via API');
+      return NextResponse.json({ success: true, run: result.run });
+    }
+
+    // Checkpoint rewind
+    // Strict contextMode validation
+    if (body.contextMode !== undefined && !isValidContextMode(body.contextMode)) {
+      return NextResponse.json(
+        { error: `Invalid contextMode: '${body.contextMode}'. Must be 'preserve' or 'truncate'.` },
+        { status: 400 },
+      );
+    }
+
+    const ctxMode: RewindContextMode = (body.contextMode as RewindContextMode) ?? 'truncate';
+    const result = rewindToCheckpoint(
+      db, runId, body.rewindToCheckpoint as string, userId, ctxMode, body.reason,
+    );
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 409 });
     }
-    log.info({ runId, userId, toStep: body.rewindToStep }, 'Run rewound via API');
+    log.info({ runId, userId, checkpoint: body.rewindToCheckpoint, ctxMode }, 'Run rewound to checkpoint via API');
     return NextResponse.json({ success: true, run: result.run });
   } catch (err) {
     log.error(

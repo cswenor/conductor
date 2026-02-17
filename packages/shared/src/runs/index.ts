@@ -6,8 +6,8 @@
 
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../logger/index.ts';
-import type { RunPhase, RunStep, RunStatus } from '../types/index.ts';
-import { deriveRunStatus } from '../types/index.ts';
+import type { RunPhase, RunStep, RunStatus, RewindContextMode } from '../types/index.ts';
+import { deriveRunStatus, isValidContextMode } from '../types/index.ts';
 import { ensureDefaultPolicySet } from '../policy-sets/index.ts';
 import { getProject } from '../projects/index.ts';
 import { createWorkflowSnapshot, parseWorkflowConfigJson } from '../workflow-config/index.ts';
@@ -74,6 +74,8 @@ export interface Run {
   workflowSnapshotJson?: string;
   workflowOverlayJson?: string;
   workflowEpoch: number;
+  rewindContextMode?: RewindContextMode;
+  rewindContextSummary?: string;
 }
 
 export interface RunSummary {
@@ -526,5 +528,9 @@ function rowToRun(row: Record<string, unknown>): Run {
     workflowSnapshotJson: (row['workflow_snapshot_json'] as string | null) ?? undefined,
     workflowOverlayJson: (row['workflow_overlay_json'] as string | null) ?? undefined,
     workflowEpoch: (row['workflow_epoch'] as number | null) ?? 0,
+    rewindContextMode: isValidContextMode(row['rewind_context_mode'] as string)
+      ? (row['rewind_context_mode'] as RewindContextMode)
+      : undefined,
+    rewindContextSummary: (row['rewind_context_summary'] as string | null) ?? undefined,
   };
 }

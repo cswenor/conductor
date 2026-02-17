@@ -23,6 +23,8 @@ import {
   validateActionPhase,
   applyWorkflowOverlay,
   rewindRun,
+  rewindToCheckpoint,
+  type RewindContextMode,
 } from '@conductor/shared';
 import { getDb, getQueues } from '@/lib/bootstrap';
 import { requireServerUser } from '@/lib/auth/session';
@@ -476,6 +478,26 @@ export async function rewindRunAction(runId: string, toStep: RunStep): Promise<A
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Failed to rewind run';
     log.error({ runId, error: msg }, 'rewindRunAction failed');
+    return { success: false, error: msg };
+  }
+}
+
+export async function rewindToCheckpointAction(
+  runId: string,
+  checkpoint: string,
+  contextMode: RewindContextMode = 'truncate',
+  reason?: string,
+): Promise<ActionResult> {
+  try {
+    const { user, db } = await getAuthorizedRun(runId);
+    const result = rewindToCheckpoint(db, runId, checkpoint, user.userId, contextMode, reason);
+
+    log.info({ runId, userId: user.userId, checkpoint, contextMode, success: result.success }, 'rewindToCheckpointAction completed');
+    revalidateRunPaths(runId);
+    return { success: result.success, error: result.error };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Failed to rewind to checkpoint';
+    log.error({ runId, error: msg }, 'rewindToCheckpointAction failed');
     return { success: false, error: msg };
   }
 }

@@ -73,6 +73,12 @@ export * from './runs/index.ts';
 // Re-export workflow mutations module
 export * from './runs/workflow-mutations.ts';
 
+// Re-export checkpoint registry
+export * from './runs/checkpoints.ts';
+
+// Re-export rewind context builder
+export * from './runs/rewind-context.ts';
+
 // Re-export orchestrator module
 export * from './orchestrator/index.ts';
 

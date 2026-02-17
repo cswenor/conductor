@@ -13,7 +13,10 @@
 
 import type { Database } from 'better-sqlite3';
 import { createLogger } from '../logger/index.ts';
-import type { RunPhase, RunStep } from '../types/index.ts';
+import type { RunPhase, RunStep, RewindContextMode } from '../types/index.ts';
+import { isValidContextMode } from '../types/index.ts';
+import { resolveCheckpoint } from './checkpoints.ts';
+import { buildRewindContextSummary } from './rewind-context.ts';
 import { getRun, type Run } from './index.ts';
 import { recordOperatorAction, validateActionPhase } from '../operator-actions/index.ts';
 import { createEvent } from '../events/index.ts';
@@ -120,6 +123,13 @@ export interface RewindResult {
   run?: Run;
 }
 
+export interface RewindOptions {
+  contextMode?: RewindContextMode;
+  checkpoint?: string;
+  reason?: string;
+  contextSummary?: string;
+}
+
 const REWIND_STEP_TO_PHASE: Partial<Record<RunStep, RunPhase>> = {
   setup_worktree: 'pending',
   planner_create_plan: 'planning',
@@ -144,10 +154,16 @@ export function rewindRun(
   runId: string,
   toStep: RunStep,
   triggeredBy: string,
+  options?: RewindOptions,
 ): RewindResult {
   const toPhase = REWIND_STEP_TO_PHASE[toStep];
   if (toPhase === undefined) {
     return { success: false, error: `Cannot rewind to step '${toStep}'` };
+  }
+
+  // Runtime validation of contextMode (not just API boundary)
+  if (options?.contextMode !== undefined && !isValidContextMode(options.contextMode)) {
+    return { success: false, error: `Invalid contextMode: '${String(options.contextMode)}'` };
   }
 
   try {
@@ -162,6 +178,7 @@ export function rewindRun(
       }
 
       // Record operator action
+      const comment = options?.reason ?? `Rewound from ${freshRun.step} to ${toStep}`;
       recordOperatorAction(db, {
         runId,
         action: 'rewind',
@@ -169,7 +186,7 @@ export function rewindRun(
         actorType: 'operator',
         fromPhase: freshRun.phase,
         toPhase,
-        comment: `Rewound from ${freshRun.step} to ${toStep}`,
+        comment,
       });
 
       // Sequence-safe: allocate sequence using same formula as transitionPhase
@@ -178,7 +195,19 @@ export function rewindRun(
       ).get(runId) as { max_seq: number }).max_seq;
       const sequence = Math.max(freshRun.nextSequence, maxEventSeq + 1);
 
-      // Create audit event
+      // Create audit event with enriched payload
+      const eventPayload: Record<string, unknown> = {
+        action: 'rewind',
+        fromStep: freshRun.step,
+        fromPhase: freshRun.phase,
+        toStep,
+        toPhase,
+        triggeredBy,
+      };
+      if (options?.checkpoint !== undefined) eventPayload['checkpoint'] = options.checkpoint;
+      if (options?.contextMode !== undefined) eventPayload['contextMode'] = options.contextMode;
+      if (options?.reason !== undefined) eventPayload['reason'] = options.reason;
+
       createEvent(db, {
         projectId: freshRun.projectId,
         repoId: freshRun.repoId,
@@ -186,28 +215,26 @@ export function rewindRun(
         runId,
         type: 'operator.action',
         class: 'decision',
-        payload: {
-          action: 'rewind',
-          fromStep: freshRun.step,
-          fromPhase: freshRun.phase,
-          toStep,
-          toPhase,
-          triggeredBy,
-        },
+        payload: eventPayload,
         sequence,
         idempotencyKey: `rewind:${runId}:${sequence}`,
         source: 'operator',
       });
 
-      // Atomic CAS + active-invocation guard
+      // Atomic CAS + active-invocation guard (includes rewind context columns)
       const now = new Date().toISOString();
       const result = db.prepare(`
         UPDATE runs SET step = ?, phase = ?, workflow_epoch = workflow_epoch + 1,
           next_sequence = ?, last_event_sequence = ?,
+          rewind_context_mode = ?, rewind_context_summary = ?,
           blocked_reason = NULL, blocked_context_json = NULL, updated_at = ?
         WHERE run_id = ? AND paused_at IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM agent_invocations WHERE run_id = ? AND status IN ('pending', 'running'))
-      `).run(toStep, toPhase, sequence + 1, sequence, now, runId, runId);
+      `).run(
+        toStep, toPhase, sequence + 1, sequence,
+        options?.contextMode ?? null, options?.contextSummary ?? null,
+        now, runId, runId,
+      );
 
       if (result.changes === 0) {
         throw new CasConflictError('rewind_blocked');
@@ -236,4 +263,37 @@ export function rewindRun(
 
   log.info({ runId, toStep, toPhase, triggeredBy }, 'Run rewound');
   return { success: true, run: updatedRun ?? undefined };
+}
+
+/**
+ * Rewind a paused run to a named checkpoint.
+ *
+ * Higher-level abstraction over rewindRun that resolves checkpoint names
+ * to RunStep targets and optionally builds a context summary when
+ * contextMode is 'preserve'.
+ */
+export function rewindToCheckpoint(
+  db: Database,
+  runId: string,
+  checkpoint: string,
+  triggeredBy: string,
+  contextMode: RewindContextMode = 'truncate',
+  reason?: string,
+): RewindResult {
+  const target = resolveCheckpoint(checkpoint);
+  if (target === null) {
+    return { success: false, error: `Unknown or non-rewindable checkpoint: '${checkpoint}'` };
+  }
+
+  let contextSummary: string | undefined;
+  if (contextMode === 'preserve') {
+    contextSummary = buildRewindContextSummary(db, runId);
+  }
+
+  return rewindRun(db, runId, target.step, triggeredBy, {
+    contextMode,
+    checkpoint,
+    reason,
+    contextSummary,
+  });
 }

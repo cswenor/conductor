@@ -11,7 +11,7 @@ import { initDatabase, closeDatabase } from '../db/index.ts';
 import { createRun, getRun } from './index.ts';
 import { listOperatorActions } from '../operator-actions/index.ts';
 import { listRunEvents } from '../events/index.ts';
-import { applyWorkflowOverlay, rewindRun } from './workflow-mutations.ts';
+import { applyWorkflowOverlay, rewindRun, rewindToCheckpoint } from './workflow-mutations.ts';
 
 // Mock pubsub to prevent actual Redis calls
 vi.mock('../pubsub/index.ts', () => ({
@@ -296,5 +296,176 @@ describe('rewindRun', () => {
     const events = listRunEvents(db, runId);
     const rewindEvent = events.find(e => e.type === 'operator.action');
     expect(rewindEvent?.sequence).toBe(expectedSequence);
+  });
+
+  it('accepts options without breaking backward compat (options param is optional)', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    // Call without options — should still work
+    const result = rewindRun(db, runId, 'planner_create_plan', 'user_1');
+    expect(result.success).toBe(true);
+    expect(result.run?.rewindContextMode).toBeUndefined();
+    expect(result.run?.rewindContextSummary).toBeUndefined();
+  });
+
+  it('stores contextMode and contextSummary when provided', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    const result = rewindRun(db, runId, 'planner_create_plan', 'user_1', {
+      contextMode: 'preserve',
+      contextSummary: 'Summary of prior work',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.run?.rewindContextMode).toBe('preserve');
+    expect(result.run?.rewindContextSummary).toBe('Summary of prior work');
+  });
+
+  it('stores truncate mode with null summary', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    const result = rewindRun(db, runId, 'planner_create_plan', 'user_1', {
+      contextMode: 'truncate',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.run?.rewindContextMode).toBe('truncate');
+    expect(result.run?.rewindContextSummary).toBeUndefined();
+  });
+
+  it('enriches event payload with checkpoint/contextMode/reason', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    rewindRun(db, runId, 'planner_create_plan', 'user_1', {
+      checkpoint: 'planning:start',
+      contextMode: 'preserve',
+      reason: 'Test reason',
+    });
+
+    const events = listRunEvents(db, runId);
+    const rewindEvent = events.find(e => e.type === 'operator.action');
+    expect(rewindEvent?.payload).toEqual(expect.objectContaining({
+      checkpoint: 'planning:start',
+      contextMode: 'preserve',
+      reason: 'Test reason',
+    }));
+  });
+
+  it('uses reason as operator action comment when provided', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    rewindRun(db, runId, 'planner_create_plan', 'user_1', {
+      reason: 'Custom reason',
+    });
+
+    const actions = listOperatorActions(db, runId);
+    expect(actions.length).toBe(1);
+    expect(actions[0]?.comment).toBe('Custom reason');
+  });
+});
+
+// =============================================================================
+// rewindToCheckpoint
+// =============================================================================
+
+describe('rewindToCheckpoint', () => {
+  it('succeeds when paused with valid checkpoint', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    const result = rewindToCheckpoint(db, runId, 'planning:start', 'user_1');
+
+    expect(result.success).toBe(true);
+    expect(result.run?.step).toBe('planner_create_plan');
+    expect(result.run?.phase).toBe('planning');
+  });
+
+  it('returns error for completed (non-rewindable)', () => {
+    const { runId } = seedTestData(db);
+    pauseRun(db, runId);
+
+    const result = rewindToCheckpoint(db, runId, 'completed', 'user_1');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('non-rewindable');
+  });
+
+  it('returns error for unknown checkpoint', () => {
+    const { runId } = seedTestData(db);
+    pauseRun(db, runId);
+
+    const result = rewindToCheckpoint(db, runId, 'garbage', 'user_1');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Unknown');
+  });
+
+  it('preserve mode stores non-empty summary on run', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    // Add an invocation so the summary has content
+    db.prepare(
+      'INSERT INTO agent_invocations (agent_invocation_id, run_id, agent, action, status, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('ai_1', runId, 'planner', 'create_plan', 'completed', new Date().toISOString());
+
+    const result = rewindToCheckpoint(db, runId, 'planning:start', 'user_1', 'preserve');
+
+    expect(result.success).toBe(true);
+    expect(result.run?.rewindContextMode).toBe('preserve');
+    expect(result.run?.rewindContextSummary).toBeDefined();
+    expect(result.run?.rewindContextSummary?.length).toBeGreaterThan(0);
+    expect(result.run?.rewindContextSummary).toContain('planner:create_plan');
+  });
+
+  it('truncate mode stores mode with no summary', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    const result = rewindToCheckpoint(db, runId, 'planning:start', 'user_1', 'truncate');
+
+    expect(result.success).toBe(true);
+    expect(result.run?.rewindContextMode).toBe('truncate');
+    expect(result.run?.rewindContextSummary).toBeUndefined();
+  });
+
+  it('defaults contextMode to truncate when not provided', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    const result = rewindToCheckpoint(db, runId, 'planning:start', 'user_1');
+
+    expect(result.success).toBe(true);
+    expect(result.run?.rewindContextMode).toBe('truncate');
+  });
+
+  it('event payload includes checkpoint and contextMode', () => {
+    const { runId } = seedTestData(db);
+    db.prepare("UPDATE runs SET step = 'implementer_apply_changes', phase = 'executing' WHERE run_id = ?").run(runId);
+    pauseRun(db, runId);
+
+    rewindToCheckpoint(db, runId, 'executing:start', 'user_1', 'preserve', 'Operator wants redo');
+
+    const events = listRunEvents(db, runId);
+    const rewindEvent = events.find(e => e.type === 'operator.action');
+    expect(rewindEvent?.payload).toEqual(expect.objectContaining({
+      checkpoint: 'executing:start',
+      contextMode: 'preserve',
+      reason: 'Operator wants redo',
+    }));
   });
 });

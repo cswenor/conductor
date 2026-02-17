@@ -157,3 +157,20 @@ export type EnforcementPoint =
 export type ArtifactType = 'plan' | 'review' | 'test_report' | 'other';
 
 export type ValidationStatus = 'pending' | 'valid' | 'invalid';
+
+// =============================================================================
+// Rewind Context Types
+// =============================================================================
+
+export type RewindContextMode = 'preserve' | 'truncate';
+
+export type RewindCheckpoint =
+  | 'planning:start'
+  | 'awaiting_plan_approval'
+  | 'executing:start'
+  | 'awaiting_review';
+
+const VALID_CONTEXT_MODES = new Set<string>(['preserve', 'truncate']);
+export function isValidContextMode(s: string): s is RewindContextMode {
+  return VALID_CONTEXT_MODES.has(s);
+}

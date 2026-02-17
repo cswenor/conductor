@@ -1310,6 +1310,23 @@ async function processAgent(job: Job<AgentJobData>): Promise<void> {
     await handleAgentError(db, run, agent, action, err, job.data.rateLimitRetries ?? 0);
   } finally {
     unregisterCancellable(runId);
+    // Clear rewind context after agent dispatch (best-effort once per normal flow).
+    // assembleContext re-reads the run from DB during the handler, so the summary
+    // must still be present in DB at that point. Clearing in finally guarantees
+    // cleanup on success, failure, and exceptions.
+    if (run.rewindContextMode !== undefined) {
+      try {
+        db.prepare(
+          'UPDATE runs SET rewind_context_mode = NULL, rewind_context_summary = NULL, updated_at = ? WHERE run_id = ?'
+        ).run(new Date().toISOString(), runId);
+        log.info({ runId }, 'Cleared rewind context after agent dispatch');
+      } catch (clearErr) {
+        log.error(
+          { runId, error: clearErr instanceof Error ? clearErr.message : 'Unknown' },
+          'Failed to clear rewind context (non-fatal)',
+        );
+      }
+    }
   }
 }
 
