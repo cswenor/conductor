@@ -53,8 +53,8 @@ fi
 WORKTREE_PATH=$(git worktree list --porcelain | awk -v issue="$ISSUE_NUM" '
   /^worktree / {
     path = substr($0, 10)  # Remove "worktree " prefix
-    # Check if path ends with /cond-<issue> or IS cond-<issue>
-    if (path ~ "/cond-" issue "$" || path == "cond-" issue) {
+    # Check if path ends with /cnd-<issue> or IS cnd-<issue>
+    if (path ~ "/cnd-" issue "$" || path == "cnd-" issue) {
       print path
       exit
     }

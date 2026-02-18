@@ -6,55 +6,55 @@
 PM_OWNER="cswenor"
 
 # Project identifiers
-PM_PROJECT_NUMBER="1"
-PM_PROJECT_ID="PVT_kwHOAAnhG84BPhU0"
+PM_PROJECT_NUMBER="2"
+PM_PROJECT_ID="PVT_kwHOAAnhG84BPhvY"
 
 # Field IDs
-PM_FIELD_WORKFLOW="PVTSSF_lAHOAAnhG84BPhU0zg9598I"
-PM_FIELD_PRIORITY="PVTSSF_lAHOAAnhG84BPhU0zg959-E"
-PM_FIELD_AREA="PVTSSF_lAHOAAnhG84BPhU0zg959-I"
-PM_FIELD_ISSUE_TYPE="PVTSSF_lAHOAAnhG84BPhU0zg959-Y"
-PM_FIELD_RISK="PVTSSF_lAHOAAnhG84BPhU0zg959-4"
-PM_FIELD_ESTIMATE="PVTSSF_lAHOAAnhG84BPhU0zg95-AM"
+PM_FIELD_WORKFLOW="PVTSSF_lAHOAAnhG84BPhvYzg96Qy0"
+PM_FIELD_PRIORITY="PVTSSF_lAHOAAnhG84BPhvYzg96Q0Q"
+PM_FIELD_AREA="PVTSSF_lAHOAAnhG84BPhvYzg96Q0U"
+PM_FIELD_ISSUE_TYPE="PVTSSF_lAHOAAnhG84BPhvYzg96Q0Y"
+PM_FIELD_RISK="PVTSSF_lAHOAAnhG84BPhvYzg96Q1I"
+PM_FIELD_ESTIMATE="PVTSSF_lAHOAAnhG84BPhvYzg96Q1M"
 
 # Workflow option IDs
-PM_WORKFLOW_BACKLOG="f0ea54fa"
-PM_WORKFLOW_READY="61b7278c"
-PM_WORKFLOW_ACTIVE="59245cf0"
-PM_WORKFLOW_REVIEW="36f9fb60"
-PM_WORKFLOW_REWORK="a852892c"
-PM_WORKFLOW_DONE="f5abf09b"
+PM_WORKFLOW_BACKLOG="74b600d5"
+PM_WORKFLOW_READY="962c258c"
+PM_WORKFLOW_ACTIVE="5ced14d4"
+PM_WORKFLOW_REVIEW="a33df598"
+PM_WORKFLOW_REWORK="0ce2c21a"
+PM_WORKFLOW_DONE="4440bd88"
 
 # Priority option IDs
-PM_PRIORITY_CRITICAL="7e5d65ca"
-PM_PRIORITY_HIGH="80da3751"
-PM_PRIORITY_NORMAL="48ef9c20"
+PM_PRIORITY_CRITICAL="e2f43add"
+PM_PRIORITY_HIGH="5ea07c7d"
+PM_PRIORITY_NORMAL="2a42a8e5"
 
 # Area option IDs
-PM_AREA_FRONTEND="62d7c51d"
-PM_AREA_BACKEND="0187f63d"
+PM_AREA_FRONTEND=""
+PM_AREA_BACKEND=""
 PM_AREA_CONTRACTS=""
-PM_AREA_INFRA="4d1c0272"
+PM_AREA_INFRA=""
 PM_AREA_DESIGN=""
-PM_AREA_DOCS="84ace731"
+PM_AREA_DOCS=""
 PM_AREA_PM=""
 
 # Issue Type option IDs
-PM_TYPE_BUG="c936f7f1"
-PM_TYPE_FEATURE="882f1f34"
-PM_TYPE_SPIKE="696fcc39"
-PM_TYPE_EPIC="be954f37"
-PM_TYPE_CHORE="376b15d2"
+PM_TYPE_BUG="57d21deb"
+PM_TYPE_FEATURE="5a2162ad"
+PM_TYPE_SPIKE="e5f6ed28"
+PM_TYPE_EPIC="f329a2d3"
+PM_TYPE_CHORE="ce3bef94"
 
 # Risk option IDs
-PM_RISK_LOW="f0b417b8"
-PM_RISK_MED="219c30ce"
-PM_RISK_HIGH="78b84f2a"
+PM_RISK_LOW="614b5103"
+PM_RISK_MED="8d3abc19"
+PM_RISK_HIGH="e07efa9c"
 
 # Estimate option IDs
-PM_ESTIMATE_S="6e1bd34e"
-PM_ESTIMATE_M="24cc28be"
-PM_ESTIMATE_L="c7eb2f52"
+PM_ESTIMATE_S="a2fd8d62"
+PM_ESTIMATE_M="502e48be"
+PM_ESTIMATE_L="a6e5563a"
 
 # Validate config before use
 pm_validate_config() {
@@ -63,7 +63,7 @@ pm_validate_config() {
   # Check required IDs
   [ -z "$PM_PROJECT_ID" ] && missing+=("PM_PROJECT_ID")
   [ -z "$PM_FIELD_WORKFLOW" ] && missing+=("PM_FIELD_WORKFLOW")
-  [ "$PM_WORKFLOW_ACTIVE" = "<NEW_ID>" ] && missing+=("PM_WORKFLOW_ACTIVE (run Step 1: create Active option in GitHub UI first)")
+  [ -z "$PM_WORKFLOW_ACTIVE" ] && missing+=("PM_WORKFLOW_ACTIVE (re-run install.sh --update to discover field IDs)")
 
   # Check gh CLI auth
   if ! gh auth status &>/dev/null; then
@@ -80,7 +80,10 @@ pm_validate_config() {
 
   # Check jq installed
   if ! command -v jq &>/dev/null; then
-    echo "Error: jq not installed. Run: brew install jq" >&2
+    echo "Error: jq not installed." >&2
+    echo "  macOS:  brew install jq" >&2
+    echo "  Ubuntu: sudo apt-get install jq" >&2
+    echo "  Fedora: sudo dnf install jq" >&2
     return 1
   fi
 

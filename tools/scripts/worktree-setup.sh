@@ -3,23 +3,29 @@ set -euo pipefail
 
 # worktree-setup.sh - Create a worktree with port isolation for parallel development
 #
-# Creates a git worktree at ../cond-<issue-number>/ with:
+# Creates a git worktree at ../cnd-<issue-number>/ with:
 # - Feature branch checked out (creates if needed)
 # - Prints shell exports for port isolation (no env files created)
 #
 # Port offset formula: (issue_number % 79) * 100 + 3200
 # Floor 3200 clears macOS system ports (max 7100).
-# Ceiling 11000 keeps 54443 + offset < 65535. 79 unique slots.
-# Example: #210 → 8400, #291 → 8600, #294 → 8900
+# Ceiling 11000 keeps highest base port + offset < 65535. 79 unique slots.
+#
+# Port services are defined in worktree-ports.conf (same directory).
+# URL exports are defined in worktree-urls.conf (same directory).
 #
 # Usage: worktree-setup.sh <issue-number> <branch-name>
-#        worktree-setup.sh <issue-number> <branch-name> --print-env
+#        worktree-setup.sh <issue-number> --print-env
 #
 # Options:
 #   --print-env  Only print the export statements (for eval)
 #
 # Environment:
 #   WORKTREE_PORT_OFFSET - Override the calculated port offset (optional)
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PORTS_CONF="$SCRIPT_DIR/worktree-ports.conf"
+URLS_CONF="$SCRIPT_DIR/worktree-urls.conf"
 
 ISSUE_NUM="${1:-}"
 BRANCH_NAME="${2:-}"
@@ -43,47 +49,58 @@ if [ -z "$ISSUE_NUM" ]; then
 fi
 
 # Calculate port offset: (issue_number % 79) * 100 + 3200
-# See issue #436 for constraint derivation.
 OFFSET=${WORKTREE_PORT_OFFSET:-$(( (ISSUE_NUM % 79) * 100 + 3200 ))}
 
-# Calculate offset ports
-# POSTGRES_PORT stays at 5432 — it controls the internal listening port
-# used by all supabase services via Docker DNS. POOLER_HOST_PORT and
-# POOLER_TRANSACTION_HOST_PORT offset the HOST side of supavisor mappings.
-POOLER_HOST_PORT=$((5432 + OFFSET))
-POOLER_TRANSACTION_HOST_PORT=$((6543 + OFFSET))
-VITE_PORT=$((5173 + OFFSET))
-KONG_HTTP_PORT=$((54321 + OFFSET))
-KONG_HTTPS_PORT=$((54443 + OFFSET))
-STUDIO_PORT=$((54323 + OFFSET))
-ALGOD_PORT=$((4001 + OFFSET))
-KMD_PORT=$((4002 + OFFSET))
-ANALYTICS_PORT=$((4000 + OFFSET))
-ALGOD_ALGORAND_PORT=$((4011 + OFFSET))
-KMD_ALGORAND_PORT=$((4012 + OFFSET))
+# Read port services from config file
+declare -a PORT_NAMES=()
+declare -a PORT_VALUES=()
+declare -a PORT_BASES=()
+declare -a PORT_ENV_VARS=()
 
-# If --print-env, just output the exports (suitable for eval)
+if [ -f "$PORTS_CONF" ]; then
+  while IFS= read -r line; do
+    # Skip comments and blank lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// /}" ]] && continue
+
+    # Parse: SERVICE_NAME BASE_PORT ENV_VAR
+    read -r svc_name base_port env_var <<< "$line"
+    if [ -n "$svc_name" ] && [ -n "$base_port" ] && [ -n "$env_var" ]; then
+      calculated=$(( base_port + OFFSET ))
+      PORT_NAMES+=("$svc_name")
+      PORT_BASES+=("$base_port")
+      PORT_ENV_VARS+=("$env_var")
+      PORT_VALUES+=("$calculated")
+      # Export for URL template expansion
+      export "$env_var=$calculated"
+    fi
+  done < "$PORTS_CONF"
+fi
+
+# If --print-env, output the exports (suitable for eval)
 if [ "$PRINT_ENV_ONLY" = true ]; then
-  cat << EOF
-export COMPOSE_PROJECT_NAME=cond-$ISSUE_NUM
-export VITE_PORT=$VITE_PORT
-export KONG_HTTP_PORT=$KONG_HTTP_PORT
-export KONG_HTTPS_PORT=$KONG_HTTPS_PORT
-export STUDIO_PORT=$STUDIO_PORT
-export POOLER_HOST_PORT=$POOLER_HOST_PORT
-export POOLER_TRANSACTION_HOST_PORT=$POOLER_TRANSACTION_HOST_PORT
-export ALGOD_PORT=$ALGOD_PORT
-export KMD_PORT=$KMD_PORT
-export ANALYTICS_PORT=$ANALYTICS_PORT
-export ALGOD_ALGORAND_PORT=$ALGOD_ALGORAND_PORT
-export KMD_ALGORAND_PORT=$KMD_ALGORAND_PORT
-export PUBLIC_SUPABASE_URL=http://localhost:$KONG_HTTP_PORT
-export SITE_URL=http://localhost:$VITE_PORT
-export API_EXTERNAL_URL=http://localhost:$KONG_HTTP_PORT
-export SUPABASE_PUBLIC_URL=http://localhost:$KONG_HTTP_PORT
-export PUBLIC_ALGOD_SERVER=http://localhost:$ALGOD_PORT
-export PUBLIC_VOI_NODE_URL=http://localhost:$ALGOD_PORT
-EOF
+  echo "export COMPOSE_PROJECT_NAME=cnd-$ISSUE_NUM"
+
+  # Port exports
+  for i in "${!PORT_ENV_VARS[@]}"; do
+    echo "export ${PORT_ENV_VARS[$i]}=${PORT_VALUES[$i]}"
+  done
+
+  # URL exports from config
+  if [ -f "$URLS_CONF" ]; then
+    while IFS= read -r line; do
+      [[ "$line" =~ ^[[:space:]]*# ]] && continue
+      [[ -z "${line// /}" ]] && continue
+
+      read -r env_var url_template <<< "$line"
+      if [ -n "$env_var" ] && [ -n "$url_template" ]; then
+        # Expand ${VAR} references using already-exported port vars
+        expanded=$(eval echo "$url_template" 2>/dev/null || echo "$url_template")
+        echo "export $env_var=$expanded"
+      fi
+    done < "$URLS_CONF"
+  fi
+
   exit 0
 fi
 
@@ -103,7 +120,7 @@ REPO_ROOT=$(realpath "$REPO_ROOT")
 # Worktree location: sibling directory to main repo
 # Note: Can't use `realpath -m` because -m is GNU-only (not available on macOS)
 # Instead, resolve the parent directory (which exists) and append the worktree name
-WORKTREE_PATH="$(cd "$REPO_ROOT/.." && pwd)/cond-$ISSUE_NUM"
+WORKTREE_PATH="$(cd "$REPO_ROOT/.." && pwd)/cnd-$ISSUE_NUM"
 
 # Check if worktree already exists
 if git worktree list --porcelain | grep -q "worktree $WORKTREE_PATH"; then
@@ -132,19 +149,20 @@ fi
 echo ""
 echo "Worktree created successfully!"
 echo ""
-echo "Port mapping for issue #$ISSUE_NUM (offset: $OFFSET):"
-echo "  Vite dev server:      $VITE_PORT (base: 5173)"
-echo "  Kong HTTP (Supabase): $KONG_HTTP_PORT (base: 54321)"
-echo "  Kong HTTPS:           $KONG_HTTPS_PORT (base: 54443)"
-echo "  Supabase Studio:      $STUDIO_PORT (base: 54323)"
-echo "  Algod (VOI):          $ALGOD_PORT (base: 4001)"
-echo "  KMD (VOI):            $KMD_PORT (base: 4002)"
-echo "  Analytics:            $ANALYTICS_PORT (base: 4000)"
-echo "  Algod (Algorand):     $ALGOD_ALGORAND_PORT (base: 4011)"
-echo "  KMD (Algorand):       $KMD_ALGORAND_PORT (base: 4012)"
-echo ""
+
+# Display port mapping from config
+if [ ${#PORT_NAMES[@]} -gt 0 ]; then
+  echo "Port mapping for issue #$ISSUE_NUM (offset: $OFFSET):"
+  for i in "${!PORT_NAMES[@]}"; do
+    # Format service name (replace underscores with spaces)
+    display_name=$(echo "${PORT_NAMES[$i]}" | tr '_' ' ')
+    printf "  %-24s %s (base: %s)\n" "$display_name:" "${PORT_VALUES[$i]}" "${PORT_BASES[$i]}"
+  done
+  echo ""
+fi
+
 echo "Next steps:"
 echo "  cd $WORKTREE_PATH && claude"
 echo ""
 echo "Then in the worktree, run full setup:"
-echo "  pnpm install"
+echo "  make setup"

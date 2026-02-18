@@ -21,13 +21,13 @@ fi
 # Find worktree for this issue from git's authoritative list
 # Use awk instead of grep to avoid exit 1 on no match (which trips set -e)
 # Match either:
-#   - exact suffix /cond-<num> (e.g., /Users/dev/cond-294)
-#   - basename cond-<num> (in case worktree is nested differently)
+#   - exact suffix /cnd-<num> (e.g., /Users/dev/cnd-294)
+#   - basename cnd-<num> (in case worktree is nested differently)
 WORKTREE_PATH=$(git worktree list --porcelain | awk -v issue="$ISSUE_NUM" '
   /^worktree / {
     path = substr($0, 10)  # Remove "worktree " prefix
-    # Check if path ends with /cond-<issue> or IS cond-<issue>
-    if (path ~ "/cond-" issue "$" || path == "cond-" issue) {
+    # Check if path ends with /cnd-<issue> or IS cnd-<issue>
+    if (path ~ "/cnd-" issue "$" || path == "cnd-" issue) {
       print path
       exit
     }

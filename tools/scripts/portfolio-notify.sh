@@ -4,7 +4,7 @@ set -euo pipefail
 # portfolio-notify.sh - Hook-driven notification handler for portfolio manager
 #
 # Called by Claude Code hooks to update issue status and send alerts.
-# This script is a NO-OP when COND_ISSUE_NUM is not set (i.e., when running
+# This script is a NO-OP when CND_ISSUE_NUM is not set (i.e., when running
 # outside of a portfolio-managed tmux window).
 #
 # Usage: portfolio-notify.sh <event-type>
@@ -17,18 +17,18 @@ set -euo pipefail
 #   complete          - Issue work done (manual / SessionEnd)
 #
 # Environment:
-#   COND_ISSUE_NUM    - Issue number (set by tmux-session.sh when creating window)
+#   CND_ISSUE_NUM    - Issue number (set by tmux-session.sh when creating window)
 #   TMUX_PANE        - tmux pane identifier (set by tmux automatically)
 #
-# The script ONLY acts when COND_ISSUE_NUM is set. This env var is set by
+# The script ONLY acts when CND_ISSUE_NUM is set. This env var is set by
 # tmux-session.sh when creating a portfolio window. No fallbacks — if the
 # var isn't set, this is not a portfolio session and we exit silently.
 
 # --- Guard: no-op outside portfolio sessions ---
 
-ISSUE_NUM="${COND_ISSUE_NUM:-}"
+ISSUE_NUM="${CND_ISSUE_NUM:-}"
 
-# If COND_ISSUE_NUM is not set, this is not a portfolio-managed session — silent no-op
+# If CND_ISSUE_NUM is not set, this is not a portfolio-managed session — silent no-op
 if [ -z "$ISSUE_NUM" ]; then
   exit 0
 fi
@@ -43,7 +43,7 @@ fi
 
 # --- State directory ---
 
-STATE_DIR="$HOME/.cond/portfolio/$ISSUE_NUM"
+STATE_DIR="$HOME/.cnd/portfolio/$ISSUE_NUM"
 
 # If state directory doesn't exist, this issue isn't portfolio-managed — no-op
 if [ ! -d "$STATE_DIR" ]; then
@@ -67,13 +67,18 @@ case "$EVENT_TYPE" in
       printf '\a' 2>/dev/null || true
     fi
 
-    # macOS notification (optional, non-blocking)
+    # Desktop notification (optional, non-blocking)
+    LABEL="needs input"
+    if [ "$EVENT_TYPE" = "needs-permission" ]; then
+      LABEL="needs permission"
+    fi
+
     if command -v osascript &>/dev/null; then
-      LABEL="needs input"
-      if [ "$EVENT_TYPE" = "needs-permission" ]; then
-        LABEL="needs permission"
-      fi
+      # macOS
       osascript -e "display notification \"Issue #$ISSUE_NUM $LABEL\" with title \"Claude Code\" sound name \"Blow\"" 2>/dev/null &
+    elif command -v notify-send &>/dev/null; then
+      # Linux (libnotify / GNOME / KDE)
+      notify-send -u normal -a "Claude Code" "Claude Code" "Issue #$ISSUE_NUM $LABEL" 2>/dev/null &
     fi
     ;;
 
