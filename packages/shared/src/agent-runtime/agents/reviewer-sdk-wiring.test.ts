@@ -208,6 +208,26 @@ describe('runPlanReviewerWithAgentSDK', () => {
     ).rejects.toThrow(AgentError);
   });
 
+  it('throws AgentError when worktreePath is missing', async () => {
+    await expect(
+      runPlanReviewerWithAgentSDK(createFakeDb(), {
+        runId: 'r_1',
+        worktreePath: undefined as unknown as string,
+        apiKey: 'sk-test',
+      })
+    ).rejects.toThrow(AgentError);
+
+    try {
+      await runPlanReviewerWithAgentSDK(createFakeDb(), {
+        runId: 'r_1',
+        worktreePath: undefined as unknown as string,
+        apiKey: 'sk-test',
+      });
+    } catch (e) {
+      expect((e as AgentError).code).toBe('missing_worktree');
+    }
+  });
+
   it('throws AgentError for full toolProfile (non-mutating step)', async () => {
     await expect(
       runPlanReviewerWithAgentSDK(createFakeDb(), {
@@ -254,6 +274,61 @@ describe('runCodeReviewerWithAgentSDK', () => {
       apiKey: 'sk-test',
     });
     expect(result.approved).toBe(false);
+  });
+
+  it('increments review_rounds only after success', async () => {
+    setupSuccessStream('APPROVED\n\n### Correctness\n- All good');
+    const fakeDb = createFakeDb();
+    await runCodeReviewerWithAgentSDK(fakeDb, {
+      runId: 'r_1',
+      worktreePath: '/tmp/test',
+      apiKey: 'sk-test',
+    });
+
+    // review_rounds UPDATE should have been called (via db.prepare().run())
+    const prepareCalls = (fakeDb.prepare as ReturnType<typeof vi.fn>).mock.calls;
+    const reviewRoundsUpdates = prepareCalls.filter(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('review_rounds')
+    );
+    expect(reviewRoundsUpdates.length).toBeGreaterThan(0);
+  });
+
+  it('does not increment review_rounds on failure', async () => {
+    mockSdkQuery.mockReturnValue(
+      (async function* () {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: '' }],
+            usage: { input_tokens: 10, output_tokens: 5 },
+            stop_reason: 'end_turn',
+          },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          usage: { input_tokens: 10, output_tokens: 5 },
+        };
+      })()
+    );
+
+    const fakeDb = createFakeDb();
+    try {
+      await runCodeReviewerWithAgentSDK(fakeDb, {
+        runId: 'r_1',
+        worktreePath: '/tmp/test',
+        apiKey: 'sk-test',
+      });
+    } catch {
+      // Expected — empty review text throws
+    }
+
+    // review_rounds UPDATE should NOT have been called
+    const prepareCalls = (fakeDb.prepare as ReturnType<typeof vi.fn>).mock.calls;
+    const reviewRoundsUpdates = prepareCalls.filter(
+      (call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes('review_rounds')
+    );
+    expect(reviewRoundsUpdates).toHaveLength(0);
   });
 
   it('throws AgentError for invalid toolProfile', async () => {

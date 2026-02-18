@@ -298,6 +298,36 @@ describe('runPlannerWithAgentSDK', () => {
     // Should not throw — readonly is allowed for planner
   });
 
+  it('throws AgentError when worktreePath is missing', async () => {
+    await expect(
+      runPlannerWithAgentSDK(createFakeDb(), {
+        runId: 'r_1',
+        worktreePath: undefined as unknown as string,
+        apiKey: 'sk-test',
+      })
+    ).rejects.toThrow(AgentError);
+
+    try {
+      await runPlannerWithAgentSDK(createFakeDb(), {
+        runId: 'r_1',
+        worktreePath: undefined as unknown as string,
+        apiKey: 'sk-test',
+      });
+    } catch (e) {
+      expect((e as AgentError).code).toBe('missing_worktree');
+    }
+  });
+
+  it('throws AgentError when worktreePath is empty string', async () => {
+    await expect(
+      runPlannerWithAgentSDK(createFakeDb(), {
+        runId: 'r_1',
+        worktreePath: '',
+        apiKey: 'sk-test',
+      })
+    ).rejects.toThrow(AgentError);
+  });
+
   it('passes model to SDK options', async () => {
     setupSuccessStream('Plan text');
     await runPlannerWithAgentSDK(createFakeDb(), {

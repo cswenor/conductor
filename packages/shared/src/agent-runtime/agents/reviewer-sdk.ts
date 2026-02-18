@@ -142,8 +142,14 @@ async function runReviewerSdk(
   systemPrompt: string,
   userPrompt: string,
   defaultsRef: typeof MVP_DEFAULTS.reviewerPlan,
+  opts?: { incrementReviewRounds?: boolean },
 ): Promise<ReviewerResult> {
   ensureBuiltInPolicyDefinitions(db);
+
+  // Require worktree — SDK tools must never operate against the worker process directory
+  if (input.worktreePath === undefined || input.worktreePath === '') {
+    throw new AgentError('Reviewer SDK requires a worktree path', 'missing_worktree');
+  }
 
   const runRecord = getRun(db, input.runId);
   if (runRecord === null) throw new Error(`Run not found: ${input.runId}`);
@@ -188,7 +194,7 @@ async function runReviewerSdk(
   const toolContext = {
     runId: input.runId,
     agentInvocationId,
-    worktreePath: input.worktreePath ?? '',
+    worktreePath: input.worktreePath,
     db,
     projectId,
     abortSignal: abortController.signal,
@@ -279,7 +285,7 @@ async function runReviewerSdk(
         systemPrompt,
         model: input.stepConfig?.model ?? 'claude-sonnet-4-20250514',
         maxTurns: 20,
-        cwd: input.worktreePath ?? process.cwd(),
+        cwd: input.worktreePath,
         env: { ...process.env, ANTHROPIC_API_KEY: input.apiKey },
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
@@ -366,6 +372,13 @@ async function runReviewerSdk(
       contentMarkdown: review,
       createdBy: 'reviewer',
     });
+
+    // Update review_rounds counter AFTER success (only for code review)
+    if (opts?.incrementReviewRounds === true) {
+      db.prepare(
+        'UPDATE runs SET review_rounds = review_rounds + 1, updated_at = ? WHERE run_id = ?'
+      ).run(new Date().toISOString(), input.runId);
+    }
 
     log.info(
       { runId: input.runId, agentInvocationId, approved, artifactId: artifact.artifactId },
@@ -489,16 +502,12 @@ export async function runCodeReviewerWithAgentSDK(
     userPrompt += '\n\n## Code Diff\n```diff\n' + diffContent + '\n```';
   }
 
-  // Update review_rounds counter
-  db.prepare(
-    'UPDATE runs SET review_rounds = review_rounds + 1, updated_at = ? WHERE run_id = ?'
-  ).run(new Date().toISOString(), input.runId);
-
   return runReviewerSdk(
     db, input,
     'reviewer', 'review_code', 'reviewerCode',
     CODE_REVIEWER_SDK_SYSTEM_PROMPT,
     userPrompt,
     MVP_DEFAULTS.reviewerCode,
+    { incrementReviewRounds: true },
   );
 }

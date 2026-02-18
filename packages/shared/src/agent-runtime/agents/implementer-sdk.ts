@@ -98,6 +98,16 @@ export async function runImplementerWithAgentSDK(
   if (runRecord === null) throw new Error(`Run not found: ${input.runId}`);
   const projectId = runRecord.projectId;
 
+  // Validate tool profile BEFORE creating invocation (fail-fast, no orphaned records)
+  const profileName = input.stepConfig?.toolProfile ?? 'full';
+  if (!isValidToolProfile(profileName)) {
+    throw new AgentError(`Invalid tool profile: '${profileName}'`, 'invalid_tool_profile');
+  }
+  const constraintError = validateProfileForStep(profileName, 'implementer');
+  if (constraintError !== null) {
+    throw new AgentError(constraintError, 'invalid_tool_profile');
+  }
+
   // Assemble context
   const assembledContext = assembleContext(db, {
     runId: input.runId,
@@ -130,14 +140,6 @@ export async function runImplementerWithAgentSDK(
   }
 
   // Set up tool registry + MCP server (profile-based)
-  const profileName = input.stepConfig?.toolProfile ?? 'full';
-  if (!isValidToolProfile(profileName)) {
-    throw new AgentError(`Invalid tool profile: '${profileName}'`, 'invalid_tool_profile');
-  }
-  const constraintError = validateProfileForStep(profileName, 'implementer');
-  if (constraintError !== null) {
-    throw new AgentError(constraintError, 'invalid_tool_profile');
-  }
   const registry = createToolRegistry();
   registerToolsForProfile(registry, profileName);
 

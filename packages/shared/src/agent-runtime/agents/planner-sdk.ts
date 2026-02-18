@@ -100,6 +100,11 @@ export async function runPlannerWithAgentSDK(
 ): Promise<PlannerResult> {
   ensureBuiltInPolicyDefinitions(db);
 
+  // Require worktree — SDK tools must never operate against the worker process directory
+  if (input.worktreePath === undefined || input.worktreePath === '') {
+    throw new AgentError('Planner SDK requires a worktree path', 'missing_worktree');
+  }
+
   const runRecord = getRun(db, input.runId);
   if (runRecord === null) throw new Error(`Run not found: ${input.runId}`);
   const projectId = runRecord.projectId;
@@ -151,7 +156,7 @@ export async function runPlannerWithAgentSDK(
   const toolContext = {
     runId: input.runId,
     agentInvocationId,
-    worktreePath: input.worktreePath ?? '',
+    worktreePath: input.worktreePath,
     db,
     projectId,
     abortSignal: abortController.signal,
@@ -251,7 +256,7 @@ export async function runPlannerWithAgentSDK(
         systemPrompt: PLANNER_SDK_SYSTEM_PROMPT,
         model: input.stepConfig?.model ?? 'claude-sonnet-4-20250514',
         maxTurns: 30,
-        cwd: input.worktreePath ?? process.cwd(),
+        cwd: input.worktreePath,
         env: { ...process.env, ANTHROPIC_API_KEY: input.apiKey },
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
