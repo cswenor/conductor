@@ -125,6 +125,8 @@ vi.mock('node:child_process', () => ({
 
 import { formatContextForPrompt } from '../context.ts';
 import { runImplementerWithAgentSDK } from './implementer-sdk.ts';
+import { AgentError } from '../provider.ts';
+import { createAgentInvocation, markAgentRunning } from '../invocations.ts';
 
 // ---- Env cleanup ----
 
@@ -165,5 +167,102 @@ describe('implementer-sdk context wiring', () => {
       fileTree: 10_000,
       fileTreeEntries: 500,
     });
+  });
+});
+
+describe('implementer-sdk profile validation', () => {
+  beforeEach(() => {
+    cleanCtxEnv();
+    vi.clearAllMocks();
+  });
+  afterEach(() => cleanCtxEnv());
+
+  it('throws AgentError for invalid toolProfile', async () => {
+    const fakeDb = {
+      prepare: vi.fn().mockReturnValue({ get: vi.fn().mockReturnValue(undefined) }),
+    } as unknown as import('better-sqlite3').Database;
+
+    await expect(
+      runImplementerWithAgentSDK(fakeDb, {
+        runId: 'r_1',
+        worktreePath: '/tmp/test',
+        apiKey: 'sk-test',
+        stepConfig: {
+          model: 'claude-sonnet-4-20250514',
+          maxTokens: 8192,
+          temperature: 0.2,
+          backend: 'agent_sdk',
+          toolProfile: 'nonexistent',
+          budgets: {},
+        },
+      })
+    ).rejects.toThrow(AgentError);
+
+    try {
+      await runImplementerWithAgentSDK(fakeDb, {
+        runId: 'r_1',
+        worktreePath: '/tmp/test',
+        apiKey: 'sk-test',
+        stepConfig: {
+          model: 'claude-sonnet-4-20250514',
+          maxTokens: 8192,
+          temperature: 0.2,
+          backend: 'agent_sdk',
+          toolProfile: 'nonexistent',
+          budgets: {},
+        },
+      });
+    } catch (e) {
+      expect((e as AgentError).code).toBe('invalid_tool_profile');
+    }
+  });
+
+  it('throws AgentError for non-write-capable profile (readonly)', async () => {
+    const fakeDb = {
+      prepare: vi.fn().mockReturnValue({ get: vi.fn().mockReturnValue(undefined) }),
+    } as unknown as import('better-sqlite3').Database;
+
+    await expect(
+      runImplementerWithAgentSDK(fakeDb, {
+        runId: 'r_1',
+        worktreePath: '/tmp/test',
+        apiKey: 'sk-test',
+        stepConfig: {
+          model: 'claude-sonnet-4-20250514',
+          maxTokens: 8192,
+          temperature: 0.2,
+          backend: 'agent_sdk',
+          toolProfile: 'readonly',
+          budgets: {},
+        },
+      })
+    ).rejects.toThrow(AgentError);
+  });
+
+  it('does not create invocation on profile validation failure', async () => {
+    const fakeDb = {
+      prepare: vi.fn().mockReturnValue({ get: vi.fn().mockReturnValue(undefined) }),
+    } as unknown as import('better-sqlite3').Database;
+
+    try {
+      await runImplementerWithAgentSDK(fakeDb, {
+        runId: 'r_1',
+        worktreePath: '/tmp/test',
+        apiKey: 'sk-test',
+        stepConfig: {
+          model: 'claude-sonnet-4-20250514',
+          maxTokens: 8192,
+          temperature: 0.2,
+          backend: 'agent_sdk',
+          toolProfile: 'nonexistent',
+          budgets: {},
+        },
+      });
+    } catch {
+      // Expected
+    }
+
+    expect(createAgentInvocation).not.toHaveBeenCalled();
+    expect(markAgentRunning).not.toHaveBeenCalled();
   });
 });

@@ -109,6 +109,7 @@ import { handlePrCreation } from './pr-creation.ts';
 import { cleanOldJobs } from './old-jobs-cleanup.ts';
 import { casUpdateRunStep, isStaleRunJob, shouldSkipStaleAgentJob } from './run-helpers.ts';
 import { dispatchPrWebhook } from './webhook-dispatch.ts';
+import { validateProviderForBackend } from './backend-routing.ts';
 import { handleBlockedRetry } from './blocked-retry.ts';
 import { handleRateLimitRetry } from './rate-limit-retry.ts';
 import { dispatchDbCleanup } from './cleanup-dispatch.ts';
@@ -855,8 +856,9 @@ async function handlePlannerAgent(
       markRunFailed(db, runId, 'Planner SDK requires AI provider credentials');
       return;
     }
-    if (creds.provider !== 'anthropic') {
-      markRunFailed(db, runId, `Planner SDK requires Anthropic provider (got: ${creds.provider})`);
+    const providerError = validateProviderForBackend(config.planner.backend, creds.provider, 'Planner');
+    if (providerError !== null) {
+      markRunFailed(db, runId, providerError);
       return;
     }
 
@@ -904,8 +906,9 @@ async function handlePlanReviewerAgent(
       markRunFailed(db, runId, 'Plan reviewer SDK requires AI provider credentials');
       return;
     }
-    if (creds.provider !== 'anthropic') {
-      markRunFailed(db, runId, `Plan reviewer SDK requires Anthropic provider (got: ${creds.provider})`);
+    const providerError = validateProviderForBackend(planReviewConfig.reviewerPlan.backend, creds.provider, 'Plan reviewer');
+    if (providerError !== null) {
+      markRunFailed(db, runId, providerError);
       return;
     }
 
@@ -998,9 +1001,10 @@ async function handleImplementerAgent(
   let implResult;
 
   switch (backend) {
-    case 'agent_sdk':
-      if (creds.provider !== 'anthropic') {
-        markRunFailed(db, runId, `Implementer SDK requires Anthropic provider (got: ${creds.provider})`);
+    case 'agent_sdk': {
+      const providerError = validateProviderForBackend(backend, creds.provider, 'Implementer');
+      if (providerError !== null) {
+        markRunFailed(db, runId, providerError);
         return;
       }
       implResult = await runImplementerWithAgentSDK(db, {
@@ -1008,6 +1012,7 @@ async function handleImplementerAgent(
         stepConfig: implConfig.implementer,
       });
       break;
+    }
     case 'raw': {
       const provider = createProvider(creds.provider, creds.apiKey, implConfig.implementer.model);
       implResult = await runImplementerWithTools(db, {
@@ -1174,8 +1179,9 @@ async function handleCodeReviewerAgent(
       markRunFailed(db, runId, 'Code reviewer SDK requires AI provider credentials');
       return;
     }
-    if (creds.provider !== 'anthropic') {
-      markRunFailed(db, runId, `Code reviewer SDK requires Anthropic provider (got: ${creds.provider})`);
+    const providerError = validateProviderForBackend(codeReviewConfig.reviewerCode.backend, creds.provider, 'Code reviewer');
+    if (providerError !== null) {
+      markRunFailed(db, runId, providerError);
       return;
     }
 

@@ -13,6 +13,7 @@ import {
   registerToolsForProfile,
 } from './profiles.ts';
 import { createToolRegistry } from './registry.ts';
+import { validateStepFields } from '../../workflow-config/index.ts';
 
 // =============================================================================
 // isValidToolProfile
@@ -176,5 +177,54 @@ describe('profile constants', () => {
     expect(Object.keys(STEP_PROFILE_CONSTRAINTS).sort()).toEqual([
       'implementer', 'planner', 'reviewerCode', 'reviewerPlan',
     ]);
+  });
+});
+
+// =============================================================================
+// Cross-module sync: profiles.ts <-> workflow-config/index.ts
+// =============================================================================
+
+describe('cross-module sync: profiles <-> workflow-config', () => {
+  // The workflow-config validateStepFields function inlines profile constants
+  // to avoid circular imports. These tests verify both layers agree on policy.
+
+  it('workflow-config accepts all VALID_TOOL_PROFILES', () => {
+    for (const profile of VALID_TOOL_PROFILES) {
+      const errors = validateStepFields({ toolProfile: profile }, 'planner');
+      // 'full' should fail for planner (step constraint), but NOT for "unknown profile"
+      const unknownProfileErrors = errors.filter(e => e.includes('must be one of'));
+      expect(unknownProfileErrors).toHaveLength(0);
+    }
+  });
+
+  it('workflow-config rejects profiles NOT in VALID_TOOL_PROFILES', () => {
+    const fakeProfiles = ['nonexistent', 'inspect_full', 'write', ''];
+    for (const profile of fakeProfiles) {
+      const errors = validateStepFields({ toolProfile: profile }, 'planner');
+      const unknownProfileErrors = errors.filter(e => e.includes('must be one of'));
+      expect(unknownProfileErrors.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('workflow-config and validateProfileForStep agree on step constraints', () => {
+    const steps = ['planner', 'reviewerPlan', 'reviewerCode', 'implementer'] as const;
+
+    for (const step of steps) {
+      for (const profile of VALID_TOOL_PROFILES) {
+        const runtimeResult = validateProfileForStep(profile, step);
+
+        const configErrors = validateStepFields({ toolProfile: profile }, step);
+        // Filter to only step-constraint errors (not "must be one of" which is profile validity)
+        const stepConstraintErrors = configErrors.filter(e => e.includes('is not allowed'));
+
+        if (runtimeResult === null) {
+          // Runtime allows it — config should too
+          expect(stepConstraintErrors).toHaveLength(0);
+        } else {
+          // Runtime rejects it — config should too
+          expect(stepConstraintErrors.length).toBeGreaterThan(0);
+        }
+      }
+    }
   });
 });
