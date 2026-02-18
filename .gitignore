@@ -26,8 +26,10 @@ build
 
 # AI Agent configs (local)
 .agents
-.claude
+.claude/settings.local.json
+.claude/plans/
 .codex
+.codex-work/
 .github/skills
 
 # Logs
