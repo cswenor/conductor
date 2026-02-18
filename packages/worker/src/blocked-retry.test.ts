@@ -6,6 +6,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   initDatabase,
   closeDatabase,
@@ -803,5 +806,112 @@ describe('reason_code write-path contract', () => {
     expect(context['max_retries']).toBe(5);
     expect(context['prior_phase']).toBe('executing');
     expect(context['prior_step']).toBe('implementer_apply_changes');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Baseline file cleanup during counter reset
+// ---------------------------------------------------------------------------
+
+describe('baseline file cleanup on counter reset', () => {
+  const deps = {
+    enqueueAgent: mockEnqueueAgent,
+    enqueueRunJob: mockEnqueueRunJob,
+    mirror: mockMirror,
+  };
+  const cleanupDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of cleanupDirs) {
+      try { rmSync(dir, { recursive: true }); } catch { /* benign */ }
+    }
+    cleanupDirs.length = 0;
+  });
+
+  function insertWorktreeRecord(db: Db, runId: string, path: string, seed: ReturnType<typeof seedTestData>) {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO worktrees (worktree_id, run_id, project_id, repo_id, path, status, last_heartbeat_at, created_at)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+    `).run(`wt_${runId}`, runId, seed.projectId, seed.repoId, path, now, now);
+  }
+
+  it('clears baseline files when resetting plan_revisions', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Create temp dir simulating worktree parent + worktree
+    const parentDir = mkdtempSync(join(tmpdir(), 'conductor-br-test-'));
+    cleanupDirs.push(parentDir);
+    const worktreePath = join(parentDir, 'worktree');
+    // mkdirSync not needed — clearRunBaselineFiles reads the parent dir, not the worktree itself
+
+    // Plant baseline file in parent dir (matches clearRunBaselineFiles naming)
+    const baselineFile = join(parentDir, `.conductor-baseline-${run.runId}-planner-0`);
+    writeFileSync(baselineFile, 'abc123abc123abc123abc123abc123abc123abcd');
+    expect(existsSync(baselineFile)).toBe(true);
+
+    // Insert worktree record so getWorktreeForRun finds it
+    insertWorktreeRecord(db, run.runId, worktreePath, seed);
+
+    // Advance to planning, set plan_revisions to 3, then block
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'planning',
+      toStep: 'reviewer_review_plan',
+      triggeredBy: 'system',
+    });
+    db.prepare('UPDATE runs SET plan_revisions = 3 WHERE run_id = ?').run(run.runId);
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Plan rejected after 3 revisions.',
+      blockedContext: { error: 'Plan rejected', prior_phase: 'planning', prior_step: 'reviewer_review_plan', reason_code: 'max_plan_revisions' },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    // Baseline file should be cleared by counterReset
+    expect(existsSync(baselineFile)).toBe(false);
+  });
+
+  it('clears baseline files when resetting review_rounds', async () => {
+    const seed = seedTestData(db);
+    const run = createTestRun(db, seed);
+
+    // Create temp dir simulating worktree parent + worktree
+    const parentDir = mkdtempSync(join(tmpdir(), 'conductor-br-test-'));
+    cleanupDirs.push(parentDir);
+    const worktreePath = join(parentDir, 'worktree');
+
+    // Plant baseline file
+    const baselineFile = join(parentDir, `.conductor-baseline-${run.runId}-reviewerCode-0`);
+    writeFileSync(baselineFile, 'def456def456def456def456def456def456defc');
+    expect(existsSync(baselineFile)).toBe(true);
+
+    // Insert worktree record
+    insertWorktreeRecord(db, run.runId, worktreePath, seed);
+
+    // Advance through pipeline to awaiting_review, then block
+    transitionPhase(db, { runId: run.runId, toPhase: 'planning', toStep: 'planner_create_plan', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_plan_approval', toStep: 'wait_plan_approval', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'executing', toStep: 'implementer_apply_changes', triggeredBy: 'system' });
+    transitionPhase(db, { runId: run.runId, toPhase: 'awaiting_review', toStep: 'reviewer_review_code', triggeredBy: 'system' });
+    db.prepare('UPDATE runs SET review_rounds = 3 WHERE run_id = ?').run(run.runId);
+    transitionPhase(db, {
+      runId: run.runId,
+      toPhase: 'blocked',
+      triggeredBy: 'system',
+      blockedReason: 'Code rejected after 3 review rounds.',
+      blockedContext: { error: 'Code rejected', prior_phase: 'awaiting_review', prior_step: 'reviewer_review_code', reason_code: 'max_review_rounds' },
+    });
+
+    const blockedRun = mustGetRun(db, run.runId);
+    await handleBlockedRetry(db, blockedRun, 'operator_1', deps);
+
+    // Baseline file should be cleared by counterReset
+    expect(existsSync(baselineFile)).toBe(false);
   });
 });

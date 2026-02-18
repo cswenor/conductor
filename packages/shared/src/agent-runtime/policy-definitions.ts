@@ -48,6 +48,13 @@ export const BUILT_IN_POLICIES: BuiltInPolicy[] = [
     checkPoints: ['tool_pre_execution'],
     defaultConfig: {},
   },
+  {
+    policyId: 'plan_mode_write_block',
+    severity: 'high',
+    description: 'Blocks file write/delete operations in plan-mode agents (planner/reviewer)',
+    checkPoints: ['tool_pre_execution'],
+    defaultConfig: {},
+  },
 ];
 
 // =============================================================================

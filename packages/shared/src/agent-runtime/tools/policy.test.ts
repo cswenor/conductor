@@ -12,8 +12,10 @@ import {
   dotGitProtectionRule,
   sensitiveFileWriteRule,
   shellInjectionRule,
+  planModeWriteBlockRule,
   evaluatePolicy,
   DEFAULT_POLICY_RULES,
+  PLAN_MODE_POLICY_RULES,
 } from './policy.ts';
 
 function makeContext(worktreePath = '/tmp/worktree'): ToolExecutionContext {
@@ -337,6 +339,104 @@ describe('shellInjectionRule', () => {
       makeContext()
     );
     expect(result).toBeNull();
+  });
+});
+
+describe('planModeWriteBlockRule', () => {
+  it('blocks write_file in plan mode', () => {
+    const result = planModeWriteBlockRule.evaluate(
+      'write_file',
+      { path: 'src/main.ts', content: 'code' },
+      makeContext()
+    );
+    expect(result?.decision).toBe('block');
+    expect(result?.policyId).toBe('plan_mode_write_block');
+  });
+
+  it('blocks delete_file in plan mode', () => {
+    const result = planModeWriteBlockRule.evaluate(
+      'delete_file',
+      { path: 'src/old.ts' },
+      makeContext()
+    );
+    expect(result?.decision).toBe('block');
+    expect(result?.policyId).toBe('plan_mode_write_block');
+  });
+
+  it('allows read_file in plan mode', () => {
+    const result = planModeWriteBlockRule.evaluate(
+      'read_file',
+      { path: 'src/main.ts' },
+      makeContext()
+    );
+    expect(result).toBeNull();
+  });
+
+  it('allows run_tests in plan mode', () => {
+    const result = planModeWriteBlockRule.evaluate(
+      'run_tests',
+      { command: 'npm test' },
+      makeContext()
+    );
+    expect(result).toBeNull();
+  });
+
+  it('allows list_files in plan mode', () => {
+    const result = planModeWriteBlockRule.evaluate(
+      'list_files',
+      { directory: 'src' },
+      makeContext()
+    );
+    expect(result).toBeNull();
+  });
+
+  it('allows search_in_file in plan mode', () => {
+    const result = planModeWriteBlockRule.evaluate(
+      'search_in_file',
+      { path: 'src/main.ts', pattern: 'hello' },
+      makeContext()
+    );
+    expect(result).toBeNull();
+  });
+});
+
+describe('PLAN_MODE_POLICY_RULES', () => {
+  it('includes all default rules plus planModeWriteBlockRule', () => {
+    expect(PLAN_MODE_POLICY_RULES).toHaveLength(DEFAULT_POLICY_RULES.length + 1);
+    const ids = PLAN_MODE_POLICY_RULES.map(r => r.policyId);
+    expect(ids).toContain('worktree_boundary');
+    expect(ids).toContain('dotgit_protection');
+    expect(ids).toContain('sensitive_file_write');
+    expect(ids).toContain('shell_injection');
+    expect(ids).toContain('plan_mode_write_block');
+  });
+
+  it('planModeWriteBlockRule is last (security rules fire first for forensic clarity)', () => {
+    const lastRule = PLAN_MODE_POLICY_RULES[PLAN_MODE_POLICY_RULES.length - 1];
+    expect(lastRule?.policyId).toBe('plan_mode_write_block');
+  });
+
+  it('blocks writes to sensitive files with sensitive_file_write (not plan_mode_write_block)', () => {
+    const result = evaluatePolicy(
+      PLAN_MODE_POLICY_RULES,
+      'write_file',
+      { path: '.env', content: 'SECRET=x' },
+      makeContext()
+    );
+    expect(result.decision).toBe('block');
+    // sensitive_file_write should fire before plan_mode_write_block
+    expect(result.policyId).toBe('sensitive_file_write');
+  });
+
+  it('blocks normal writes with plan_mode_write_block', () => {
+    const result = evaluatePolicy(
+      PLAN_MODE_POLICY_RULES,
+      'write_file',
+      { path: 'src/main.ts', content: 'code' },
+      makeContext()
+    );
+    expect(result.decision).toBe('block');
+    expect(result.policyId).toBe('plan_mode_write_block');
   });
 });
 

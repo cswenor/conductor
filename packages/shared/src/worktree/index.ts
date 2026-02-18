@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, rmSync, readdirSync, rmdirSync, statSync } from 
 import { join, dirname } from 'path';
 import { randomBytes } from 'crypto';
 import { createLogger } from '../logger/index.ts';
+import { clearRunBaselineFiles } from '../agent-runtime/agents/worktree-restore.ts';
 
 const log = createLogger({ name: 'conductor:worktree' });
 
@@ -759,6 +760,16 @@ export function cleanupWorktree(db: Database, runId: string): boolean {
 
   // 2. Release port leases
   releaseWorktreePorts(db, worktreeId);
+
+  // 2.5. Remove persisted baseline SHA files for this run
+  try {
+    clearRunBaselineFiles(worktreePath, runId);
+  } catch (err) {
+    log.warn(
+      { worktreeId, error: err instanceof Error ? err.message : 'Unknown' },
+      'Failed to clear baseline files'
+    );
+  }
 
   // 3. Remove worktree via git
   const clonePath = getRepoClonePath(db, repoId);

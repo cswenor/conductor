@@ -23,7 +23,7 @@ import { createArtifact } from '../artifacts.ts';
 import { createAgentMessage } from '../agent-messages.ts';
 import { createToolRegistry } from '../tools/registry.ts';
 import { isValidToolProfile, validateProfileForStep, registerToolsForProfile } from '../tools/profiles.ts';
-import { DEFAULT_POLICY_RULES } from '../tools/policy.ts';
+import { PLAN_MODE_POLICY_RULES } from '../tools/policy.ts';
 import { ensureBuiltInPolicyDefinitions } from '../policy-definitions.ts';
 import { createAgentMcpServer, getAllowedToolNames } from '../tools/mcp-adapter.ts';
 import type { ToolResultEntry } from '../tools/protocol.ts';
@@ -31,6 +31,7 @@ import { flushToolResults as flushToolResultsHelper } from '../tools/protocol.ts
 import { AgentError, AgentAuthError, AgentRateLimitError, AgentContextLengthError, AgentCancelledError, AgentTimeoutError } from '../provider.ts';
 import { extractRetryAfterMs } from '../retry-after.ts';
 import { extractTerminalAssistantText } from './sdk-result.ts';
+import { getOrPersistBaselineSha, restoreWorktree } from './worktree-restore.ts';
 import { parseVerdict } from './reviewer.ts';
 import type { ReviewerInput, ReviewerResult } from './reviewer.ts';
 
@@ -155,7 +156,12 @@ async function runReviewerSdk(
   if (runRecord === null) throw new Error(`Run not found: ${input.runId}`);
   const projectId = runRecord.projectId;
 
-  // Resolve tool profile with step-specific constraint enforcement
+  // Resolve tool profile with step-specific constraint enforcement.
+  // Design choice: we use 'inspect' profile + PLAN_MODE_POLICY_RULES rather
+  // than a dedicated 'plan_mode' profile. The inspect profile provides the
+  // right tool surface (read-only FS, test runner) and the policy rules add
+  // write-blocking as defense-in-depth. A separate profile would duplicate
+  // inspect with no functional benefit.
   const profileName = input.stepConfig?.toolProfile ?? 'inspect';
   if (!isValidToolProfile(profileName)) {
     throw new AgentError(`Invalid tool profile: '${profileName}'`, 'invalid_tool_profile');
@@ -165,7 +171,7 @@ async function runReviewerSdk(
     throw new AgentError(constraintError, 'invalid_tool_profile');
   }
 
-  // Create agent invocation
+  // Create agent invocation BEFORE preflight so baseline/restore failures are tracked
   const invocation = createAgentInvocation(db, {
     runId: input.runId,
     agent,
@@ -205,7 +211,7 @@ async function runReviewerSdk(
 
   const mcpServer = createAgentMcpServer(
     registry,
-    DEFAULT_POLICY_RULES,
+    PLAN_MODE_POLICY_RULES,
     toolContext,
     db,
     pendingToolResults,
@@ -277,8 +283,20 @@ async function runReviewerSdk(
   let totalTokensInput = 0;
   let totalTokensOutput = 0;
   let lastAssistantSnapshot: { content: unknown[]; stopReason: string | undefined } | undefined;
+  let worktreeRestored = false;
+  let baselineSha: string | undefined;
 
   try {
+    // Capture baseline SHA for worktree restoration
+    // Episode scoped to planRevisions (plan reviewer) or reviewRounds (code reviewer)
+    const episodeId = stepName === 'reviewerCode'
+      ? runRecord.reviewRounds
+      : runRecord.planRevisions;
+    baselineSha = getOrPersistBaselineSha(input.worktreePath, input.runId, stepName, episodeId);
+
+    // Preflight: restore worktree to clean state (handles leftover state from failed prior attempts)
+    restoreWorktree(input.worktreePath, baselineSha);
+
     const queryStream = sdkQuery({
       prompt: userPrompt,
       options: {
@@ -357,15 +375,12 @@ async function runReviewerSdk(
     const review = extractTerminalAssistantText(lastAssistantSnapshot, 'Reviewer');
     const approved = parseVerdict(review);
 
-    // Record success
-    completeAgentInvocation(db, agentInvocationId, {
-      tokensInput: totalTokensInput,
-      tokensOutput: totalTokensOutput,
-      durationMs,
-    });
-    publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, agent, action, 'completed');
+    // Restore worktree to baseline (strict — must succeed before recording success)
+    // Mark attempted before calling so catch block won't redundantly retry on restore failure
+    worktreeRestored = true;
+    restoreWorktree(input.worktreePath, baselineSha);
 
-    // Store review as artifact
+    // Store review as artifact (before marking complete — ensures outputs exist)
     const artifact = createArtifact(db, {
       runId: input.runId,
       type: 'review',
@@ -373,12 +388,20 @@ async function runReviewerSdk(
       createdBy: 'reviewer',
     });
 
-    // Update review_rounds counter AFTER success (only for code review)
+    // Update review_rounds counter (only for code review, before marking complete)
     if (opts?.incrementReviewRounds === true) {
       db.prepare(
         'UPDATE runs SET review_rounds = review_rounds + 1, updated_at = ? WHERE run_id = ?'
       ).run(new Date().toISOString(), input.runId);
     }
+
+    // Record success (last — all outputs are persisted)
+    completeAgentInvocation(db, agentInvocationId, {
+      tokensInput: totalTokensInput,
+      tokensOutput: totalTokensOutput,
+      durationMs,
+    });
+    publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, agent, action, 'completed');
 
     log.info(
       { runId: input.runId, agentInvocationId, approved, artifactId: artifact.artifactId },
@@ -393,6 +416,15 @@ async function runReviewerSdk(
     };
   } catch (err) {
     flushToolResults();
+
+    // Best-effort worktree restoration — skip if already attempted or baseline not yet captured
+    if (!worktreeRestored && baselineSha !== undefined) {
+      try {
+        restoreWorktree(input.worktreePath, baselineSha);
+      } catch (restoreErr) {
+        log.warn({ err: restoreErr, runId: input.runId }, 'Best-effort worktree restore failed in catch path');
+      }
+    }
 
     let finalError: AgentError;
 

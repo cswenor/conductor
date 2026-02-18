@@ -944,6 +944,30 @@ describe('Worktree Module', () => {
         expect(ports).toHaveLength(0);
       });
 
+      it('should clear baseline files for the run', () => {
+        const wt = createWorktree(db, {
+          runId: seed.runId,
+          projectId: seed.projectId,
+          repoId: seed.repoId,
+        });
+
+        // Plant baseline files in the worktrees dir (parent of worktree path)
+        const worktreesDir = join(testDir, 'worktrees');
+        const baselineFile = join(worktreesDir, `.conductor-baseline-${seed.runId}-planner-0`);
+        const baselineFile2 = join(worktreesDir, `.conductor-baseline-${seed.runId}-reviewer-1`);
+        writeFileSync(baselineFile, 'abc123'.padEnd(40, '0'));
+        writeFileSync(baselineFile2, 'def456'.padEnd(40, '0'));
+
+        expect(existsSync(baselineFile)).toBe(true);
+        expect(existsSync(baselineFile2)).toBe(true);
+
+        cleanupWorktree(db, seed.runId);
+
+        // Baseline files should be removed
+        expect(existsSync(baselineFile)).toBe(false);
+        expect(existsSync(baselineFile2)).toBe(false);
+      });
+
       it('should return false when no active worktree for run', () => {
         const result = cleanupWorktree(db, 'run_nonexistent');
         expect(result).toBe(false);

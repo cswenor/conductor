@@ -22,7 +22,7 @@ import { createArtifact } from '../artifacts.ts';
 import { createAgentMessage } from '../agent-messages.ts';
 import { createToolRegistry } from '../tools/registry.ts';
 import { isValidToolProfile, validateProfileForStep, registerToolsForProfile } from '../tools/profiles.ts';
-import { DEFAULT_POLICY_RULES } from '../tools/policy.ts';
+import { PLAN_MODE_POLICY_RULES } from '../tools/policy.ts';
 import { ensureBuiltInPolicyDefinitions } from '../policy-definitions.ts';
 import { createAgentMcpServer, getAllowedToolNames } from '../tools/mcp-adapter.ts';
 import type { ToolResultEntry } from '../tools/protocol.ts';
@@ -30,6 +30,7 @@ import { flushToolResults as flushToolResultsHelper } from '../tools/protocol.ts
 import { AgentError, AgentAuthError, AgentRateLimitError, AgentContextLengthError, AgentCancelledError, AgentTimeoutError } from '../provider.ts';
 import { extractRetryAfterMs } from '../retry-after.ts';
 import { extractTerminalAssistantText } from './sdk-result.ts';
+import { getOrPersistBaselineSha, restoreWorktree } from './worktree-restore.ts';
 import type { PlannerInput, PlannerResult } from './planner.ts';
 
 const log = createLogger({ name: 'conductor:planner-sdk' });
@@ -109,7 +110,12 @@ export async function runPlannerWithAgentSDK(
   if (runRecord === null) throw new Error(`Run not found: ${input.runId}`);
   const projectId = runRecord.projectId;
 
-  // Resolve tool profile with step-specific constraint enforcement
+  // Resolve tool profile with step-specific constraint enforcement.
+  // Design choice: we use 'inspect' profile + PLAN_MODE_POLICY_RULES rather
+  // than a dedicated 'plan_mode' profile. The inspect profile provides the
+  // right tool surface (read-only FS, test runner) and the policy rules add
+  // write-blocking as defense-in-depth. A separate profile would duplicate
+  // inspect with no functional benefit.
   const profileName = input.stepConfig?.toolProfile ?? 'inspect';
   if (!isValidToolProfile(profileName)) {
     throw new AgentError(`Invalid tool profile: '${profileName}'`, 'invalid_tool_profile');
@@ -126,7 +132,7 @@ export async function runPlannerWithAgentSDK(
   });
   const userPrompt = formatContextForPrompt(assembledContext);
 
-  // Create agent invocation
+  // Create agent invocation BEFORE preflight so baseline/restore failures are tracked
   const invocation = createAgentInvocation(db, {
     runId: input.runId,
     agent: 'planner',
@@ -168,7 +174,7 @@ export async function runPlannerWithAgentSDK(
 
   const mcpServer = createAgentMcpServer(
     registry,
-    DEFAULT_POLICY_RULES,
+    PLAN_MODE_POLICY_RULES,
     toolContext,
     db,
     pendingToolResults,
@@ -248,8 +254,17 @@ export async function runPlannerWithAgentSDK(
 
   // Track final assistant message for result extraction
   let lastAssistantSnapshot: { content: unknown[]; stopReason: string | undefined } | undefined;
+  let worktreeRestored = false;
+  let baselineSha: string | undefined;
 
   try {
+    // Capture baseline SHA for worktree restoration (episode = current planRevisions counter)
+    const episodeId = runRecord.planRevisions;
+    baselineSha = getOrPersistBaselineSha(input.worktreePath, input.runId, 'planner', episodeId);
+
+    // Preflight: restore worktree to clean state (handles leftover state from failed prior attempts)
+    restoreWorktree(input.worktreePath, baselineSha);
+
     const queryStream = sdkQuery({
       prompt: userPrompt,
       options: {
@@ -334,15 +349,12 @@ export async function runPlannerWithAgentSDK(
     // Extract plan from terminal assistant message
     const plan = extractTerminalAssistantText(lastAssistantSnapshot, 'Planner');
 
-    // Record success
-    completeAgentInvocation(db, agentInvocationId, {
-      tokensInput: totalTokensInput,
-      tokensOutput: totalTokensOutput,
-      durationMs,
-    });
-    publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, 'planner', 'create_plan', 'completed');
+    // Restore worktree to baseline (strict — must succeed before recording success)
+    // Mark attempted before calling so catch block won't redundantly retry on restore failure
+    worktreeRestored = true;
+    restoreWorktree(input.worktreePath, baselineSha);
 
-    // Store plan as artifact
+    // Store plan as artifact (before marking complete — ensures outputs exist)
     const artifact = createArtifact(db, {
       runId: input.runId,
       type: 'plan',
@@ -354,6 +366,14 @@ export async function runPlannerWithAgentSDK(
     db.prepare(
       'UPDATE runs SET plan_revisions = plan_revisions + 1, updated_at = ? WHERE run_id = ?'
     ).run(new Date().toISOString(), input.runId);
+
+    // Record success (last — all outputs are persisted)
+    completeAgentInvocation(db, agentInvocationId, {
+      tokensInput: totalTokensInput,
+      tokensOutput: totalTokensOutput,
+      durationMs,
+    });
+    publishAgentInvocationEvent(db, projectId, input.runId, agentInvocationId, 'planner', 'create_plan', 'completed');
 
     log.info(
       { runId: input.runId, agentInvocationId, artifactId: artifact.artifactId },
@@ -368,6 +388,15 @@ export async function runPlannerWithAgentSDK(
   } catch (err) {
     // Best-effort: persist any pending tool results before failing
     flushToolResults();
+
+    // Best-effort worktree restoration — skip if already attempted or baseline not yet captured
+    if (!worktreeRestored && baselineSha !== undefined) {
+      try {
+        restoreWorktree(input.worktreePath, baselineSha);
+      } catch (restoreErr) {
+        log.warn({ err: restoreErr, runId: input.runId }, 'Best-effort worktree restore failed in catch path');
+      }
+    }
 
     // Determine final error — budget timeout takes precedence over generic abort
     let finalError: AgentError;

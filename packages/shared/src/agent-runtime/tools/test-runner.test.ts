@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, devNull } from 'node:os';
 import { createToolRegistry } from './registry.ts';
 import type { ToolExecutionContext } from './types.ts';
 import {
@@ -269,5 +269,61 @@ describe('registerTestRunnerTool', () => {
     const registry = createToolRegistry();
     registerTestRunnerTool(registry);
     expect(registry.has('run_tests')).toBe(true);
+  });
+});
+
+describe('git credential hardening', () => {
+  it('strips git auth env vars from child process', async () => {
+    const registry = createToolRegistry();
+    registerTestRunnerTool(registry);
+    const tool = registry.get('run_tests')!;
+
+    // Set git auth vars in parent process to verify they're NOT passed through
+    process.env['GIT_AUTHOR_NAME'] = 'should-not-appear';
+    process.env['GITHUB_TOKEN'] = 'ghp_should-not-appear';
+
+    // Write a Node script that dumps env vars as JSON
+    writeFileSync(join(worktreePath, 'dump-env.js'), [
+      'const e = process.env;',
+      'const pick = (k) => e[k] === undefined ? "" : e[k];',
+      'console.log(JSON.stringify({',
+      '  GIT_TERMINAL_PROMPT: pick("GIT_TERMINAL_PROMPT"),',
+      '  GIT_ASKPASS: pick("GIT_ASKPASS"),',
+      '  GIT_CONFIG_NOSYSTEM: pick("GIT_CONFIG_NOSYSTEM"),',
+      '  GIT_CONFIG_GLOBAL: pick("GIT_CONFIG_GLOBAL"),',
+      '  GITHUB_TOKEN: pick("GITHUB_TOKEN"),',
+      '  GIT_AUTHOR_NAME: pick("GIT_AUTHOR_NAME"),',
+      '}));',
+    ].join('\n'));
+
+    writeFileSync(
+      join(worktreePath, 'package.json'),
+      '{"scripts":{"test":"node dump-env.js"}}',
+    );
+
+    const result = await tool.execute({ command: 'npm test' }, context);
+
+    // Clean up parent env
+    delete process.env['GIT_AUTHOR_NAME'];
+    delete process.env['GITHUB_TOKEN'];
+
+    expect(result.meta['exitCode']).toBe(0);
+
+    // Parse the JSON from child output
+    const match = result.content.match(/\{[^}]+\}/);
+    expect(match).not.toBeNull();
+    const childEnv = JSON.parse(match![0]) as Record<string, string>;
+
+    // GIT_TERMINAL_PROMPT should be '0' (blocks interactive prompts)
+    expect(childEnv['GIT_TERMINAL_PROMPT']).toBe('0');
+    // GIT_CONFIG_NOSYSTEM should be '1' (blocks system gitconfig)
+    expect(childEnv['GIT_CONFIG_NOSYSTEM']).toBe('1');
+    // GIT_ASKPASS should be empty (blocks credential helper GUI)
+    expect(childEnv['GIT_ASKPASS']).toBe('');
+    // GIT_CONFIG_GLOBAL should point to devNull (blocks user gitconfig)
+    expect(childEnv['GIT_CONFIG_GLOBAL']).toBe(devNull);
+    // Parent-only vars must NOT leak into child
+    expect(childEnv['GITHUB_TOKEN']).toBe('');
+    expect(childEnv['GIT_AUTHOR_NAME']).toBe('');
   });
 });

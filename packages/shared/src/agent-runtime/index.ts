@@ -169,6 +169,13 @@ export {
   extractTerminalAssistantText,
 } from './agents/sdk-result.ts';
 
+// Worktree restore (baseline SHA persistence + strict restoration)
+export {
+  getOrPersistBaselineSha,
+  restoreWorktree,
+  clearRunBaselineFiles,
+} from './agents/worktree-restore.ts';
+
 // Agent messages CRUD
 export {
   type AgentMessage,

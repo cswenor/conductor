@@ -7,6 +7,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { devNull } from 'node:os';
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { ToolDefinition, ToolResult } from './types.ts';
 import type { ToolRegistry } from './registry.ts';
@@ -214,11 +215,29 @@ export const runTestsTool: ToolDefinition = {
       let timedOut = false;
       const startTime = Date.now();
 
-      // Only pass through safe env vars (minimal sandbox)
+      // Only pass through safe env vars (minimal sandbox).
+      //
+      // Security model — defense-in-depth against git mutations:
+      //   1. Command allowlist: only approved test runners (npm, jest, etc.)
+      //   2. Shell operator blocking: no ;, &&, |, etc.
+      //   3. Env hardening below: strips credentials from environment
+      //   4. Worktree restore: reverts all local changes after agent completes
+      //
+      // Accepted residual risk: if a remote URL in .git/config contains
+      // embedded credentials (https://token@host/...), a test script could
+      // theoretically push. This requires both embedded-cred remotes AND a
+      // test script that explicitly runs `git push` — extremely unlikely in
+      // practice. Full protocol-level push blocking is not feasible without
+      // also breaking legitimate `git fetch` in test scripts.
       const safeEnv = {
         PATH: process.env['PATH'] ?? '',
         HOME: process.env['HOME'] ?? '',
         LANG: process.env['LANG'] ?? 'en_US.UTF-8',
+        // Prevent test scripts from using git credentials for push/commit
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_ASKPASS: '',
+        GIT_CONFIG_NOSYSTEM: '1',
+        GIT_CONFIG_GLOBAL: devNull,
       } as unknown as NodeJS.ProcessEnv;
 
       const child: ChildProcess = spawn(program, args, {

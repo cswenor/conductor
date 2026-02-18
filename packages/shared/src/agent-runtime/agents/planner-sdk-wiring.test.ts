@@ -84,11 +84,16 @@ vi.mock('../tools/profiles.ts', async (importOriginal) => {
 });
 
 vi.mock('../tools/policy.ts', () => ({
-  DEFAULT_POLICY_RULES: [],
+  PLAN_MODE_POLICY_RULES: [{ tool: 'sentinel', action: 'deny' }],
 }));
 
 vi.mock('../policy-definitions.ts', () => ({
   ensureBuiltInPolicyDefinitions: vi.fn(),
+}));
+
+vi.mock('./worktree-restore.ts', () => ({
+  getOrPersistBaselineSha: vi.fn().mockReturnValue('a'.repeat(40)),
+  restoreWorktree: vi.fn(),
 }));
 
 vi.mock('../tools/mcp-adapter.ts', () => ({
@@ -113,6 +118,12 @@ vi.mock('../retry-after.ts', () => ({
 
 import { runPlannerWithAgentSDK } from './planner-sdk.ts';
 import { AgentError } from '../provider.ts';
+import { getOrPersistBaselineSha, restoreWorktree } from './worktree-restore.ts';
+import { completeAgentInvocation, failAgentInvocation } from '../invocations.ts';
+import { createArtifact } from '../artifacts.ts';
+import { createAgentMcpServer } from '../tools/mcp-adapter.ts';
+import { PLAN_MODE_POLICY_RULES } from '../tools/policy.ts';
+import { publishAgentInvocationEvent } from '../../pubsub/index.ts';
 
 // ---- Helpers ----
 
@@ -347,5 +358,127 @@ describe('runPlannerWithAgentSDK', () => {
     const callArgs = mockSdkQuery.mock.calls[0] as unknown[];
     const opts = (callArgs[0] as { options: { model: string } }).options;
     expect(opts.model).toBe('claude-opus-4-20250514');
+  });
+
+  it('calls restoreWorktree on success path', async () => {
+    setupSuccessStream('### Plan\nDo the thing.');
+    await runPlannerWithAgentSDK(createFakeDb(), {
+      runId: 'r_1',
+      worktreePath: '/tmp/test',
+      apiKey: 'sk-test',
+    });
+    expect(restoreWorktree).toHaveBeenCalledWith('/tmp/test', 'a'.repeat(40));
+  });
+
+  it('calls restoreWorktree on error path (best-effort)', async () => {
+    mockSdkQuery.mockReturnValue(
+      (async function* () {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: '' }],
+            usage: { input_tokens: 10, output_tokens: 5 },
+            stop_reason: 'end_turn',
+          },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          usage: { input_tokens: 10, output_tokens: 5 },
+        };
+      })()
+    );
+
+    try {
+      await runPlannerWithAgentSDK(createFakeDb(), {
+        runId: 'r_1',
+        worktreePath: '/tmp/test',
+        apiKey: 'sk-test',
+      });
+    } catch {
+      // Expected — empty plan throws
+    }
+    expect(restoreWorktree).toHaveBeenCalledWith('/tmp/test', 'a'.repeat(40));
+  });
+
+  it('persists artifact before marking invocation complete', async () => {
+    setupSuccessStream('### Plan\nDo the thing.');
+    const callOrder: string[] = [];
+    (createArtifact as ReturnType<typeof vi.fn>).mockImplementation((...args: unknown[]) => {
+      callOrder.push('createArtifact');
+      return { artifactId: 'art_1' };
+    });
+    (completeAgentInvocation as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      callOrder.push('completeAgentInvocation');
+    });
+
+    await runPlannerWithAgentSDK(createFakeDb(), {
+      runId: 'r_1',
+      worktreePath: '/tmp/test',
+      apiKey: 'sk-test',
+    });
+
+    const artifactIdx = callOrder.indexOf('createArtifact');
+    const completeIdx = callOrder.indexOf('completeAgentInvocation');
+    expect(artifactIdx).toBeGreaterThanOrEqual(0);
+    expect(completeIdx).toBeGreaterThanOrEqual(0);
+    expect(artifactIdx).toBeLessThan(completeIdx);
+  });
+
+  it('wires PLAN_MODE_POLICY_RULES sentinel to createAgentMcpServer', async () => {
+    setupSuccessStream('### Plan\nDo the thing.');
+    await runPlannerWithAgentSDK(createFakeDb(), {
+      runId: 'r_1',
+      worktreePath: '/tmp/test',
+      apiKey: 'sk-test',
+    });
+    expect(createAgentMcpServer).toHaveBeenCalledTimes(1);
+    const policyArg = (createAgentMcpServer as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    // Verify the exact mock sentinel array (identity check) is passed through
+    expect(policyArg).toBe(PLAN_MODE_POLICY_RULES);
+  });
+
+  it('fails invocation when getOrPersistBaselineSha throws', async () => {
+    (getOrPersistBaselineSha as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new AgentError('Failed to capture baseline SHA: bad worktree', 'worktree_dirty');
+    });
+
+    await expect(
+      runPlannerWithAgentSDK(createFakeDb(), {
+        runId: 'r_1',
+        worktreePath: '/tmp/test',
+        apiKey: 'sk-test',
+      })
+    ).rejects.toThrow(AgentError);
+
+    expect(failAgentInvocation).toHaveBeenCalledWith(
+      expect.anything(), 'ai_test', expect.objectContaining({ errorCode: 'worktree_dirty' }),
+    );
+    // Verify failed event was emitted
+    const eventCalls = (publishAgentInvocationEvent as ReturnType<typeof vi.fn>).mock.calls;
+    const failedEvents = eventCalls.filter((c: unknown[]) => c[6] === 'failed');
+    expect(failedEvents.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('fails invocation when preflight restoreWorktree throws', async () => {
+    // First call is preflight (should throw), success-path call should not be reached
+    (restoreWorktree as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      throw new AgentError('Worktree restoration failed', 'worktree_dirty');
+    });
+
+    await expect(
+      runPlannerWithAgentSDK(createFakeDb(), {
+        runId: 'r_1',
+        worktreePath: '/tmp/test',
+        apiKey: 'sk-test',
+      })
+    ).rejects.toThrow(AgentError);
+
+    expect(failAgentInvocation).toHaveBeenCalledWith(
+      expect.anything(), 'ai_test', expect.objectContaining({ errorCode: 'worktree_dirty' }),
+    );
+    const eventCalls = (publishAgentInvocationEvent as ReturnType<typeof vi.fn>).mock.calls;
+    const failedEvents = eventCalls.filter((c: unknown[]) => c[6] === 'failed');
+    expect(failedEvents.length).toBeGreaterThanOrEqual(1);
   });
 });

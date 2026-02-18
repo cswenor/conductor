@@ -173,6 +173,28 @@ export const shellInjectionRule: PolicyRule = {
 };
 
 // =============================================================================
+// Plan-mode Rule
+// =============================================================================
+
+/**
+ * Blocks all file write/delete operations for plan-mode agents.
+ * Defense-in-depth: profiles should prevent registration, but this
+ * catches misconfiguration or future tool additions.
+ */
+export const planModeWriteBlockRule: PolicyRule = {
+  policyId: 'plan_mode_write_block',
+  description: 'Blocks file writes in plan-mode agents (planner/reviewer)',
+  evaluate: (toolName) => {
+    if (!WRITE_TOOLS.has(toolName)) return null;
+    return {
+      decision: 'block',
+      policyId: 'plan_mode_write_block',
+      reason: `File write operations are not permitted in plan mode (tool: ${toolName})`,
+    };
+  },
+};
+
+// =============================================================================
 // Default Rule Set + Evaluator
 // =============================================================================
 
@@ -181,6 +203,17 @@ export const DEFAULT_POLICY_RULES: PolicyRule[] = [
   dotGitProtectionRule,
   sensitiveFileWriteRule,
   shellInjectionRule,
+];
+
+/**
+ * Policy rules for plan-mode agents (planner, reviewer).
+ * planModeWriteBlockRule is last — security-specific rules (worktree_boundary,
+ * sensitive_file_write) fire first for forensic clarity. planModeWriteBlockRule
+ * is the catchall for normal in-worktree writes.
+ */
+export const PLAN_MODE_POLICY_RULES: PolicyRule[] = [
+  ...DEFAULT_POLICY_RULES,
+  planModeWriteBlockRule,
 ];
 
 /**

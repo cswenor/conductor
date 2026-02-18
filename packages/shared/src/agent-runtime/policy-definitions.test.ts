@@ -72,7 +72,7 @@ afterEach(() => {
 });
 
 describe('ensureBuiltInPolicyDefinitions', () => {
-  it('inserts all 4 built-in policy definitions', () => {
+  it('inserts all 5 built-in policy definitions', () => {
     ensureBuiltInPolicyDefinitions(db);
 
     const rows = db.prepare('SELECT * FROM policy_definitions ORDER BY policy_id').all() as Array<{
@@ -81,12 +81,13 @@ describe('ensureBuiltInPolicyDefinitions', () => {
       description: string;
     }>;
 
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
     const ids = rows.map((r) => r.policy_id);
     expect(ids).toContain('worktree_boundary');
     expect(ids).toContain('dotgit_protection');
     expect(ids).toContain('sensitive_file_write');
     expect(ids).toContain('shell_injection');
+    expect(ids).toContain('plan_mode_write_block');
   });
 
   it('is idempotent — second call does not fail or duplicate', () => {
@@ -94,7 +95,7 @@ describe('ensureBuiltInPolicyDefinitions', () => {
     ensureBuiltInPolicyDefinitions(db);
 
     const rows = db.prepare('SELECT * FROM policy_definitions').all();
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
   });
 
   it('allows createToolInvocation with policyId after seeding', () => {

@@ -15,6 +15,8 @@ import {
   getDatabase,
   createLogger,
   publishTransitionEvent,
+  clearRunBaselineFiles,
+  getWorktreeForRun,
 } from '@conductor/shared';
 
 const log = createLogger({ name: 'conductor:worker:blocked-retry' });
@@ -165,6 +167,13 @@ export async function handleBlockedRetry(
     priorStep = 'planner_create_plan';
     counterReset = () => {
       db.prepare('UPDATE runs SET plan_revisions = 0 WHERE run_id = ?').run(runId);
+      // Purge persisted baseline files to prevent stale baseline resurrection after counter reset
+      const wt = getWorktreeForRun(db, runId);
+      if (wt !== null) {
+        try { clearRunBaselineFiles(wt.path, runId); } catch (e) {
+          log.warn({ err: e, runId }, 'Failed to clear baseline files during plan-revision reset');
+        }
+      }
     };
     log.info({ runId }, 'Max plan revisions retry: resetting counter, re-running planner');
   } else if (reasonCode === 'max_review_rounds') {
@@ -172,6 +181,13 @@ export async function handleBlockedRetry(
     priorStep = 'implementer_apply_changes';
     counterReset = () => {
       db.prepare('UPDATE runs SET review_rounds = 0 WHERE run_id = ?').run(runId);
+      // Purge persisted baseline files to prevent stale baseline resurrection after counter reset
+      const wt = getWorktreeForRun(db, runId);
+      if (wt !== null) {
+        try { clearRunBaselineFiles(wt.path, runId); } catch (e) {
+          log.warn({ err: e, runId }, 'Failed to clear baseline files during review-rounds reset');
+        }
+      }
     };
     log.info({ runId }, 'Max review rounds retry: resetting counter, re-running implementer');
   } else if (reasonCode === 'rate_limit_exhausted') {
@@ -188,6 +204,12 @@ export async function handleBlockedRetry(
     priorStep = 'planner_create_plan';
     counterReset = () => {
       db.prepare('UPDATE runs SET plan_revisions = 0 WHERE run_id = ?').run(runId);
+      const wt = getWorktreeForRun(db, runId);
+      if (wt !== null) {
+        try { clearRunBaselineFiles(wt.path, runId); } catch (e) {
+          log.warn({ err: e, runId }, 'Failed to clear baseline files during legacy plan-revision reset');
+        }
+      }
     };
     log.warn({ runId }, 'Max plan revisions retry via legacy text match (missing reason_code)');
   } else if (run.blockedReason?.startsWith('Code rejected after') === true) {
@@ -195,6 +217,12 @@ export async function handleBlockedRetry(
     priorStep = 'implementer_apply_changes';
     counterReset = () => {
       db.prepare('UPDATE runs SET review_rounds = 0 WHERE run_id = ?').run(runId);
+      const wt = getWorktreeForRun(db, runId);
+      if (wt !== null) {
+        try { clearRunBaselineFiles(wt.path, runId); } catch (e) {
+          log.warn({ err: e, runId }, 'Failed to clear baseline files during legacy review-rounds reset');
+        }
+      }
     };
     log.warn({ runId }, 'Max review rounds retry via legacy text match (missing reason_code)');
   }
