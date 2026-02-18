@@ -237,6 +237,10 @@ describe('implementer-sdk profile validation', () => {
         },
       })
     ).rejects.toThrow(AgentError);
+
+    // No invocation should be created for step-constraint failures either
+    expect(createAgentInvocation).not.toHaveBeenCalled();
+    expect(markAgentRunning).not.toHaveBeenCalled();
   });
 
   it('does not create invocation on profile validation failure', async () => {
