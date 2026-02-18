@@ -113,9 +113,15 @@ if [ -z "$BRANCH_NAME" ]; then
   exit 1
 fi
 
+# Ensure we're in a git repo
+if ! git rev-parse --git-dir &>/dev/null; then
+  echo "Error: not in a git repository" >&2
+  exit 1
+fi
+
 # Get the repo root (main worktree)
-REPO_ROOT=$(git rev-parse --git-common-dir | xargs dirname)
-REPO_ROOT=$(realpath "$REPO_ROOT")
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+REPO_ROOT=$(realpath "$(dirname "$GIT_COMMON_DIR")")
 
 # Worktree location: sibling directory to main repo
 # Note: Can't use `realpath -m` because -m is GNU-only (not available on macOS)

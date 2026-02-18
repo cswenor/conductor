@@ -31,13 +31,13 @@ PM_PRIORITY_HIGH="5ea07c7d"
 PM_PRIORITY_NORMAL="2a42a8e5"
 
 # Area option IDs
-PM_AREA_FRONTEND=""
-PM_AREA_BACKEND=""
-PM_AREA_CONTRACTS=""
-PM_AREA_INFRA=""
-PM_AREA_DESIGN=""
-PM_AREA_DOCS=""
-PM_AREA_PM=""
+PM_AREA_FRONTEND="TODO: add Frontend option to Area field"
+PM_AREA_BACKEND="TODO: add Backend option to Area field"
+PM_AREA_CONTRACTS="TODO: add Contracts option to Area field"
+PM_AREA_INFRA="TODO: add Infra option to Area field"
+PM_AREA_DESIGN="TODO: add Design option to Area field"
+PM_AREA_DOCS="TODO: add Docs option to Area field"
+PM_AREA_PM="TODO: add PM option to Area field"
 
 # Issue Type option IDs
 PM_TYPE_BUG="57d21deb"
@@ -48,7 +48,7 @@ PM_TYPE_CHORE="ce3bef94"
 
 # Risk option IDs
 PM_RISK_LOW="614b5103"
-PM_RISK_MED="8d3abc19"
+PM_RISK_MEDIUM="8d3abc19"
 PM_RISK_HIGH="e07efa9c"
 
 # Estimate option IDs

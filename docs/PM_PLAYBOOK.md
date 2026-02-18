@@ -85,9 +85,8 @@ Labels are for **taxonomy and workflow flags only**. Workflow state, Priority, R
 | `area:backend`    | Backend services                                   |
 | `area:contracts`  | Smart contracts                                    |
 | `area:infra`      | Tooling, CI/CD, project management, dev experience |
-| `area:compliance` | Compliance and legal                               |
-| `area:growth`     | Growth and marketing                               |
-| `area:data`       | Data and analytics                                 |
+
+> **Note:** These are default areas. Configure your project's areas during `install.sh` setup (or enter `new` to create a project board with custom area options). Add more area labels as needed for your project.
 
 ### Spec Readiness Labels
 
@@ -113,8 +112,8 @@ Labels are for **taxonomy and workflow flags only**. Workflow state, Priority, R
 
 Workflow, Priority, Risk, and other data live in the GitHub Project, not labels.
 
-**Project Number:** 1
-**Project ID:** `PVT_kwHOAAnhG84BPhU0`
+**Project Number:** 2
+**Project ID:** `PVT_kwHOAAnhG84BPhvY`
 **Organization:** cswenor
 
 ### Workflow (Single Select) — AI-First Model
@@ -258,74 +257,77 @@ An issue can be `Ready` + `spec:missing` = "you can start, but clarify scope fir
 
 | Item               | Value                  |
 | ------------------ | ---------------------- |
-| **Project Number** | `2`                    |
-| **Project ID**     | `PVT_kwHOAAnhG84BPhU0` |
+| **Project Number** | `2`   |
+| **Project ID**     | `PVT_kwHOAAnhG84BPhvY` |
 | **Organization**   | `cswenor`         |
 
 ### Field IDs
 
 | Field          | Field ID                         |
 | -------------- | -------------------------------- |
-| **Workflow**   | `PVTSSF_lAHOAAnhG84BPhU0zg9598I` |
-| **Priority**   | `PVTSSF_lAHOAAnhG84BPhU0zg959-E` |
-| **Area**       | `PVTSSF_lAHOAAnhG84BPhU0zg959-I` |
-| **Issue Type** | `PVTSSF_lAHOAAnhG84BPhU0zg959-Y` |
-| **Risk**       | `PVTSSF_lAHOAAnhG84BPhU0zg959-4` |
-| **Estimate**   | `PVTSSF_lAHOAAnhG84BPhU0zg95-AM` |
+| **Workflow**   | `PVTSSF_lAHOAAnhG84BPhvYzg96Qy0` |
+| **Priority**   | `PVTSSF_lAHOAAnhG84BPhvYzg96Q0Q` |
+| **Area**       | `PVTSSF_lAHOAAnhG84BPhvYzg96Q0U` |
+| **Issue Type** | `PVTSSF_lAHOAAnhG84BPhvYzg96Q0Y` |
+| **Risk**       | `PVTSSF_lAHOAAnhG84BPhvYzg96Q1I` |
+| **Estimate**   | `PVTSSF_lAHOAAnhG84BPhvYzg96Q1M` |
 
 ### Workflow Option IDs
 
 | Option  | Option ID  |
 | ------- | ---------- |
-| Backlog | `f0ea54fa` |
-| Ready   | `61b7278c` |
-| Active  | `59245cf0` |
-| Review  | `36f9fb60` |
-| Rework  | `a852892c` |
-| Done    | `f5abf09b` |
+| Backlog | `74b600d5` |
+| Ready   | `962c258c` |
+| Active  | `5ced14d4` |
+| Review  | `a33df598` |
+| Rework  | `0ce2c21a` |
+| Done    | `4440bd88` |
 
 ### Priority Option IDs
 
 | Option   | Option ID  |
 | -------- | ---------- |
-| Critical | `7e5d65ca` |
-| High     | `80da3751` |
-| Normal   | `48ef9c20` |
+| Critical | `e2f43add` |
+| High     | `5ea07c7d` |
+| Normal   | `2a42a8e5` |
 
 ### Area Option IDs
 
 | Option     | Option ID  |
 | ---------- | ---------- |
-| Frontend   | `62d7c51d` |
-| Backend    | `0187f63d` |
-| Infra      | `4d1c0272` |
-| Docs       | `84ace731` |
+| Frontend   | `TODO: add Frontend option to Area field` |
+| Backend    | `TODO: add Backend option to Area field` |
+| Contracts  | `TODO: add Contracts option to Area field` |
+| Infra      | `TODO: add Infra option to Area field` |
+| Design     | `TODO: add Design option to Area field` |
+| Docs       | `TODO: add Docs option to Area field` |
+| PM         | `TODO: add PM option to Area field` |
 
 ### Issue Type Option IDs
 
 | Option  | Option ID  |
 | ------- | ---------- |
-| Bug     | `c936f7f1` |
-| Feature | `882f1f34` |
-| Spike   | `696fcc39` |
-| Epic    | `be954f37` |
-| Chore   | `376b15d2` |
+| Bug     | `57d21deb` |
+| Feature | `5a2162ad` |
+| Spike   | `e5f6ed28` |
+| Epic    | `f329a2d3` |
+| Chore   | `ce3bef94` |
 
 ### Risk Option IDs
 
 | Option | Option ID  |
 | ------ | ---------- |
-| Low    | `f0b417b8` |
-| Med    | `219c30ce` |
-| High   | `78b84f2a` |
+| Low    | `614b5103` |
+| Med    | `8d3abc19` |
+| High   | `e07efa9c` |
 
 ### Estimate Option IDs
 
 | Option | Option ID  |
 | ------ | ---------- |
-| S      | `6e1bd34e` |
-| M      | `24cc28be` |
-| L      | `c7eb2f52` |
+| S      | `a2fd8d62` |
+| M      | `502e48be` |
+| L      | `a6e5563a` |
 
 ---
 
@@ -812,18 +814,18 @@ gh project item-list 2 --owner cswenor --format json | jq -r '.items[] | select(
 
 ```bash
 # Set Workflow
-gh project item-edit --project-id PVT_kwHOAAnhG84BPhU0 --id <ITEM_ID> \
-  --field-id PVTSSF_lAHOAAnhG84BPhU0zg9598I \
+gh project item-edit --project-id PVT_kwHOAAnhG84BPhvY --id <ITEM_ID> \
+  --field-id PVTSSF_lAHOAAnhG84BPhvYzg96Qy0 \
   --single-select-option-id <workflow-option-id>
 
 # Set Priority
-gh project item-edit --project-id PVT_kwHOAAnhG84BPhU0 --id <ITEM_ID> \
-  --field-id PVTSSF_lAHOAAnhG84BPhU0zg959-E \
+gh project item-edit --project-id PVT_kwHOAAnhG84BPhvY --id <ITEM_ID> \
+  --field-id PVTSSF_lAHOAAnhG84BPhvYzg96Q0Q \
   --single-select-option-id <priority-option-id>
 
 # Set Area
-gh project item-edit --project-id PVT_kwHOAAnhG84BPhU0 --id <ITEM_ID> \
-  --field-id PVTSSF_lAHOAAnhG84BPhU0zg959-I \
+gh project item-edit --project-id PVT_kwHOAAnhG84BPhvY --id <ITEM_ID> \
+  --field-id PVTSSF_lAHOAAnhG84BPhvYzg96Q0U \
   --single-select-option-id <area-option-id>
 ```
 
@@ -861,14 +863,21 @@ gh project item-list 2 --owner cswenor --format json | jq '.items[] | select(.co
 
 ## Setup
 
-To configure GitHub with labels and project:
+The GitHub Project board and field IDs are configured during toolkit installation.
+
+To set up a new project or reconfigure an existing one, run:
 
 ```bash
-./tools/scripts/setup-github-pm.sh
+# Fresh install (enter 'new' for project number to create a board)
+cd /path/to/claude-pm-toolkit
+./install.sh /path/to/your/repo
+
+# Update existing installation (re-discovers field IDs)
+./install.sh --update /path/to/your/repo
 ```
 
-This will:
+The installer will:
 
-1. Create all labels
-2. Create the GitHub Project with fields
-3. Create default views
+1. Create the GitHub Project with all required fields (if 'new')
+2. Auto-discover field IDs via GraphQL
+3. Configure all scripts with the correct IDs

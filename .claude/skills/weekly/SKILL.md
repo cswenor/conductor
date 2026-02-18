@@ -204,9 +204,9 @@ Use previous weeks' data to populate Prior Week and calculate trends. If this is
 
 **Product Progress:**
 
-- [Feature described in user/business terms, e.g., "Wallet system launched — users can now connect external wallets and create game wallets"]
+- [Feature described in user/business terms, e.g., "User onboarding launched — new users can now sign up and complete profile setup"]
 - [Another user-facing milestone, if any]
-- [Include epic completion percentages, e.g., "Wallet system: 75% complete (6/8 milestones)"]
+- [Include epic completion percentages, e.g., "Auth system: 75% complete (6/8 milestones)"]
 
 **Platform Development:**
 
@@ -215,8 +215,8 @@ Use previous weeks' data to populate Prior Week and calculate trends. If this is
 
 **What Users Can Do Now:**
 
-- [Specific user capabilities enabled this week, e.g., "Users can now connect Kibisis wallets and view balances"]
-- [Frame in terms of "when can users play?" for game epics]
+- [Specific user capabilities enabled this week, e.g., "Users can now reset their password via email"]
+- [Frame in terms of stakeholder questions from `docs/PM_PROJECT_CONFIG.md` § "Progress Questions"]
 
 **What's Next:**
 
@@ -227,15 +227,15 @@ Use previous weeks' data to populate Prior Week and calculate trends. If this is
 
 - Write for someone who does NOT read code — no PRs, CI, turbo.json, ESLint, linting, etc.
 - Describe features by what they enable for users, not by implementation details
-- Translate epic names: "Wallet Primitives" → "Core wallet infrastructure for connecting and managing user wallets"
+- Translate epic names into user-facing language (see `docs/PM_PROJECT_CONFIG.md` § "Product Framing")
 - Include infrastructure only when investor-relevant (security, scalability, team growth) — omit pure DX items
 - Keep it to 5-8 bullet points maximum across all sub-sections
 - Must be copy-pasteable as a standalone update — do not reference other report sections
-- Factual and honest, not promotional — "Wallet system launched" not "Amazing wallet system revolutionizes gaming"
+- Factual and honest, not promotional — "Auth system launched" not "Amazing auth system revolutionizes onboarding"
 - Omit items that are purely internal: linting rules, CI checks, code formatting, AI tooling improvements
 - If nothing user-facing shipped, say so honestly: "This week focused on platform foundations — no new user-facing features"
 - Include epic completion percentages from `epicProgress` JSON to give concrete progress metrics
-- For game-related epics, always address "when can users play?" even if the answer is "not yet"
+- For user-facing epics, always address the stakeholder progress questions from `docs/PM_PROJECT_CONFIG.md`
 
 **3. Roadmap Progress** (between Stakeholder Update and What Shipped)
 

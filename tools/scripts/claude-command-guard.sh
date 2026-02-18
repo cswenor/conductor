@@ -3,6 +3,9 @@
 # Inspects commands before execution and denies forbidden patterns
 # with helpful redirect messages.
 #
+# Patterns are loaded from tools/config/command-guard.conf.
+# See that file for format documentation and customization.
+#
 # Fail-open: any parse error or unexpected input → allow (exit 0, no output).
 # Only deny on confirmed pattern matches.
 
@@ -14,31 +17,44 @@ deny() {
     exit 0
 }
 
+# ---------- locate config ----------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONF_FILE="$SCRIPT_DIR/../config/command-guard.conf"
+
+# If config doesn't exist, allow everything (fail-open)
+[[ ! -f "$CONF_FILE" ]] && exit 0
+
+# ---------- load patterns ----------
+
+# Read non-comment, non-empty lines into parallel arrays
+PATTERNS=()
+MESSAGES=()
+while IFS= read -r line; do
+    # Skip comments and empty lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// /}" ]] && continue
+
+    # Split on first " | " separator
+    pattern="${line%% | *}"
+    message="${line#* | }"
+
+    # Skip malformed lines (no separator found)
+    [[ "$pattern" == "$line" ]] && continue
+    [[ -z "$pattern" ]] && continue
+
+    PATTERNS+=("$pattern")
+    MESSAGES+=("$message")
+done < "$CONF_FILE"
+
+# No patterns loaded — allow everything
+[[ ${#PATTERNS[@]} -eq 0 ]] && exit 0
+
 # ---------- read & extract ----------
 
 input=$(cat) || exit 0
 command=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
 [[ -z "$command" ]] && exit 0
-
-# ---------- blocked patterns (POSIX ERE) ----------
-
-DOCKER_RE='^docker[[:space:]]+(compose|build|run)'
-DOCKER_COMPOSE_RE='^docker-compose'
-DOCKER_MSG='Use `make` targets instead. Run `make help` for available targets.'
-
-PKG_ADD_RE='^pnpm[[:space:]]+add([[:space:]]|$)'
-NPM_INSTALL_RE='^npm[[:space:]]+(install|i)[[:space:]]+.'
-YARN_ADD_RE='^yarn[[:space:]]+add([[:space:]]|$)'
-PKG_MSG='Do not add dependencies via CLI. Edit package.json, then run `make install`. See CLAUDE.md.'
-
-BARE_INSTALL_RE='^(pnpm|npm|yarn)[[:space:]]+(install|i|ci)([[:space:]]|$)'
-BARE_INSTALL_MSG='Do not run install commands on the host. Use `make install` which runs inside the dev container with correct platform binaries.'
-
-CD_INFRA_RE='^cd[[:space:]]+(\.\/)?infra([/[:space:]]|$)'
-CD_INFRA_MSG='Do not cd into infra/. Use `make` targets which handle paths correctly.'
-
-PIP_RE='^pip3?[[:space:]]+install([[:space:]]|$)'
-PIP_MSG='Do not manually install Python packages. Use `make` targets or the dev container.'
 
 # ---------- normalize & check ----------
 
@@ -116,7 +132,7 @@ while IFS= read -r subcmd; do
 
         # 6. Normalize package manager flags before subcommand
         #    Strips flags (and their values for value-taking flags) so the
-        #    existing BARE_INSTALL_RE sees the real subcommand.
+        #    install-blocking patterns see the real subcommand.
         if [[ "$subcmd" =~ ^(pnpm|npm|yarn)[[:space:]]+ ]]; then
             _pm_prefix="${BASH_REMATCH[0]}"
             _pm_rest="${subcmd:${#_pm_prefix}}"
@@ -168,31 +184,12 @@ while IFS= read -r subcmd; do
 
     [[ -z "$subcmd" ]] && continue
 
-    # Check against blocked patterns
-    if echo "$subcmd" | grep -qE "$DOCKER_RE"; then
-        deny "$DOCKER_MSG"
-    fi
-    if echo "$subcmd" | grep -qE "$DOCKER_COMPOSE_RE"; then
-        deny "$DOCKER_MSG"
-    fi
-    if echo "$subcmd" | grep -qE "$PKG_ADD_RE"; then
-        deny "$PKG_MSG"
-    fi
-    if echo "$subcmd" | grep -qE "$NPM_INSTALL_RE"; then
-        deny "$PKG_MSG"
-    fi
-    if echo "$subcmd" | grep -qE "$YARN_ADD_RE"; then
-        deny "$PKG_MSG"
-    fi
-    if echo "$subcmd" | grep -qE "$BARE_INSTALL_RE"; then
-        deny "$BARE_INSTALL_MSG"
-    fi
-    if echo "$subcmd" | grep -qE "$CD_INFRA_RE"; then
-        deny "$CD_INFRA_MSG"
-    fi
-    if echo "$subcmd" | grep -qE "$PIP_RE"; then
-        deny "$PIP_MSG"
-    fi
+    # Check against all loaded patterns
+    for idx in "${!PATTERNS[@]}"; do
+        if echo "$subcmd" | grep -qE "${PATTERNS[$idx]}"; then
+            deny "${MESSAGES[$idx]}"
+        fi
+    done
 
 done <<< "$subcmds"
 

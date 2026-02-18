@@ -2,7 +2,7 @@
 name: issue
 description: Create new issues (PM interview) or work on existing issues. Use without arguments to create, with issue number to execute.
 argument-hint: '[issue-number]'
-allowed-tools: Read, Glob, Bash(./tools/scripts/project-add.sh *), Bash(./tools/scripts/project-move.sh *), Bash(./tools/scripts/project-status.sh *), Bash(./tools/scripts/worktree-detect.sh *), Bash(./tools/scripts/worktree-setup.sh *), Bash(./tools/scripts/tmux-session.sh *), Bash(./tools/scripts/find-plan.sh *), Bash(./tools/scripts/codex-mcp-overrides.sh), Bash(git status *), Bash(git checkout *), Bash(git pull *), Bash(git fetch *), Bash(git rebase *), Bash(git worktree *), Bash(gh issue view * --json comments *), Bash(gh repo view *), Bash(gh pr checkout *), Bash(pnpm install), Bash(codex --version *), Bash(codex exec -s read-only *), Bash(codex exec -s workspace-write *), Bash(codex exec -c *), mcp__github__get_issue, mcp__github__create_issue, mcp__github__update_issue, mcp__github__add_issue_comment, mcp__github__search_issues, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__get_pull_request_reviews, mcp__context7__resolve-library-id, mcp__context7__query-docs, AskUserQuestion, EnterPlanMode, TaskOutput
+allowed-tools: Read, Glob, Bash(./tools/scripts/project-add.sh *), Bash(./tools/scripts/project-move.sh *), Bash(./tools/scripts/project-status.sh *), Bash(./tools/scripts/worktree-detect.sh *), Bash(./tools/scripts/worktree-setup.sh *), Bash(./tools/scripts/tmux-session.sh *), Bash(./tools/scripts/find-plan.sh *), Bash(./tools/scripts/codex-mcp-overrides.sh), Bash(git status *), Bash(git checkout *), Bash(git pull *), Bash(git fetch *), Bash(git rebase *), Bash(git worktree *), Bash(gh issue view * --json comments *), Bash(gh repo view *), Bash(gh pr checkout *), Bash(make setup), Bash(codex --version *), Bash(codex exec -s read-only *), Bash(codex exec -s workspace-write *), Bash(codex exec -c *), mcp__github__get_issue, mcp__github__create_issue, mcp__github__update_issue, mcp__github__add_issue_comment, mcp__github__search_issues, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__get_pull_request_reviews, mcp__context7__resolve-library-id, mcp__context7__query-docs, AskUserQuestion, EnterPlanMode, TaskOutput
 ---
 
 # /issue - Issue Creation & Execution
@@ -29,8 +29,8 @@ Create new issues via PM interview OR work on existing issues.
 repo:
   owner: cswenor
   repo: conductor
-  project_id: PVT_kwHOAAnhG84BPhU0
-  project_number: 1
+  project_id: PVT_kwHOAAnhG84BPhvY
+  project_number: 2
 
 tools:
   prefer: MCP (mcp__github__*)
@@ -482,7 +482,7 @@ Then display:
 ```markdown
 ## Issue #<num> started in background
 
-Window: `cond-<num>` | Branch: `<type>/<short-desc>`
+Window: `cnd-<num>` | Branch: `<type>/<short-desc>`
 
 Watch your tmux status bar for the alert indicator when it needs input.
 Switch with: `Ctrl-b + <window-number>`
@@ -509,7 +509,7 @@ Then run `/issue <num>` again to continue setup.
 
 For dev with port isolation:
 eval "$(./tools/scripts/worktree-setup.sh <num> --print-env)"
-pnpm install && pnpm dev
+pnpm install && make dev
 ```
 
 **Do NOT continue working in main repo.** The user (or Claude) must switch to the worktree.
@@ -532,7 +532,7 @@ Then display:
 ```markdown
 ## Issue #<num> ready in tmux
 
-Window: `cond-<num>` | Worktree: `<worktree-path>`
+Window: `cnd-<num>` | Worktree: `<worktree-path>`
 
 Watch your tmux status bar for the alert indicator when it needs input.
 Switch with: `Ctrl-b + <window-number>`
@@ -571,7 +571,7 @@ Then display:
 ```markdown
 ## Issue #<num> started in background
 
-Window: `cond-<num>` | Branch: `<type>/<short-desc>`
+Window: `cnd-<num>` | Branch: `<type>/<short-desc>`
 
 Watch your tmux status bar for the alert indicator when it needs input.
 Switch with: `Ctrl-b + <window-number>`
@@ -617,31 +617,17 @@ Then run `/issue <num>` again to create a fresh worktree.
 
 #### Load Based on Area Labels
 
-| Label            | Docs to Load                                                                         |
-| ---------------- | ------------------------------------------------------------------------------------ |
-| `area:frontend`  | `docs/development/LOCAL_DEV.md`, `docs/architecture/OVERVIEW.md`                     |
-| `area:backend`   | `docs/architecture/DATABASE.md`, `docs/architecture/OVERVIEW.md`                     |
-| `area:contracts` | `docs/contracts/GAME_CONTRACT_INTERFACE.md`, `packages/contracts/algorand/README.md` |
-| `area:infra`     | `docs/ENV_WORKFLOW.md`, `docs/SECRETS.md`, `docs/development/SETUP.md`               |
+Read `docs/PM_PROJECT_CONFIG.md` § "Area Documentation" for the mapping of area labels to documentation files. For each area label on the issue, load the corresponding docs listed in that table.
 
 > **Note:** Not all area labels may exist in your project. Skip any that don't apply.
 
 #### Load Based on Keywords
 
-Scan issue body AND comments for keywords (see Appendix G).
+Scan issue body AND comments for keywords listed in `docs/PM_PROJECT_CONFIG.md` § "Keyword Documentation" (see also Appendix G). Load the corresponding docs for any matching keywords.
 
 #### Load External Library Docs (context7)
 
-Scan for library references and query context7:
-
-| Keywords                 | Library to Query |
-| ------------------------ | ---------------- |
-| sveltekit, svelte, $app/ | sveltekit        |
-| algosdk, algorand sdk    | algosdk          |
-| supabase, supabase-js    | supabase         |
-| tailwind, tailwindcss    | tailwindcss      |
-| vitest                   | vitest           |
-| playwright               | playwright       |
+Scan for library references listed in `docs/PM_PROJECT_CONFIG.md` § "Library Documentation (context7)" and query context7:
 
 ```
 mcp__context7__resolve-library-id { "libraryName": "<library>" }
@@ -706,8 +692,8 @@ For each candidate, assess overlap and MUST cite concrete evidence:
 
 **Example output:**
 
-> **#187: Fix wallet connection timeout**
-> Related - mentions Kibisis SDK, has AC "handle timeout errors" (overlaps your timeout handling goal)
+> **#187: Fix API connection timeout**
+> Related - mentions retry logic, has AC "handle timeout errors" (overlaps your timeout handling goal)
 
 #### Step 4: Recommend
 
@@ -881,7 +867,7 @@ During START or CONTINUE mode, if you discover:
 
 ### Why This Matters
 
-**The PR #266 lesson:** A developer working on Demo Wallet (#60) discovered algod needed upgrading. They bundled both into one PR. Result:
+**The scope mixing lesson:** A developer working on a feature discovered an infrastructure dependency needed upgrading. They bundled both into one PR. Result:
 
 - 3 reviews requesting changes due to scope mixing
 - Can't merge infra fix without also merging incomplete feature
@@ -1263,7 +1249,7 @@ options:
   - label: "Continue — fix and re-submit (Recommended)"
     description: "Claude addresses feedback and re-submits for review"
   - label: "Override — proceed to tests"
-    description: "Skip Codex findings and proceed to pnpm validate"
+    description: "Skip Codex findings and proceed to make test"
   - label: "Show full Codex output"
     description: "Display the complete Codex review output"
 ```
@@ -1339,7 +1325,7 @@ Enforced ordered sequence from completed implementation to Review transition. Pr
 
 **After ExitPlanMode (START/CONTINUE):** The skill has completed. Claude Code resumes normal operation with its standard tool permissions (Bash, Edit, Write, etc.). The skill's `allowed-tools` frontmatter only restricts tools during skill execution — it does not apply after the skill ends. Claude Code follows this sequence as behavioral guidance.
 
-**During REWORK mode:** The skill presents feedback and instructs Claude Code to follow this sequence. Claude Code executes each step with its normal capabilities. This is the same pattern used today — REWORK already instructs `pnpm validate` which is not in the skill's `allowed-tools` but is executed by Claude Code.
+**During REWORK mode:** The skill presents feedback and instructs Claude Code to follow this sequence. Claude Code executes each step with its normal capabilities. This is the same pattern used today — REWORK already instructs `make test` which is not in the skill's `allowed-tools` but is executed by Claude Code.
 
 ### Sequence (MANDATORY — execute in order, do not skip steps)
 
@@ -1368,7 +1354,7 @@ Display: "Codex not available — skipping implementation review."
 
 #### Step 3: Run Tests
 
-`pnpm validate`
+`make test`
 
 Fix any failures — do NOT bypass. If fixes require code changes, commit the fixes and return to Step 2 (Codex re-review).
 
@@ -1519,9 +1505,9 @@ As a {user_type}, I want {goal} so that {benefit}.
 
 | User mentions                         | Area Label       |
 | ------------------------------------- | ---------------- |
-| UI, button, page, component, Svelte   | `area:frontend`  |
-| API, endpoint, database, Supabase     | `area:backend`   |
-| contract, on-chain, Algorand, Voi     | `area:contracts` |
+| UI, button, page, component, CSS      | `area:frontend`  |
+| API, endpoint, database, query        | `area:backend`   |
+| contract, on-chain, blockchain, smart | `area:contracts` |
 | CI, deploy, script, tooling, workflow | `area:infra`     |
 
 > **Note:** Not all area labels may exist in your project. Only create the ones relevant to your work.
@@ -1565,8 +1551,8 @@ As a {user_type}, I want {goal} so that {benefit}.
 - [ ] Loads external library docs via context7
 - [ ] "Comment if Approach Differs" step runs for START/CONTINUE
 - [ ] Briefing packet displays all required sections
-- [ ] START mode: move to Active, run pnpm install in background, enter plan mode with full detail
-- [ ] CONTINUE mode: git sync, run pnpm install in background, enter plan mode with full detail
+- [ ] START mode: move to Active, run make setup in background, enter plan mode with full detail
+- [ ] CONTINUE mode: git sync, run make setup in background, enter plan mode with full detail
 - [ ] REVIEW mode: offers /pm-review or make changes
 - [ ] APPROVED mode: shows merge instructions
 - [ ] REWORK mode: moves to Active, syncs git, displays feedback and guardrails
@@ -1584,7 +1570,7 @@ As a {user_type}, I want {goal} so that {benefit}.
 
 ### Worktree Support
 
-- [ ] `/issue <num>` in START mode from main repo creates worktree at `../hov-<num>/`
+- [ ] `/issue <num>` in START mode from main repo creates worktree at `../cnd-<num>/`
 - [ ] Worktree setup prints shell exports for port offsets (via `--print-env`)
 - [ ] If worktree already exists + tmux, spawns/focuses tmux window (not recreated)
 - [ ] If worktree already exists + no tmux, user is directed there (not recreated)
@@ -1592,29 +1578,29 @@ As a {user_type}, I want {goal} so that {benefit}.
 - [ ] If in wrong worktree + tmux, spawns worktree + window in background
 - [ ] If in wrong worktree + no tmux, user is directed to correct location
 - [ ] Broken worktree (stale metadata) is detected and fix offered
-- [ ] Port isolation allows `pnpm dev` in multiple worktrees simultaneously
+- [ ] Port isolation allows `make dev` in multiple worktrees simultaneously
 - [ ] CONTINUE mode detects worktree and proceeds if in correct location
 
 ### Background Setup
 
-- [ ] /issue <num> in START mode runs pnpm install in background before plan mode
-- [ ] /issue <num> in CONTINUE mode runs pnpm install in background before plan mode
+- [ ] /issue <num> in START mode runs make setup in background before plan mode
+- [ ] /issue <num> in CONTINUE mode runs make setup in background before plan mode
 - [ ] Bash tool called with run_in_background: true (returns task_id within 2 seconds)
 - [ ] TaskOutput called with block: false after ExitPlanMode to check result
 - [ ] Completed setup: user told "Environment ready"
-- [ ] Failed setup: user shown error output and told to run pnpm install manually
+- [ ] Failed setup: user shown error output and told to run make setup manually
 - [ ] Still-running setup: user informed, not blocked
 - [ ] Background setup only runs in correct worktree (not during worktree creation handoff)
 
 ### Portfolio Manager (tmux)
 
-- [ ] `tmux-session.sh init` creates session `cond` with `main` window
+- [ ] `tmux-session.sh init` creates session `cnd` with `main` window
 - [ ] `tmux-session.sh start <num> <branch>` creates worktree + window + state
 - [ ] `tmux-session.sh list` shows all tracked issues with status
 - [ ] `tmux-session.sh focus <num>` switches to correct window
 - [ ] `tmux-session.sh stop <num>` closes window and updates state
-- [ ] Hooks fire and update `~/.cond/portfolio/<num>/status`
-- [ ] `portfolio-notify.sh` is a no-op when `COND_ISSUE_NUM` not set
+- [ ] Hooks fire and update `~/.cnd/portfolio/<num>/status`
+- [ ] `portfolio-notify.sh` is a no-op when `CND_ISSUE_NUM` not set
 - [ ] tmux bell triggers on `needs-input` events — window shows alert indicator in status bar
 - [ ] `/issue <num>` in START mode + tmux spawns background window instead of stopping
 - [ ] `/issue <num>` in START mode without tmux uses existing fallback behavior
@@ -1711,15 +1697,9 @@ As a {user_type}, I want {goal} so that {benefit}.
 
 ## Appendix G: Keyword-Based Doc Loading
 
-| Keywords                          | Docs to Load                              |
-| --------------------------------- | ----------------------------------------- |
-| env, environment, secrets, .env   | `docs/ENV_WORKFLOW.md`, `docs/SECRETS.md` |
-| database, supabase, postgres, sql | `docs/architecture/DATABASE.md`           |
-| game, unity, bridge, postmessage  | `docs/architecture/GAME_INTEGRATION.md`   |
-| wallet, account, auth, magic      | `docs/ACCOUNT_AND_WALLET_UX.md`           |
-| chain, algorand, voi, multi-chain | `docs/architecture/MULTI_CHAIN.md`        |
-| test, vitest, playwright          | `docs/development/TESTING.md`             |
-| deploy, production, release       | `docs/runbooks/DEPLOY.md`                 |
+**Read `docs/PM_PROJECT_CONFIG.md` § "Keyword Documentation" for the full mapping.**
+
+The config file maps keywords found in issue bodies/comments to documentation files that Claude should load for context. When scanning an issue, match against all keyword rows and load the corresponding docs.
 
 ---
 
@@ -1786,7 +1766,7 @@ As a {user_type}, I want {goal} so that {benefit}.
 3. **Post-implementation checklist (MANDATORY — in order, do not skip):**
    a. Commit changes with `<type>(<scope>): <description>`
    b. Codex Implementation Review — address all BLOCKING and SUGGESTION findings, commit fixes
-   c. Run `pnpm validate` — fix failures, return to (b) if code changed
+   c. Run `make test` — fix failures, return to (b) if code changed
    d. Create PR (or push to existing) with `Fixes #<num>`
    e. Run `/pm-review` self-check (ANALYSIS_ONLY action) — address findings, return to (b) if code changed
    f. Move to Review: `./tools/scripts/project-move.sh <num> Review`
@@ -1838,11 +1818,11 @@ If you're seeing this, you're in the correct worktree (exit 0).
 
 1.5. **Background environment setup** (before plan mode):
 
-Kick off pnpm install in the background so the environment bootstraps while you plan.
+Kick off make setup in the background so the environment bootstraps while you plan.
 
 Call the Bash tool with these exact parameters:
 
-- command: "pnpm install"
+- command: "make setup"
 - run_in_background: true
 - description: "Background environment setup for issue #<num>"
 
@@ -1850,10 +1830,10 @@ The Bash tool returns a result that includes a task_id. Store this task_id for
 checking after plan mode exits.
 
 Behavior: The command starts in a separate process and returns control to you
-immediately (within seconds). You do not wait for pnpm install to finish.
+immediately (within seconds). You do not wait for make setup to finish.
 
 **If the Bash call fails or does not return a task_id:** Warn the user
-("Background setup failed to launch, you may need to run `pnpm install` manually")
+("Background setup failed to launch, you may need to run `make setup` manually")
 and set task_id to null. Continue to step 2 (EnterPlanMode) regardless — setup
 failure must never block planning.
 
@@ -1930,10 +1910,10 @@ Include this in the plan output so the user sees and acknowledges scope boundari
 
 #### After ExitPlanMode (START)
 
-Before beginning implementation, check the background pnpm install result.
+Before beginning implementation, check the background make setup result.
 
 **If task_id is null** (step 1.5 failed to launch): Skip the TaskOutput call.
-Report "Background setup was not launched. Run `pnpm install` manually if needed."
+Report "Background setup was not launched. Run `make setup` manually if needed."
 Proceed to implementation.
 
 **If task_id exists:** Call the TaskOutput tool with these exact parameters:
@@ -1946,12 +1926,12 @@ Interpret the result and always report to the user:
 
 - Completed with exit code 0: Report "Environment ready." Proceed to implementation.
 - Completed with non-zero exit code: Report "Background setup failed." Show the
-  first 20 lines of output. Suggest the user run pnpm install manually. Do NOT block
+  first 20 lines of output. Suggest the user run make setup manually. Do NOT block
   implementation.
 - Still running: Report "Setup is still running in the background. You can start
   working. Check back with TaskOutput if needed before running tests."
 
-**Post-Implementation:** After implementation is complete, follow **Sub-Playbook: Post-Implementation Sequence** (Steps 1-6). Do NOT skip directly to `pnpm validate` or `project-move.sh Review`.
+**Post-Implementation:** After implementation is complete, follow **Sub-Playbook: Post-Implementation Sequence** (Steps 1-6). Do NOT skip directly to `make test` or `project-move.sh Review`.
 
 ### CONTINUE Mode
 
@@ -2004,7 +1984,7 @@ options:
 
 Same as START mode step 1.5. Call the Bash tool with:
 
-- command: "pnpm install"
+- command: "make setup"
 - run_in_background: true
 - description: "Background environment setup for issue #<num>"
 
@@ -2066,7 +2046,7 @@ report that setup was not launched. If task_id exists, call TaskOutput with
 block: false using the task_id from step 3.5. Always report the result to the
 user: ready, failed (with output), or still running.
 
-**Post-Implementation:** After implementation is complete, follow **Sub-Playbook: Post-Implementation Sequence** (Steps 1-6). Do NOT skip directly to `pnpm validate` or `project-move.sh Review`.
+**Post-Implementation:** After implementation is complete, follow **Sub-Playbook: Post-Implementation Sequence** (Steps 1-6). Do NOT skip directly to `make test` or `project-move.sh Review`.
 
 ### REVIEW Mode
 
@@ -2254,7 +2234,7 @@ Execute: `./tools/scripts/project-move.sh <num> Done`
 - `gh pr create` - Create PR
 - `cd <worktree-path> && claude` - Switch to worktree
 - `eval "$(./tools/scripts/worktree-setup.sh <num> --print-env)"` - Apply port isolation
-- `pnpm install && pnpm dev` - Initialize and start worktree dev server
+- `pnpm install && make dev` - Initialize and start worktree dev server
 
 **Execution scope note:** The `allowed-tools` frontmatter restricts tools during skill execution (mode detection, briefing, plan mode entry). After ExitPlanMode, the skill has ended and Claude Code resumes normal operation with standard tool permissions. The Post-Implementation Sequence runs in this normal context.
 
@@ -2339,25 +2319,25 @@ This skill exists because Claude tends to:
 **The Bash tool resets working directory after each command.** When working in a worktree:
 
 1. **Use absolute paths** for all file operations:
-   - Read: `/Users/.../cond-306/path/to/file.ts` (not `path/to/file.ts`)
+   - Read: `/Users/.../cnd-306/path/to/file.ts` (not `path/to/file.ts`)
    - Edit: Use full absolute path
    - Bash: `cd /path/to/worktree && command` or use absolute paths in commands
 
 2. **Never assume you're in the worktree** - verify with `pwd` if uncertain
 
-3. **Track which worktree you're in** - the path tells you the issue number (e.g., `cond-306` = issue #306)
+3. **Track which worktree you're in** - the path tells you the issue number (e.g., `cnd-306` = issue #306)
 
 4. **Don't mix worktrees** - if you need to work on a different issue, that issue has its own worktree
 
-### The Scope Discipline Lesson (PR #266)
+### The Scope Discipline Lesson
 
-A developer worked on Issue #60 (Demo Wallet). During implementation, they discovered algod needed upgrading to support `allowUnnamedResources`. Instead of:
+A developer worked on a feature issue. During implementation, they discovered an infrastructure dependency needed upgrading. Instead of:
 
-1. Creating Issue #283 for the algod upgrade
+1. Creating a separate issue for the infrastructure upgrade
 2. Establishing a blocker relationship
 3. Implementing the upgrade in a separate PR first
 
-They bundled both into PR #266. Result:
+They bundled both into one PR. Result:
 
 - **3 reviews requesting changes** due to scope mixing
 - **Can't merge infra** without also merging incomplete feature
@@ -2384,7 +2364,7 @@ Git worktrees enable parallel development by creating separate working directori
 - **Parallel work**: Run multiple Claude Code sessions, each on a different issue
 - **Clean state**: Each worktree has fresh `node_modules/` and build artifacts
 - **No context switching**: Don't lose uncommitted work when switching issues
-- **Isolated dev stacks**: Run `pnpm dev` in multiple worktrees simultaneously
+- **Isolated dev stacks**: Run `make dev` in multiple worktrees simultaneously
 
 ### Worktree Location
 
@@ -2393,41 +2373,32 @@ Worktrees are created as sibling directories to the main repo:
 ```
 ~/Development/
 ├── conductor/    # Main repo
-├── cond-294/                  # Worktree for issue #294
-├── cond-295/                  # Worktree for issue #295
-└── cond-301/                  # Worktree for issue #301
+├── cnd-294/                  # Worktree for issue #294
+├── cnd-295/                  # Worktree for issue #295
+└── cnd-301/                  # Worktree for issue #301
 ```
 
 ### Port Isolation
 
 Each worktree gets a unique port offset based on `(issue_number % 79) * 100 + 3200`.
 
-| Service                  | Base Port | Issue #291 | Issue #294 |
-| ------------------------ | --------- | ---------- | ---------- |
-| Vite dev server          | 5173      | 13773      | 14073      |
-| Kong HTTP (Supabase API) | 54321     | 62921      | 63221      |
-| Kong HTTPS               | 54443     | 63043      | 63343      |
-| Supabase Studio          | 54323     | 62923      | 63223      |
-| Postgres                 | 5432      | 14032      | 14332      |
-| Pooler                   | 6543      | 15143      | 15443      |
-| Algod                    | 4001      | 12601      | 12901      |
-| KMD                      | 4002      | 12602      | 12902      |
+Port services are configured in `tools/scripts/worktree-ports.conf`. Each service defined there gets `BASE_PORT + offset` as its assigned port. URL-based exports are configured in `tools/scripts/worktree-urls.conf`.
 
 Port offsets are set via shell exports (no env files):
 
 ```bash
-# In the worktree, before running pnpm dev:
+# In the worktree, before running make dev:
 eval "$(./tools/scripts/worktree-setup.sh 294 --print-env)"
-pnpm dev
+make dev
 ```
 
-This prints and exports:
+This reads the port config and prints exports like:
 
 ```bash
-export COMPOSE_PROJECT_NAME=cond-294
-export VITE_PORT=14073
-export KONG_HTTP_PORT=63221
-# ... etc
+export COMPOSE_PROJECT_NAME=cnd-294
+export DEV_PORT=6200
+export DB_PORT=8632
+# ... (based on your worktree-ports.conf)
 ```
 
 ### Worktree Lifecycle
@@ -2438,9 +2409,9 @@ export KONG_HTTP_PORT=63221
 
 ```bash
 # From main repo
-git worktree remove ../cond-294
+git worktree remove ../cnd-294
 # Or delete the directory and prune
-rm -rf ../cond-294
+rm -rf ../cnd-294
 git worktree prune
 ```
 
@@ -2492,14 +2463,14 @@ The portfolio manager enables running multiple Claude Code sessions in parallel,
 ```
 tmux-session.sh (orchestrator)
 ├── Creates/manages tmux windows per issue
-├── Tracks state in ~/.cond/portfolio/<num>/
+├── Tracks state in ~/.cnd/portfolio/<num>/
 └── Provides list/focus/stop commands
 
 portfolio-notify.sh (hook handler)
 ├── Called by Claude Code hooks automatically
 ├── Updates issue status files
 ├── Sends tmux bell + macOS notification on attention events
-└── No-op when COND_ISSUE_NUM not set (safe for non-portfolio sessions)
+└── No-op when CND_ISSUE_NUM not set (safe for non-portfolio sessions)
 
 .claude/settings.json hooks
 ├── PreToolUse:AskUserQuestion → needs-input
@@ -2598,7 +2569,7 @@ The worktree doesn't exist yet. Provide a branch: `tmux-session.sh start 345 fea
 Install with: `brew install tmux`
 
 **Hooks fire in main session (not just portfolio)**
-This is by design. `portfolio-notify.sh` is a no-op when `COND_ISSUE_NUM` is not set, so it silently exits in non-portfolio sessions.
+This is by design. `portfolio-notify.sh` is a no-op when `CND_ISSUE_NUM` is not set, so it silently exits in non-portfolio sessions.
 
 ---
 
@@ -2714,8 +2685,8 @@ Recommended priority: Normal
 
 | Worktree              | Resolved plan directory             |
 | --------------------- | ----------------------------------- |
-| `/Users/dev/cond-305/` | `/Users/dev/cond-305/.claude/plans/` |
-| `/Users/dev/cond-270/` | `/Users/dev/cond-270/.claude/plans/` |
+| `/Users/dev/cnd-305/` | `/Users/dev/cnd-305/.claude/plans/` |
+| `/Users/dev/cnd-270/` | `/Users/dev/cnd-270/.claude/plans/` |
 | Main repo             | `<repo-root>/.claude/plans/`        |
 
 Plans in one worktree cannot affect plans in another — they are in entirely separate directories.
@@ -2938,21 +2909,24 @@ The script checks for `codex` availability, then emits `-c mcp_servers.<name>=<c
 
 #### Injected Servers
 
-| Server       | Transport | Auth                                                 | Skip Condition         |
-| ------------ | --------- | ---------------------------------------------------- | ---------------------- |
-| context7     | HTTP      | None                                                 | Never skipped          |
-| svelte       | stdio     | None                                                 | Never skipped          |
-| shadcn       | stdio     | None                                                 | Never skipped          |
-| supabase-dev | stdio     | `SUPABASE_ACCESS_TOKEN` + `SUPABASE_DEV_PROJECT_REF` | Either env var missing |
+The servers injected by `codex-mcp-overrides.sh` depend on your project's `.mcp.json` configuration. The script reads from `.mcp.json` and emits `-c` flags for each server that has its required auth credentials available.
 
-**Intentionally excluded:** github (already in Codex global config), figma (low review value), supabase-local (needs running instance), supabase-prod (safety).
+Common patterns:
+
+| Server Type            | Transport | Auth                              | Skip Condition             |
+| ---------------------- | --------- | --------------------------------- | -------------------------- |
+| Documentation (e.g., context7) | HTTP | None                           | Never skipped              |
+| Framework tools        | stdio     | None                              | Never skipped              |
+| Cloud services         | stdio     | Service-specific env vars         | Env vars missing           |
+
+**Intentionally excluded from injection:** Servers already in Codex global config, servers needing a running local instance, and production servers (safety).
 
 #### Skip Behavior
 
-Per repo no-fallback policy, every skip produces an explicit stderr message:
+Per no-fallback policy, every skip produces an explicit stderr message:
 
 ```
-codex-mcp-overrides: skipping supabase-dev (SUPABASE_ACCESS_TOKEN not set)
+codex-mcp-overrides: skipping <server> (<ENV_VAR> not set)
 codex-mcp-overrides: codex not found, no MCP overrides emitted
 ```
 
@@ -2960,10 +2934,11 @@ Stderr goes to the terminal (visible to Claude/user). Stdout contains only `-c` 
 
 #### Auth-Required Servers
 
-For supabase-dev, ensure env vars are exported before running Codex:
+For servers requiring credentials, ensure env vars are exported before running Codex:
 
 ```bash
-eval "$(make env-export)"
+# Export project environment variables
+eval "$(make env-export)"  # or source your .env file
 ```
 
 #### MCP Is Optional

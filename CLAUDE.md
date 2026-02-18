@@ -410,5 +410,4 @@ Types: feat, fix, docs, refactor, test, chore
 **Work on branches, not main.** Never commit on `main` (even locally). A pre-push hook enforces this.
 
 **Branch naming:** `<type>/<short-desc>` (e.g., `fix/auth-bug`, `docs/pm-update`)
-
 <!-- claude-pm-toolkit:end -->

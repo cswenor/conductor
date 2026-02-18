@@ -18,6 +18,12 @@ if [ -z "$ISSUE_NUM" ]; then
   exit 1
 fi
 
+# Ensure we're in a git repo
+if ! git rev-parse --git-dir &>/dev/null; then
+  echo "Error: not in a git repository" >&2
+  exit 1
+fi
+
 # Find worktree for this issue from git's authoritative list
 # Use awk instead of grep to avoid exit 1 on no match (which trips set -e)
 # Match either:

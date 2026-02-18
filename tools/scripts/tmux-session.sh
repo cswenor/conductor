@@ -264,11 +264,8 @@ cmd_start() {
   #   2. Changes to the worktree directory
   #   3. Evals port isolation exports
   #   4. Starts claude interactively
-  #
-  # All paths are single-quoted to prevent word splitting on spaces/special chars.
-  # Variables are expanded by the current shell, then embedded in the tmux command.
   tmux new-window -t "$SESSION_NAME" -n "$window_name" \
-    "export CND_ISSUE_NUM='${issue_num}'; cd '${worktree_path}' && eval \"\$('./tools/scripts/worktree-setup.sh' '${issue_num}' --print-env)\" && claude; echo 'Claude exited. Press enter to close.'; read"
+    "export CND_ISSUE_NUM=$issue_num; cd $worktree_path && eval \"\$(./tools/scripts/worktree-setup.sh $issue_num --print-env)\" && claude; echo 'Claude exited. Press enter to close.'; read"
 
   # Best-effort PID capture (the shell running in tmux)
   # We write "pending" and let the first hook event confirm it's alive

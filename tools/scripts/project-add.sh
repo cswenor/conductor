@@ -64,7 +64,7 @@ esac
 
 # --- Get and validate area label (exactly one required) ---
 AREA_LABELS=$(gh issue view "$ISSUE_NUM" --json labels --jq '[.labels[].name | select(startswith("area:"))] | join(",")')
-AREA_COUNT=$(gh issue view "$ISSUE_NUM" --json labels --jq '[.labels[].name | select(startswith("area:"))] | length')
+AREA_COUNT=$(echo "$AREA_LABELS" | tr ',' '\n' | awk 'NF{c++}END{print c+0}')
 
 if [ "$AREA_COUNT" -eq 0 ]; then
   echo "Error: No area:* label found on issue #$ISSUE_NUM" && exit 1
@@ -86,7 +86,7 @@ case "$AREA_LABEL" in
 esac
 
 # If area config var was empty (not configured in this project), warn
-if [ -n "$AREA_LABEL" ] && [ -z "$AREA_ID" ] && [ "$AREA_LABEL" != "" ]; then
+if [ -n "$AREA_LABEL" ] && [ -z "$AREA_ID" ]; then
   echo "Warning: Area label '$AREA_LABEL' has no matching option ID in pm.config.sh — skipping area field"
 fi
 

@@ -48,11 +48,11 @@ When a PR modifies existing functionality:
 
 Before marking any acceptance criterion as met:
 
-1. **Is the functionality actually implemented in THIS PR?** Not "will be handled by Magic SDK" or "covered by another system"
+1. **Is the functionality actually implemented in THIS PR?** Not "will be handled by the SDK" or "covered by another system"
 2. **Is there a test that exercises THIS specific behavior?** Not "tests exist" but "this test verifies this criterion"
 3. **Can you point to the exact code path?** If you can't trace the criterion to actual code, it's not implemented
 
-**Common failure mode:** Seeing that a dependency (Magic SDK, algosdk, etc.) supports a feature and assuming the PR therefore implements it. The PR must actually USE that capability for the criterion to be met.
+**Common failure mode:** Seeing that a dependency supports a feature and assuming the PR therefore implements it. The PR must actually USE that capability for the criterion to be met.
 
 ### The Failure Mode Analysis Principle
 
@@ -62,10 +62,10 @@ For every feature, ask:
 
 1. **What happens when the data doesn't exist?** (empty database, missing file, null value)
 2. **What happens when the external service fails?** (network error, timeout, invalid response)
-3. **What happens when the user doesn't have the expected state?** (not logged in, no balance, no permissions)
+3. **What happens when the user doesn't have the expected state?** (not logged in, no data, no permissions)
 4. **What happens on first run?** (no cache, no prior state, fresh install)
 
-**Common failure mode:** Verifying balance reading works but not asking "what if the wallet has never received tokens and has no balance box?"
+**Common failure mode:** Verifying the happy path works but not asking "what if the resource doesn't exist yet?" — which could cause a runtime error for new users.
 
 ### The Comment Skepticism Principle
 
@@ -89,9 +89,9 @@ When a PR includes Docker, CI, or tooling changes:
 1. **Version tags** - Is it pinned or using `:latest`? Latest is a reproducibility foot-gun.
 2. **Breaking changes** - Does the new version have different behavior? (ports, config, APIs)
 3. **Downstream effects** - What scripts/tests depend on this? Will they still work?
-4. **Fresh clone test** - Would `git clone && pnpm install` work for a new developer?
+4. **Fresh clone test** - Would `git clone && make setup` work for a new developer?
 
-**Common failure mode:** Noting a Docker upgrade as "minor observation" instead of verifying KMD still works, scripts still run, and ports are correct.
+**Common failure mode:** Noting a Docker upgrade as "minor observation" instead of verifying dependent services still work, scripts still run, and ports are correct.
 
 ### The Test Depth Principle
 
@@ -276,8 +276,10 @@ For each criterion in the issue:
    - Either expand the PR to include missing work
    - OR remove `Fixes #X` and open follow-up issues
 
-**Example of WRONG reasoning:** "Magic SDK handles deterministic key derivation, so criterion is met"
-**Example of RIGHT reasoning:** "Line 45 of auth.ts calls magic.algorand.getWallet() which returns deterministic address, tested in auth.test.ts line 120"
+**Example of WRONG reasoning:** "The SDK handles this feature, so criterion is met"
+**Example of RIGHT reasoning:** "Line 45 of service.ts calls sdk.doThing() which performs the operation, tested in service.test.ts line 120"
+
+> See `docs/PM_PROJECT_CONFIG.md` § "Review Examples" for domain-specific examples.
 
 #### Failure Mode Analysis (BLOCKING)
 
@@ -289,8 +291,8 @@ For each criterion in the issue:
    - Is there a test for this case?
 
 2. **What happens on first run / fresh state?**
-   - No cache? No prior data? No balance box?
-   - Will simulate() fail if the box doesn't exist?
+   - No cache? No prior data? No initialized state?
+   - Will the operation fail if the expected resource doesn't exist?
 
 3. **What happens when external services fail?**
    - Network timeout? Invalid response? Rate limited?
@@ -347,10 +349,10 @@ Why: Mixed PRs are hard to review, hard to rollback, and couple unrelated risks.
 2. **Downstream effects:**
    - [ ] What scripts/tests depend on this service?
    - [ ] Are ports/configs the same as before?
-   - [ ] Does KMD still work? Do funded accounts still exist?
+   - [ ] Do dependent services still work? Is existing data preserved?
 
 3. **Fresh clone verification:**
-   - [ ] Would `git clone && pnpm install && pnpm dev` work?
+   - [ ] Would `git clone && make setup && make dev` work?
    - [ ] Are any manual steps now required?
 
 #### Change-Type Specific Checks
@@ -893,7 +895,7 @@ Counting rules: Count issues found during code/implementation review only. PM pr
 ### Infra Change Analysis (if applicable)
 
 **Version pinning:** [Pinned to X.Y.Z / Uses :latest (BLOCKING)]
-**Downstream effects:** [Scripts affected, KMD status, etc.]
+**Downstream effects:** [Scripts affected, service status, etc.]
 **Fresh clone test:** [Would work / Would fail because X]
 
 ### Conditional Analysis Sections
@@ -982,24 +984,19 @@ Result: Two regressions were merged because the reviewer trusted the claim inste
 
 ### The Lesson That Created The Scope/Failure/Infra Sections
 
-A PR claimed to implement "Demo Wallet creation" (Issue #60) with acceptance criteria including:
+A PR claimed to implement a feature with acceptance criteria including multiple capabilities (key derivation, local signing, state rehydration, security tests).
 
-- Deterministic key derivation
-- Local signing
-- Storage-clear rehydration
-- Security validation tests
+The reviewer saw that the dependency SDK supports these capabilities and approved. But:
 
-The reviewer saw that Magic SDK handles key derivation and approved. But:
+1. **Scope mismatch:** The PR only implemented part of the feature. Other capabilities weren't exercised. Tests only checked negative cases, not that the positive path actually works.
 
-1. **Scope mismatch:** The PR only implemented balance reading + UI. Local signing wasn't exercised. Rehydration wasn't tested. Security tests only checked "no signing endpoints called", not "signing works locally".
+2. **Failure mode missed:** An operation would fail for users with no prior state (e.g., first-time users with no initialized resources), causing a 502 error.
 
-2. **Failure mode missed:** The balance reading used `simulate()` with box references. Reviewer didn't ask "what happens if the wallet has no balance box?" — which would cause a 502 error for new wallets.
+3. **Comment trusted without verification:** Code comment said "Env validation: validated at module load". Reviewer assumed it was true. A parallel review asked for the actual validation code — it didn't exist.
 
-3. **Comment trusted without verification:** Code comment said "Env validation: validated at module load". Reviewer assumed it was true. ChatGPT asked for the actual validation code.
+4. **Infra change glossed over:** PR upgraded a Docker service to `:latest`. Reviewer noted it as "non-blocking observation". Correct action: flag `:latest` as a reproducibility risk and verify downstream effects.
 
-4. **Infra change glossed over:** PR upgraded Docker algod to `:latest`. Reviewer noted it as "non-blocking observation". ChatGPT correctly flagged `:latest` as a reproducibility foot-gun and questioned whether KMD still works.
-
-5. **Scope mixing ignored:** PR combined web feature + localnet infrastructure upgrade. Reviewer didn't flag this as a review/rollback concern.
+5. **Scope mixing ignored:** PR combined a web feature + infrastructure upgrade. Reviewer didn't flag this as a review/rollback concern.
 
 **The fix:** Added Scope Verification, Failure Mode Analysis, Comment Verification, Infra Change Analysis, and Scope Mixing Check as mandatory sections.
 

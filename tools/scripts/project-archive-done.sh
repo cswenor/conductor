@@ -2,13 +2,13 @@
 # project-archive-done.sh - Archive project items that have been Done for too long
 #
 # Environment variables:
-#   COND_ARCHIVE_DAYS    - Archive items Done for more than N days (default: 7)
-#   COND_ARCHIVE_DRY_RUN - If "true", list items but don't archive (default: false)
+#   CND_ARCHIVE_DAYS    - Archive items Done for more than N days (default: 7)
+#   CND_ARCHIVE_DRY_RUN - If "true", list items but don't archive (default: false)
 #   GH_TOKEN        - GitHub token (required)
 #
 # Usage:
 #   ./tools/scripts/project-archive-done.sh
-#   COND_ARCHIVE_DAYS=7 COND_ARCHIVE_DRY_RUN=true ./tools/scripts/project-archive-done.sh
+#   CND_ARCHIVE_DAYS=7 CND_ARCHIVE_DRY_RUN=true ./tools/scripts/project-archive-done.sh
 
 set -euo pipefail
 
@@ -21,23 +21,23 @@ OWNER="$PM_OWNER"
 PROJECT_NUMBER="$PM_PROJECT_NUMBER"
 DONE_OPTION_ID="$PM_WORKFLOW_DONE"
 
-COND_ARCHIVE_DAYS="${COND_ARCHIVE_DAYS:-7}"
-COND_ARCHIVE_DRY_RUN="${COND_ARCHIVE_DRY_RUN:-false}"
+CND_ARCHIVE_DAYS="${CND_ARCHIVE_DAYS:-7}"
+CND_ARCHIVE_DRY_RUN="${CND_ARCHIVE_DRY_RUN:-false}"
 
 log() { echo "[archive-done] $*"; }
 err() { echo "[archive-done] ERROR: $*" >&2; }
 
 # Calculate cutoff date (items closed before this date will be archived)
 if [[ "$(uname)" == "Darwin" ]]; then
-  CUTOFF_DATE=$(date -v-"${COND_ARCHIVE_DAYS}"d +%Y-%m-%d)
+  CUTOFF_DATE=$(date -v-"${CND_ARCHIVE_DAYS}"d +%Y-%m-%d)
 else
-  CUTOFF_DATE=$(date -d "-${COND_ARCHIVE_DAYS} days" +%Y-%m-%d)
+  CUTOFF_DATE=$(date -d "-${CND_ARCHIVE_DAYS} days" +%Y-%m-%d)
 fi
 
-log "Archiving items Done before: $CUTOFF_DATE ($COND_ARCHIVE_DAYS days ago)"
-log "Dry run: $COND_ARCHIVE_DRY_RUN"
+log "Archiving items Done before: $CUTOFF_DATE ($CND_ARCHIVE_DAYS days ago)"
+log "Dry run: $CND_ARCHIVE_DRY_RUN"
 
-# Get project ID
+# Get project ID (try org first, then user)
 PROJECT_ID=$(gh api graphql -f query='
   query($owner: String!, $number: Int!) {
     organization(login: $owner) {
@@ -46,10 +46,23 @@ PROJECT_ID=$(gh api graphql -f query='
       }
     }
   }
-' -f owner="$OWNER" -F number="$PROJECT_NUMBER" --jq '.data.organization.projectV2.id')
+' -f owner="$OWNER" -F number="$PROJECT_NUMBER" --jq '.data.organization.projectV2.id' 2>/dev/null || echo "")
 
 if [[ -z "$PROJECT_ID" ]]; then
-  err "Could not find project $PROJECT_NUMBER for $OWNER"
+  # Try user query (for personal accounts)
+  PROJECT_ID=$(gh api graphql -f query='
+    query($owner: String!, $number: Int!) {
+      user(login: $owner) {
+        projectV2(number: $number) {
+          id
+        }
+      }
+    }
+  ' -f owner="$OWNER" -F number="$PROJECT_NUMBER" --jq '.data.user.projectV2.id' 2>/dev/null || echo "")
+fi
+
+if [[ -z "$PROJECT_ID" ]]; then
+  err "Could not find project $PROJECT_NUMBER for $OWNER (tried both org and user queries)"
   exit 1
 fi
 
@@ -161,7 +174,7 @@ while IFS= read -r item; do
 
   # Compare dates (string comparison works for ISO format)
   if [[ "$closed_date" < "$CUTOFF_DATE" ]]; then
-    if [[ "$COND_ARCHIVE_DRY_RUN" != "true" ]]; then
+    if [[ "$CND_ARCHIVE_DRY_RUN" != "true" ]]; then
       log "Archiving #$number: $title (closed: $closed_date)"
 
       gh api graphql -f query='
@@ -178,7 +191,7 @@ while IFS= read -r item; do
       archived_count=$((archived_count + 1))
     fi
   else
-    log "Skipping #$number: $title (closed: $closed_date - within $COND_ARCHIVE_DAYS days)"
+    log "Skipping #$number: $title (closed: $closed_date - within $CND_ARCHIVE_DAYS days)"
     skipped_count=$((skipped_count + 1))
   fi
 done <<< "$DONE_ITEMS"

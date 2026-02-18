@@ -21,15 +21,16 @@ if ! gh auth status &>/dev/null; then
 fi
 
 if ! command -v jq &>/dev/null; then
-  echo "Error: jq not installed. Run: brew install jq" >&2
+  echo "Error: jq not installed." >&2
+  echo "  macOS:  brew install jq" >&2
+  echo "  Ubuntu: sudo apt-get install jq" >&2
   exit 1
 fi
 
-REPO=$(pm_get_repo)
-if [ $? -ne 0 ]; then
-  echo "Error: Not in a git repository" >&2
+REPO=$(pm_get_repo) || {
+  echo "Error: Not in a git repository or no origin remote" >&2
   exit 1
-fi
+}
 
 # Get issue info + project item state in one query
 RESULT=$(gh api graphql -f query='
@@ -51,13 +52,11 @@ RESULT=$(gh api graphql -f query='
       }
     }
   }
-' -f owner="$PM_OWNER" -f repo="$REPO" -F issue="$ISSUE_NUM" 2>&1)
-
-if [ $? -ne 0 ]; then
+' -f owner="$PM_OWNER" -f repo="$REPO" -F issue="$ISSUE_NUM" 2>&1) || {
   echo "Error: Failed to fetch issue #$ISSUE_NUM"
   echo "$RESULT"
   exit 1
-fi
+}
 
 # Check if issue exists
 ISSUE_EXISTS=$(echo "$RESULT" | jq -r '.data.repository.issue')
@@ -72,5 +71,5 @@ echo "$RESULT" | jq -r --argjson pnum "$PM_PROJECT_NUMBER" '.data.repository.iss
   state,
   assignees: [.assignees.nodes[].login],
   labels: [.labels.nodes[].name],
-  workflow: (.projectItems.nodes[] | select(.project.number == $pnum) | .fieldValueByName.name // "Not in project")
+  workflow: ([.projectItems.nodes[] | select(.project.number == $pnum) | .fieldValueByName.name] | if length > 0 then .[0] else "Not in project" end)
 }'

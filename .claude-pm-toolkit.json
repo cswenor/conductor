@@ -1,0 +1,14 @@
+{
+  "toolkit_version": "c3fe5ca",
+  "installed_at": "2026-02-18T16:22:00Z",
+  "owner": "cswenor",
+  "repo": "conductor",
+  "project_number": "2",
+  "project_id": "PVT_kwHOAAnhG84BPhvY",
+  "prefix_lower": "cnd",
+  "prefix_upper": "CND",
+  "display_name": "Conductor",
+  "test_command": "make test",
+  "setup_command": "make setup",
+  "dev_command": "make dev"
+}
