@@ -7,7 +7,7 @@ set -euo pipefail
 #
 # This script is idempotent: safe to run multiple times on the same issue.
 # It will:
-#   1. Add the issue to Project #1 (if not already present)
+#   1. Add the issue to Project #2 (if not already present)
 #   2. Set Workflow to Backlog
 #   3. Set Priority based on argument
 #   4. Set Area based on the issue's area:* label
@@ -42,15 +42,17 @@ if ! gh auth status 2>&1 | grep -q "'project'"; then
 fi
 
 if ! command -v jq &>/dev/null; then
-  echo "Error: jq not installed. Run: brew install jq" >&2
+  echo "Error: jq not installed." >&2
+  echo "  macOS:  brew install jq" >&2
+  echo "  Ubuntu: sudo apt-get install jq" >&2
   exit 1
 fi
 
 # --- Get repo from pm.config.sh helper ---
-REPO_NAME=$(pm_get_repo)
-if [ $? -ne 0 ]; then
-  echo "Error: Not in a git repository or no origin remote" && exit 1
-fi
+REPO_NAME=$(pm_get_repo) || {
+  echo "Error: Not in a git repository or no origin remote" >&2
+  exit 1
+}
 
 # --- Validate priority ---
 case "$PRIORITY" in
@@ -62,7 +64,7 @@ esac
 
 # --- Get and validate area label (exactly one required) ---
 AREA_LABELS=$(gh issue view "$ISSUE_NUM" --json labels --jq '[.labels[].name | select(startswith("area:"))] | join(",")')
-AREA_COUNT=$(echo "$AREA_LABELS" | tr ',' '\n' | grep -c . || echo 0)
+AREA_COUNT=$(gh issue view "$ISSUE_NUM" --json labels --jq '[.labels[].name | select(startswith("area:"))] | length')
 
 if [ "$AREA_COUNT" -eq 0 ]; then
   echo "Error: No area:* label found on issue #$ISSUE_NUM" && exit 1
@@ -71,16 +73,22 @@ elif [ "$AREA_COUNT" -gt 1 ]; then
 fi
 
 AREA_LABEL="$AREA_LABELS"
+AREA_ID=""  # Initialize to avoid unbound variable with set -u
 case "$AREA_LABEL" in
-  area:frontend)   AREA_ID="$PM_AREA_FRONTEND" ;;
-  area:backend)    AREA_ID="$PM_AREA_BACKEND" ;;
-  area:contracts)  AREA_ID="$PM_AREA_CONTRACTS" ;;
-  area:infra)      AREA_ID="$PM_AREA_INFRA" ;;
-  area:design)     AREA_ID="$PM_AREA_DESIGN" ;;
-  area:docs)       AREA_ID="$PM_AREA_DOCS" ;;
-  area:pm)         AREA_ID="$PM_AREA_PM" ;;
+  area:frontend)   AREA_ID="${PM_AREA_FRONTEND:-}" ;;
+  area:backend)    AREA_ID="${PM_AREA_BACKEND:-}" ;;
+  area:contracts)  AREA_ID="${PM_AREA_CONTRACTS:-}" ;;
+  area:infra)      AREA_ID="${PM_AREA_INFRA:-}" ;;
+  area:design)     AREA_ID="${PM_AREA_DESIGN:-}" ;;
+  area:docs)       AREA_ID="${PM_AREA_DOCS:-}" ;;
+  area:pm)         AREA_ID="${PM_AREA_PM:-}" ;;
   *) echo "Warning: Unknown area label '$AREA_LABEL' — skipping area field" ;;
 esac
+
+# If area config var was empty (not configured in this project), warn
+if [ -n "$AREA_LABEL" ] && [ -z "$AREA_ID" ] && [ "$AREA_LABEL" != "" ]; then
+  echo "Warning: Area label '$AREA_LABEL' has no matching option ID in pm.config.sh — skipping area field"
+fi
 
 # --- Check if already in project (idempotent) ---
 ITEM_ID=$(pm_get_item_id "$ISSUE_NUM" 2>/dev/null || echo "")

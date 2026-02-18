@@ -8,11 +8,32 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-deny() {
-    jq -n --arg reason "$1" \
-        '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":$reason}}'
+# Plain-text deny fallback that works without jq. The hook framework accepts
+# this JSON structure to produce a deterministic deny instead of crashing.
+deny_raw() {
+    local reason="$1"
+    # Escape double quotes and backslashes for JSON safety
+    reason="${reason//\\/\\\\}"
+    reason="${reason//\"/\\\"}"
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}' "$reason"
     exit 0
 }
+
+deny() {
+    if command -v jq &>/dev/null; then
+        jq -n --arg reason "$1" \
+            '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":$reason}}'
+        exit 0
+    fi
+    deny_raw "$1"
+}
+
+# ---------- preflight: jq is required for input parsing ----------
+
+if ! command -v jq &>/dev/null; then
+    # Cannot parse hook input without jq — fail closed with a clear message
+    deny_raw "Secret guard: jq is not installed. Install with: brew install jq"
+fi
 
 # ---------- read & extract (FAIL-CLOSED) ----------
 

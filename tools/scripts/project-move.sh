@@ -72,14 +72,25 @@ if [ "$STATE" = "Review" ]; then
   REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
   echo "Running pre-review test gate..."
 
-  # Step 0: Branch safety guard
+  # Step 0: Detect default branch and branch safety guard
+  DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+  if [ -z "$DEFAULT_BRANCH" ]; then
+    # Fallback: fetch origin HEAD if symbolic-ref not set
+    git remote set-head origin --auto 2>/dev/null || true
+    DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+  fi
+  if [ -z "$DEFAULT_BRANCH" ]; then
+    DEFAULT_BRANCH="main"
+    echo "Warning: Could not detect default branch, assuming '$DEFAULT_BRANCH'"
+  fi
+
   CURRENT_BRANCH=$(git branch --show-current)
   if [ -z "$CURRENT_BRANCH" ]; then
     echo ""
     echo "ERROR: Detached HEAD state. Switch to a feature branch before moving to Review."
     exit 1
   fi
-  if [ "$CURRENT_BRANCH" = "main" ] || [ "$CURRENT_BRANCH" = "master" ]; then
+  if [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ]; then
     echo ""
     echo "ERROR: Cannot rebase and force-push the '$CURRENT_BRANCH' branch."
     echo "Switch to a feature branch first."
@@ -100,19 +111,19 @@ if [ "$STATE" = "Review" ]; then
     exit 1
   fi
 
-  # Step 2: Fetch latest main
-  echo "==> git fetch origin main"
-  if ! git fetch origin main; then
+  # Step 2: Fetch latest default branch
+  echo "==> git fetch origin $DEFAULT_BRANCH"
+  if ! git fetch origin "$DEFAULT_BRANCH"; then
     echo ""
-    echo "ERROR: Failed to fetch origin/main. Check your network connection."
+    echo "ERROR: Failed to fetch origin/$DEFAULT_BRANCH. Check your network connection."
     exit 1
   fi
 
-  # Step 3: Rebase on main
-  echo "==> git rebase origin/main"
-  if ! git rebase origin/main; then
+  # Step 3: Rebase on default branch
+  echo "==> git rebase origin/$DEFAULT_BRANCH"
+  if ! git rebase origin/"$DEFAULT_BRANCH"; then
     echo ""
-    echo "ERROR: Rebase on origin/main failed."
+    echo "ERROR: Rebase on origin/$DEFAULT_BRANCH failed."
 
     CONFLICTS=$(git diff --name-only --diff-filter=U 2>/dev/null) || true
     if [ -n "$CONFLICTS" ]; then
@@ -131,7 +142,7 @@ if [ "$STATE" = "Review" ]; then
 
     echo ""
     echo "To fix manually:"
-    echo "  1. git rebase origin/main"
+    echo "  1. git rebase origin/$DEFAULT_BRANCH"
     echo "  2. Resolve conflicts"
     echo "  3. git rebase --continue"
     echo "  4. Re-run: ./tools/scripts/project-move.sh $ISSUE_NUM Review"
@@ -139,8 +150,8 @@ if [ "$STATE" = "Review" ]; then
   fi
 
   # Step 4: Run tests against rebased code
-  echo "==> pnpm validate"
-  if ! eval "pnpm validate"; then
+  echo "==> make test"
+  if ! eval "make test"; then
     echo ""
     echo "ERROR: tests failed. Fix before moving to Review."
     exit 1
@@ -164,42 +175,44 @@ gh project item-edit --project-id "$PM_PROJECT_ID" --id "$ITEM_ID" \
 
 echo "Issue #$ISSUE_NUM -> $STATE"
 
-# Post-Done cleanup: tear down worktree Docker containers
+# Post-Done cleanup
 if [ "$STATE" = "Done" ]; then
-  COMPOSE_PROJECT="cond-$ISSUE_NUM"
   REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-  echo "Checking Docker resources for project '$COMPOSE_PROJECT'..."
+  # Docker cleanup: only if project has a Makefile with docker-check target
+  if [ -f "$REPO_ROOT/Makefile" ] && grep -q 'docker-check' "$REPO_ROOT/Makefile" 2>/dev/null; then
+    COMPOSE_PROJECT="cnd-$ISSUE_NUM"
+    echo "Checking Docker resources for project '$COMPOSE_PROJECT'..."
 
-  # Gate: is Docker available?
-  if ! make -C "$REPO_ROOT" --no-print-directory docker-check 2>/dev/null; then
-    echo "Note: Docker is not available. Skipping container cleanup for '$COMPOSE_PROJECT'."
-  else
-    # Detection: do containers exist? (prints: found|empty|error)
-    CHECK_STDERR=$(mktemp)
-    CHECK_STATUS=$(COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" make -C "$REPO_ROOT" --no-print-directory compose-check 2>"$CHECK_STDERR") || true
+    # Gate: is Docker available?
+    if ! make -C "$REPO_ROOT" --no-print-directory docker-check 2>/dev/null; then
+      echo "Note: Docker is not available. Skipping container cleanup for '$COMPOSE_PROJECT'."
+    else
+      # Detection: do containers exist? (prints: found|empty|error)
+      CHECK_STDERR=$(mktemp)
+      CHECK_STATUS=$(COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" make -C "$REPO_ROOT" --no-print-directory compose-check 2>"$CHECK_STDERR") || true
 
-    case "$CHECK_STATUS" in
-      found)
-        # Containers found -- clean them up
-        echo "Found Docker containers for project '$COMPOSE_PROJECT', cleaning up..."
-        if CLEANUP_OUTPUT=$(COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" make -C "$REPO_ROOT" --no-print-directory down-clean 2>&1); then
-          echo "$CLEANUP_OUTPUT"
-          echo "Docker cleanup complete for '$COMPOSE_PROJECT'."
-        else
-          echo "Warning: Docker cleanup failed for '$COMPOSE_PROJECT' (non-fatal)."
-          echo "$CLEANUP_OUTPUT"
-        fi
-        ;;
-      empty)
-        echo "No Docker containers found for project '$COMPOSE_PROJECT'."
-        ;;
-      *)
-        echo "Warning: Could not check containers for '$COMPOSE_PROJECT' (non-fatal)."
-        cat "$CHECK_STDERR" 2>/dev/null
-        ;;
-    esac
-    rm -f "$CHECK_STDERR"
+      case "$CHECK_STATUS" in
+        found)
+          echo "Found Docker containers for project '$COMPOSE_PROJECT', cleaning up..."
+          if CLEANUP_OUTPUT=$(COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT" make -C "$REPO_ROOT" --no-print-directory down-clean 2>&1); then
+            echo "$CLEANUP_OUTPUT"
+            echo "Docker cleanup complete for '$COMPOSE_PROJECT'."
+          else
+            echo "Warning: Docker cleanup failed for '$COMPOSE_PROJECT' (non-fatal)."
+            echo "$CLEANUP_OUTPUT"
+          fi
+          ;;
+        empty)
+          echo "No Docker containers found for project '$COMPOSE_PROJECT'."
+          ;;
+        *)
+          echo "Warning: Could not check containers for '$COMPOSE_PROJECT' (non-fatal)."
+          cat "$CHECK_STDERR" 2>/dev/null
+          ;;
+      esac
+      rm -f "$CHECK_STDERR"
+    fi
   fi
 
   # Inform about worktree (do NOT auto-remove -- per non-goals)

@@ -16,9 +16,9 @@ set -euo pipefail
 #   tmux-session.sh stop-all                # Stop all workers
 #   tmux-session.sh status [num]            # Show detailed status
 #
-# State directory: ~/.cond/portfolio/<num>/
+# State directory: ~/.cnd/portfolio/<num>/
 #   status      - "starting" | "running" | "needs-input" | "idle" | "complete" | "crashed"
-#   tmux-target - "cond:cond-<num>"
+#   tmux-target - "cnd:cnd-<num>"
 #   worktree    - absolute path to worktree
 #   pid         - Claude process PID (best-effort)
 #   started     - ISO timestamp
@@ -26,8 +26,8 @@ set -euo pipefail
 
 # --- Constants ---
 
-SESSION_NAME="cond"
-PORTFOLIO_DIR="$HOME/.cond/portfolio"
+SESSION_NAME="cnd"
+PORTFOLIO_DIR="$HOME/.cnd/portfolio"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Helpers ---
@@ -144,7 +144,7 @@ cmd_init_and_run() {
     local current_session
     current_session=$(tmux display-message -p '#S')
     if [ "$current_session" != "$SESSION_NAME" ]; then
-      # If a "cond" session already exists, switch to it instead of renaming
+      # If a "cnd" session already exists, switch to it instead of renaming
       if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
         echo "Portfolio session '$SESSION_NAME' already exists. Switching..."
         exec tmux switch-client -t "$SESSION_NAME"
@@ -155,7 +155,7 @@ cmd_init_and_run() {
     # Rename current window to main
     tmux rename-window "main" 2>/dev/null || true
 
-    # Apply config AFTER rename so it targets session "cond"
+    # Apply config AFTER rename so it targets session "cnd"
     apply_tmux_config
 
     # Check if claude is already running in this pane
@@ -214,7 +214,7 @@ cmd_start() {
   require_tmux
   require_session
 
-  local window_name="cond-$issue_num"
+  local window_name="cnd-$issue_num"
   local state_dir="$PORTFOLIO_DIR/$issue_num"
 
   # Check if window already exists
@@ -231,7 +231,7 @@ cmd_start() {
 
   # Determine worktree path
   local worktree_path
-  worktree_path="$(cd "$repo_root/.." && pwd)/cond-$issue_num"
+  worktree_path="$(cd "$repo_root/.." && pwd)/cnd-$issue_num"
 
   # Create worktree if it doesn't exist (only if branch provided)
   if [ ! -d "$worktree_path" ]; then
@@ -260,12 +260,15 @@ cmd_start() {
 
   # Create tmux window with environment and start Claude
   # The window:
-  #   1. Sets COND_ISSUE_NUM so hooks can identify the issue
+  #   1. Sets CND_ISSUE_NUM so hooks can identify the issue
   #   2. Changes to the worktree directory
   #   3. Evals port isolation exports
   #   4. Starts claude interactively
+  #
+  # All paths are single-quoted to prevent word splitting on spaces/special chars.
+  # Variables are expanded by the current shell, then embedded in the tmux command.
   tmux new-window -t "$SESSION_NAME" -n "$window_name" \
-    "export COND_ISSUE_NUM=$issue_num; cd $worktree_path && eval \"\$(./tools/scripts/worktree-setup.sh $issue_num --print-env)\" && claude; echo 'Claude exited. Press enter to close.'; read"
+    "export CND_ISSUE_NUM='${issue_num}'; cd '${worktree_path}' && eval \"\$('./tools/scripts/worktree-setup.sh' '${issue_num}' --print-env)\" && claude; echo 'Claude exited. Press enter to close.'; read"
 
   # Best-effort PID capture (the shell running in tmux)
   # We write "pending" and let the first hook event confirm it's alive
@@ -317,7 +320,7 @@ cmd_list() {
     fi
 
     # Check if tmux window still exists
-    local window_name="cond-$num"
+    local window_name="cnd-$num"
     if ! tmux list-windows -t "$SESSION_NAME" -F '#W' 2>/dev/null | grep -qx "$window_name"; then
       # Window gone — check if it was intentional
       if [ "$status" != "complete" ]; then
@@ -359,7 +362,7 @@ cmd_focus() {
   require_tmux
   require_session
 
-  local window_name="cond-$issue_num"
+  local window_name="cnd-$issue_num"
 
   if ! tmux list-windows -t "$SESSION_NAME" -F '#W' 2>/dev/null | grep -qx "$window_name"; then
     die "No window '$window_name' found. Is issue #$issue_num running?"
@@ -378,7 +381,7 @@ cmd_stop() {
 
   require_tmux
 
-  local window_name="cond-$issue_num"
+  local window_name="cnd-$issue_num"
   local state_dir="$PORTFOLIO_DIR/$issue_num"
 
   # Send Ctrl-C to Claude, wait briefly, then kill the window
@@ -501,7 +504,7 @@ cmd_status() {
   fi
 
   # Window alive check
-  local window_name="cond-$issue_num"
+  local window_name="cnd-$issue_num"
   if tmux list-windows -t "$SESSION_NAME" -F '#W' 2>/dev/null | grep -qx "$window_name"; then
     echo "Window:       alive"
   else
@@ -537,7 +540,7 @@ NOTIFICATIONS:
   Hooks in .claude/settings.json drive notifications automatically.
 
 STATE:
-  Issue state stored at: ~/.cond/portfolio/<num>/
+  Issue state stored at: ~/.cnd/portfolio/<num>/
   Status values: starting, running, needs-input, idle, complete, crashed
 EOF
 }
