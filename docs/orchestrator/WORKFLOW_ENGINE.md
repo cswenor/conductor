@@ -91,13 +91,13 @@ The standard feature development workflow. Used for features, tasks, and any wor
 
 | Phase | Worker Type | Required Capability | Gate |
 | --- | --- | --- | --- |
-| planning | AI | `plan.create` | — |
-| plan_approval | Human (L0-L1) or Auto (L2-L3) | — | Plan quality check |
-| implementing | AI | `implement.code` | — |
-| testing | Script | `script.test` | All tests pass |
-| linting | Script | `script.lint` | No lint errors |
-| reviewing | AI + Human | `review.code` | Review approved |
-| reworking | AI | `implement.code` | — |
+| planning | AI | `planning.create` | — |
+| plan_approval | Human (L0-L1) or Auto (L2-L3) | — | `plan_approval` |
+| implementing | AI | `implementation.execute` | — |
+| testing | Script | `script.test` | `tests_pass` |
+| linting | Script | `script.lint` | `tests_pass` (shared gate) |
+| reviewing | AI + Human | `review.code` | `code_review` |
+| reworking | AI | `implementation.execute` | — |
 
 **Limits:** 3 plan revisions, 3 test fix attempts, 3 review rounds, 72 hours max.
 
@@ -296,10 +296,10 @@ Each edge has a condition that determines when it fires. Conditions are evaluate
 | Condition Type | Evaluates | Example |
 | --- | --- | --- |
 | `step_result` | The result of the task that just completed | `{type: "step_result", result: "success"}` |
-| `gate_pass` | Whether a gate condition is met | `{type: "gate_pass", gate_id: "tests_pass"}` |
-| `gate_fail` | Whether a gate condition failed | `{type: "gate_fail", gate_id: "tests_pass"}` |
+| `gate_pass` | Whether a gate condition is met | `{type: "gate_pass", gate_id: "tests_pass"}` — valid IDs: `plan_approval`, `tests_pass`, `code_review`, `merge_wait` |
+| `gate_fail` | Whether a gate condition failed | `{type: "gate_fail", gate_id: "tests_pass"}` — same valid IDs |
 | `counter` | A run counter exceeds a threshold | `{type: "counter", counter: "review_rounds", operator: ">=", value: 3}` |
-| `intelligence` | PM Engine query result | `{type: "intelligence", query: "predict_rework", threshold: 0.7}` |
+| `intelligence` | PM Engine query result | `{type: "intelligence", query: "conductor_predict_rework", threshold: 0.7}` |
 | `autonomy` | Current autonomy level allows auto-action | `{type: "autonomy", min_level: 2}` |
 | `artifact_exists` | A required artifact has been produced | `{type: "artifact_exists", artifact_type: "PLAN"}` |
 | `always` | Unconditional (default fallback edge) | `{type: "always"}` |
@@ -325,8 +325,8 @@ No static edge matched
     │
     ▼
 Query PM Engine (if available):
-    - predict_rework(issueNumber)
-    - check_readiness(issueNumber)
+    - conductor_predict_rework({ work_item_id })
+    - conductor_validate_spec_readiness({ work_item_id })
     │
     ▼
 Evaluate dynamic rules:
@@ -375,7 +375,7 @@ For each gate:
     │   (e.g., run tests, run linter)
     │
     ├── Quality gate → Query PM Engine
-    │   (e.g., check_readiness, detect_scope_creep)
+    │   (e.g., conductor_validate_spec_readiness, conductor_detect_scope_creep)
     │
     ├── Human gate → Check autonomy level
     │   ├── Level sufficient for auto-approve → Auto-approve
@@ -497,7 +497,7 @@ Epics decompose into multiple child runs that must be coordinated.
 Epic run enters 'decomposing' phase
     │
     ▼
-Orchestrator queries PM Engine: decompose_issue(issueNumber)
+Orchestrator queries PM Engine: conductor_decompose_work_item({ work_item_id })
     │
     ▼
 PM Engine returns subtask list with:
@@ -736,11 +736,11 @@ Trace structure:
 ```
 Run (correlation_id)
   └── Phase: planning
-      └── Task: plan.create (task_id)
-          ├── PM Engine: suggest_approach
+      └── Task: planning.create (task_id)
+          ├── PM Engine: conductor_suggest_approach
           └── Worker: ai-planner-1
   └── Phase: implementing
-      └── Task: implement.code (task_id)
+      └── Task: implementation.execute (task_id)
           └── Worker: ai-implementer-1
   └── Phase: testing (parallel)
       ├── Task: script.test (task_id) → Worker: script-test-1

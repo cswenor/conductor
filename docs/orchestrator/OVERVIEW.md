@@ -123,7 +123,7 @@ The orchestrator consists of five internal subsystems:
 | --- | --- | --- |
 | **Event Processor** | Receives and routes events from all sources | Webhooks, worker results, timer events, human actions |
 | **Workflow Engine** | Evaluates transitions and advances runs through phases | See `WORKFLOW_ENGINE.md` |
-| **Worker Manager** | Tracks worker registry, health, and task assignment | See `WORKER_MODEL.md` (in `DATA_MODEL.md`) |
+| **Worker Manager** | Tracks worker registry, health, and task assignment | See `DATA_MODEL.md § 2` |
 | **Task Queue** | Distributes tasks to workers with priority and retry | BullMQ-backed |
 | **Decision Engine** | Evaluates conditions using context, intelligence, and policy | Combines event data, PM Engine queries, and policy checks |
 
@@ -148,7 +148,7 @@ This is worth stating explicitly because it is a common source of confusion:
 
 | Concern | Owner |
 | --- | --- |
-| "What should we work on next?" | PM Engine (suggest_next_issue, plan_sprint) |
+| "What should we work on next?" | PM Engine (`conductor_suggest_next_work_item`, `conductor_plan_iteration`) |
 | "How should we work on it?" | Orchestrator (workflow template selection, worker assignment) |
 | "Is this task making progress?" | Orchestrator (run phase tracking, health monitoring) |
 | "How has this type of work gone historically?" | PM Engine (cycle times, rework rates, memory) |
@@ -167,48 +167,57 @@ A "run" is a single execution of a workflow for a work item. When someone says "
 
 ```
     ┌─────────┐
-    │ pending │──── Created, waiting to start
-    └────┬────┘
-         │ start
-         ▼
-    ┌─────────┐
-    │ active  │──── A worker is executing the current phase
+    │ active  │──── Run is progressing (workers executing tasks)
     └────┬────┘
          │
     ┌────┴──────────────────┐
     │                       │
     ▼                       ▼
-┌─────────┐          ┌──────────┐
-│completed│          │  blocked │──── Waiting for dependency, human, or retry
-└─────────┘          └────┬─────┘
-                          │ unblock
-                          ▼
-                     ┌─────────┐
-                     │ active  │
-                     └─────────┘
+┌──────────┐          ┌──────────┐
+│ finished │          │ blocked  │──── Waiting for dependency, human, or retry
+└──────────┘          └────┬─────┘
+                           │ unblock
+                           ▼
+                      ┌─────────┐
+                      │ active  │
+                      └─────────┘
 
-    (from any state)
-         │ cancel
+    (from active/blocked)
+         │ pause/cancel
          ▼
     ┌──────────┐
-    │cancelled │
-    └──────────┘
+    │ paused   │──── Human paused the run
+    └────┬─────┘
+         │ resume
+         ▼
+    ┌─────────┐
+    │ active  │
+    └─────────┘
 ```
 
-A run is `active` when a worker is processing a task for it. A run is `blocked` when it is waiting for something — a dependency, a human approval, a retry cooldown, a circuit breaker to close.
+Run **state** (`RunStatus`): `active`, `paused`, `blocked`, `finished`. A run is `active` when progressing normally. `blocked` when waiting for something. `paused` when a human stopped it. `finished` when terminal (completed or cancelled — the `current_phase` column distinguishes these).
+
+Run **phase** (`RunPhase`) tracks WHERE in the workflow: `pending` → `planning` → `awaiting_plan_approval` → `executing` → `awaiting_review` → `completed` (or `cancelled`, `blocked`).
 
 ### 4.2 Phases vs States
 
-Run **state** is the orchestrator's view: pending, active, blocked, completed, cancelled.
+Run **state** (`RunStatus` in PM Engine) is the orchestrator's view: `active`, `paused`, `blocked`, `finished`.
 
-Run **phase** is the workflow position: planning, implementing, testing, reviewing, etc. Phases are defined by the workflow template and vary by work item type.
+Run **phase** (`RunPhase` in PM Engine) is the workflow position: `pending`, `planning`, `awaiting_plan_approval`, `executing`, `awaiting_review`, `blocked`, `completed`, `cancelled`.
 
-A run can be `active` in the `reviewing` phase, or `blocked` in the `implementing` phase (waiting for a dependency).
+A run can have `state=active` in the `awaiting_review` phase, or `state=blocked` in the `executing` phase (waiting for a dependency).
+
+**Cross-reference with PM Engine enums:**
+
+| Orchestrator Column | PM Engine Enum | Values |
+| --- | --- | --- |
+| `runs.state` | `RunStatus` | `active`, `paused`, `blocked`, `finished` |
+| `runs.current_phase` | `RunPhase` | `pending`, `planning`, `awaiting_plan_approval`, `executing`, `awaiting_review`, `blocked`, `completed`, `cancelled` |
 
 ### 4.3 Phase Transitions
 
 When a worker completes a task:
-1. The orchestrator receives the task result (success, failure, needs-input).
+1. The orchestrator receives the task result (`completed`, `failed`, or `input-required` per A2A `A2ATaskState`).
 2. The Decision Engine evaluates the workflow edges from the current phase.
 3. The first matching edge determines the next phase.
 4. If the next phase requires a different worker, the orchestrator assigns a new task.
@@ -265,7 +274,7 @@ AI workers are powerful but expensive. Use them where scripts can't do the job �
 | Parallelism | Service-defined |
 | Examples | PM Engine (singleton), CI/CD service, monitoring service, notification hub |
 
-The PM Engine is the primary service worker. It is always available, stateful (backed by SQLite), and provides the intelligence layer. Other services (CI/CD, monitoring) may also register as service workers.
+The PM Engine is both a **tool** (the orchestrator queries it for intelligence) and a **service worker** (it accepts tasks from the queue, like `conductor_triage_work_item`). It is always available, stateful (backed by SQLite), and provides the intelligence layer. This dual role is intentional — simple queries use direct tool calls, while compute-heavy operations are queued as tasks. Other services (CI/CD, monitoring) may also register as service workers.
 
 ### 5.4 Human Workers
 
@@ -302,12 +311,12 @@ The orchestrator queries the PM Engine at defined decision points:
 
 | Decision Point | PM Engine Query | How It's Used |
 | --- | --- | --- |
-| Run start | `predict_rework`, `suggest_approach`, `get_issue_dependencies` | Template modification, blocker detection, context injection |
-| Template selection | `triage_issue` | Work item type and scope estimation |
-| Worker assignment | `get_team_capacity`, `get_history_insights` | Area expertise matching, hotspot awareness |
-| Gate evaluation | `check_readiness`, `detect_scope_creep` | Auto-approve decisions, scope drift detection |
-| Run completion | `record_outcome`, `record_decision` | Memory for future intelligence |
-| Failure triage | `explain_delay`, `predict_completion` | Root cause context, revised estimates |
+| Run start | `conductor_predict_rework`, `conductor_suggest_approach`, `conductor_get_dependencies` | Template modification, blocker detection, context injection |
+| Template selection | `conductor_triage_work_item` | Work item type and scope estimation |
+| Worker assignment | `conductor_get_history_insights` | Area expertise matching, hotspot awareness |
+| Gate evaluation | `conductor_validate_spec_readiness`, `conductor_detect_scope_creep` | Auto-approve decisions, scope drift detection |
+| Run completion | `conductor_record_outcome`, `conductor_record_decision` | Memory for future intelligence |
+| Failure triage | `conductor_explain_delay`, `conductor_predict_completion` | Root cause context, revised estimates |
 
 These are NOT continuous queries. They happen at specific moments in the workflow to avoid excessive overhead. Between decision points, the orchestrator operates on the information it already has.
 

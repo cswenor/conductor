@@ -339,16 +339,18 @@ The orchestrator exposes its operations as MCP tools:
 
 | Tool | Description | Parameters |
 | --- | --- | --- |
-| `conductor_start_run` | Start a run for a work item | `work_item_id`, `priority?`, `autonomy_level?`, `template_id?` |
-| `conductor_get_run` | Get run status and detail | `run_id` |
-| `conductor_list_runs` | List runs for a project | `project_id`, `state?`, `limit?` |
-| `conductor_cancel_run` | Cancel a run | `run_id`, `reason` |
+| `conductor_start_run` | Create and enqueue run for a work item | `work_item_id`, `priority?`, `autonomy_level?`, `template_id?` |
+| `conductor_get_run_status` | Read full run status view (phase, gates, timeline, artifacts) | `run_id` |
+| `conductor_list_runs` | List runs by project/phase/status/result filters | `project_id`, `state?`, `limit?` |
+| `conductor_approve_run_plan` | Approve plan when run is awaiting plan approval gate | `run_id`, `comment?` |
+| `conductor_reject_run_plan` | Reject plan and return to planning or cancel | `run_id`, `reason`, `action` |
+| `conductor_cancel_run` | Cancel active/awaiting/blocked run and trigger cleanup | `run_id`, `reason` |
+| `conductor_retry_run` | Retry blocked/failed path with optional rewind checkpoint | `run_id`, `rewind_to?` |
 | `conductor_get_queue_status` | Get task queue depths | `project_id?` |
 | `conductor_get_workers` | List registered workers | `worker_type?`, `status?` |
 | `conductor_submit_result` | Submit work result (for AI tools acting as workers) | `task_id`, `state`, `output`, `artifacts?` |
 | `conductor_get_task` | Get task details and input | `task_id` |
 | `conductor_list_blocked` | List blocked runs with reasons | `project_id?` |
-| `conductor_approve` | Approve a pending action | `task_id`, `decision`, `comment?` |
 
 These tools let an AI coding agent participate in Conductor as both a controller (starting runs) and a worker (receiving and completing tasks).
 
@@ -380,7 +382,7 @@ Claude Code calls: conductor_start_run(work_item_id=42)
 Orchestrator creates run, selects template, assigns first task
     │
     ▼
-Claude Code calls: conductor_get_run(run_id) to check progress
+Claude Code calls: conductor_get_run_status(run_id) to check progress
 ```
 
 The AI tool acts as a proxy between the human and the orchestrator.
@@ -505,7 +507,7 @@ Orchestrator → Worker:
   "task_id": "uuid",
   "run_id": "uuid",
   "correlation_id": "uuid",
-  "operation": "implement.code",
+  "operation": "implementation.execute",
   "input": {
     "work_item": {
       "id": 42,
@@ -573,15 +575,17 @@ Worker → Orchestrator:
 }
 ```
 
-**Task states in results:**
+**Task states in results (aligned with A2A `A2ATaskState`):**
 
 | State | Meaning | Orchestrator Action |
 | --- | --- | --- |
 | `completed` | Task succeeded | Evaluate transitions from current phase |
-| `failed` | Task failed (recoverable) | Retry if attempts remain, else block |
-| `failed_permanent` | Task failed (unrecoverable) | Block run, escalate |
-| `input_required` | Worker needs human input | Route to human, wait |
-| `cancelled` | Task was cancelled | Evaluate based on cancellation reason |
+| `failed` | Task failed | Check `unrecoverable` flag: if false, retry; if true, block run and escalate |
+| `input-required` | Worker needs human input | Route to human via interface, run enters `blocked` |
+
+The A2A `A2ATaskState` enum also includes `submitted` (task queued) and `working` (task in progress), but these are only used in progress updates, not in final results.
+
+**Note on `cancelled`:** Tasks can be cancelled by the orchestrator (e.g., run cancelled). This is an orchestrator-initiated state change, not a worker result. The DB `tasks.state` column allows `cancelled` for this purpose.
 
 ### 8.4 Worker Registration
 
@@ -612,7 +616,8 @@ Worker → Orchestrator (every 30 seconds):
 {
   "worker_id": "script-eslint-1",
   "status": "active",
-  "current_tasks": ["task-uuid-1", "task-uuid-2"],
+  "current_task_count": 2,
+  "current_task_ids": ["task-uuid-1", "task-uuid-2"],
   "resource_usage": {
     "cpu_percent": 15,
     "memory_mb": 128

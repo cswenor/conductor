@@ -21,14 +21,14 @@ CREATE TABLE runs (
   run_id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id      UUID NOT NULL REFERENCES projects(project_id),
   work_item_id    INTEGER NOT NULL,              -- Issue/PR number from source system
-  work_item_type  TEXT NOT NULL,                  -- 'feature', 'bug', 'spike', 'epic', 'incident', 'chore'
+  work_item_type  TEXT NOT NULL,                  -- 'epic', 'feature', 'bug', 'chore', 'spike', 'incident', 'task'
   source_system   TEXT NOT NULL DEFAULT 'github', -- 'github', 'gitlab', 'linear', 'jira'
   source_ref      TEXT NOT NULL,                  -- e.g., 'github:owner/repo#42'
 
   -- Workflow
   template_id     TEXT NOT NULL,                  -- Which workflow template governs this run
-  current_phase   TEXT NOT NULL DEFAULT 'pending',-- Current position in the workflow graph
-  state           TEXT NOT NULL DEFAULT 'pending',-- 'pending', 'active', 'blocked', 'completed', 'cancelled'
+  current_phase   TEXT NOT NULL DEFAULT 'pending',-- RunPhase: position in workflow graph
+  state           TEXT NOT NULL DEFAULT 'active', -- RunStatus: 'active', 'paused', 'blocked', 'finished'
   block_reason    TEXT,                           -- Why run is blocked (null if not blocked)
 
   -- Parent/child (for epics)
@@ -47,12 +47,15 @@ CREATE TABLE runs (
   created_by      TEXT NOT NULL,                  -- 'human:<user_id>', 'webhook:<source>', 'orchestrator:<reason>'
   summary         TEXT,                           -- Human-readable summary (populated on completion)
 
-  -- Counters
-  phase_transitions INTEGER NOT NULL DEFAULT 0,
-  total_tasks       INTEGER NOT NULL DEFAULT 0,
-  failed_tasks      INTEGER NOT NULL DEFAULT 0,
+  -- Counters (tracked by orchestrator, consumed by PM Engine for predictions)
+  phase_transitions  INTEGER NOT NULL DEFAULT 0,
+  total_tasks        INTEGER NOT NULL DEFAULT 0,
+  failed_tasks       INTEGER NOT NULL DEFAULT 0,
+  plan_revisions     INTEGER NOT NULL DEFAULT 0,  -- Times plan was rejected and re-planned
+  test_fix_attempts  INTEGER NOT NULL DEFAULT 0,  -- Times test failure triggered rework
+  review_rounds      INTEGER NOT NULL DEFAULT 0,  -- Times code review was requested
 
-  CONSTRAINT valid_state CHECK (state IN ('pending', 'active', 'blocked', 'completed', 'cancelled')),
+  CONSTRAINT valid_state CHECK (state IN ('active', 'paused', 'blocked', 'finished')),
   CONSTRAINT valid_priority CHECK (priority BETWEEN 1 AND 10),
   CONSTRAINT valid_autonomy CHECK (autonomy_level BETWEEN 0 AND 3)
 );
@@ -60,7 +63,7 @@ CREATE TABLE runs (
 CREATE INDEX idx_runs_project ON runs(project_id, state);
 CREATE INDEX idx_runs_work_item ON runs(source_ref);
 CREATE INDEX idx_runs_parent ON runs(parent_run_id) WHERE parent_run_id IS NOT NULL;
-CREATE INDEX idx_runs_state ON runs(state) WHERE state IN ('pending', 'active', 'blocked');
+CREATE INDEX idx_runs_state ON runs(state) WHERE state IN ('active', 'blocked');
 ```
 
 ### 1.2 Run Phases
@@ -106,7 +109,7 @@ CREATE TABLE tasks (
   phase_name      TEXT NOT NULL,                  -- Which phase this task fulfills
 
   -- Assignment
-  operation       TEXT NOT NULL,                  -- e.g., 'plan.create', 'implement.code', 'script.lint', 'review.code'
+  operation       TEXT NOT NULL,                  -- e.g., 'planning.create', 'implementation.execute', 'script.lint', 'review.code'
   worker_id       TEXT,                           -- Assigned worker (null if unassigned)
   worker_type     TEXT NOT NULL,                  -- 'ai', 'script', 'human', 'service'
 
@@ -220,7 +223,7 @@ Normalized table for efficient capability-based lookup.
 ```sql
 CREATE TABLE worker_capabilities (
   worker_id       TEXT NOT NULL REFERENCES workers(worker_id) ON DELETE CASCADE,
-  operation       TEXT NOT NULL,                  -- e.g., 'plan.create', 'script.lint', 'review.code'
+  operation       TEXT NOT NULL,                  -- e.g., 'planning.create', 'script.lint', 'review.code'
   priority_boost  INTEGER NOT NULL DEFAULT 0,     -- Bonus priority for this operation (expertise)
 
   CONSTRAINT unique_capability UNIQUE (worker_id, operation)
@@ -293,9 +296,9 @@ CREATE INDEX idx_templates_project ON workflow_templates(project_id);
 {
   "phase_id": "implementing",
   "display_name": "Implementation",
-  "required_capability": "implement.code",
+  "required_capability": "implementation.execute",
   "worker_type_preference": "ai",
-  "gate_ids": ["test_pass", "lint_pass"],
+  "gate_ids": ["tests_pass"],
   "artifacts_produced": ["CODE", "TEST_REPORT"],
   "artifacts_required": ["PLAN"],
   "timeout_ms": 1800000,
@@ -455,6 +458,7 @@ CREATE TABLE projects (
   -- Defaults
   default_autonomy_level INTEGER NOT NULL DEFAULT 1,
   default_template_id    TEXT NOT NULL DEFAULT 'feature',
+  auto_triage            TEXT NOT NULL DEFAULT 'off', -- 'off', 'suggest', 'auto'
 
   -- PM Engine connection
   pm_engine_url   TEXT,                           -- URL to PM Engine MCP server (null = embedded)
@@ -464,7 +468,8 @@ CREATE TABLE projects (
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-  CONSTRAINT valid_project_status CHECK (status IN ('active', 'paused', 'archived'))
+  CONSTRAINT valid_project_status CHECK (status IN ('active', 'paused', 'archived')),
+  CONSTRAINT valid_auto_triage CHECK (auto_triage IN ('off', 'suggest', 'auto'))
 );
 ```
 
@@ -508,6 +513,25 @@ CREATE TABLE notification_channels (
 CREATE INDEX idx_channels_project ON notification_channels(project_id) WHERE enabled;
 ```
 
+### 5.4 User Notification Preferences
+
+Per-user overrides for notification routing.
+
+```sql
+CREATE TABLE user_notification_preferences (
+  user_id         TEXT NOT NULL,
+  project_id      UUID NOT NULL REFERENCES projects(project_id),
+  channel_type    TEXT NOT NULL,                  -- 'web_ui', 'email', 'slack', 'openclaw', 'webhook'
+  enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+  min_urgency     TEXT NOT NULL DEFAULT 'low',    -- 'low', 'normal', 'medium', 'high'
+
+  CONSTRAINT unique_user_channel UNIQUE (user_id, project_id, channel_type),
+  CONSTRAINT valid_urgency CHECK (min_urgency IN ('low', 'normal', 'medium', 'high'))
+);
+
+CREATE INDEX idx_user_prefs_user ON user_notification_preferences(user_id, project_id);
+```
+
 ---
 
 ## 6. Queue State (Redis)
@@ -535,8 +559,8 @@ Script workers get per-operation queues (e.g., `conductor:task:script:lint`, `co
 
 ```
 Key:    conductor:heartbeat:<worker_id>
-Value:  { status, current_tasks, timestamp }
-TTL:    90 seconds (3x heartbeat interval)
+Value:  { status, current_task_count, current_task_ids, resource_usage, timestamp }
+TTL:    60 seconds (2x heartbeat interval — matches dead detection threshold)
 ```
 
 When a heartbeat key expires, the orchestrator's heartbeat monitor picks it up and marks the worker as dead.
