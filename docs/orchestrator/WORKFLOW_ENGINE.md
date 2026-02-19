@@ -89,15 +89,19 @@ The standard feature development workflow. Used for features, tasks, and any wor
                └──────────┘
 ```
 
-| Phase | Worker Type | Required Capability | Gate |
-| --- | --- | --- | --- |
-| planning | AI | `planning.create` | — |
-| plan_approval | Human (L0-L1) or Auto (L2-L3) | — | `plan_approval` |
-| implementing | AI | `implementation.execute` | — |
-| testing | Script | `script.test` | `tests_pass` |
-| linting | Script | `script.lint` | `tests_pass` (shared gate) |
-| reviewing | AI + Human | `review.code` | `code_review` |
-| reworking | AI | `implementation.execute` | — |
+| Phase | Worker Type | Required Capability | Gate | Execution Mode |
+| --- | --- | --- | --- | --- |
+| planning | AI | `planning.create` | — | sync |
+| plan_approval | Human (L0-L1) or Auto (L2-L3) | — | `plan_approval` | sync |
+| implementing | AI | `implementation.execute` | — | sync |
+| testing + linting | Script | `script.test`, `script.lint` | `tests_pass` | **parallel** (join=all) |
+| reviewing | AI + Human | `review.code` | `code_review` | sync |
+| reworking | AI | `implementation.execute` | — | sync |
+
+Async stages (fire-and-forget, triggered at phase boundaries):
+- `notify_stakeholders` — triggered when planning starts
+- `update_analytics` — triggered when quality checks complete
+- `record_outcome` — triggered when run completes
 
 **Limits:** 3 plan revisions, 3 test fix attempts, 3 review rounds, 72 hours max.
 
@@ -223,7 +227,162 @@ Expedited workflow for production incidents. Shorter timeouts, relaxed review.
 
 **Differences from feature:** No planning phase. 1 review round max. Auto-approve at autonomy L2+. Priority auto-set to 1 (highest). Timeout reduced to 4 hours.
 
-### 1.3 Custom Templates
+### 1.3 Stage Execution Modes
+
+Every phase (stage) in a workflow template has an **execution mode** that controls whether it blocks the workflow or runs alongside other stages. This is fundamental to how workflows operate — real software work is not purely sequential.
+
+#### Three Execution Modes
+
+| Mode | Behavior | Blocks workflow? | Use case |
+| --- | --- | --- | --- |
+| **sync** | The workflow waits for this stage to complete before evaluating the next transition | Yes | Planning, human approval, merge gates — anything where the result determines what happens next |
+| **async** | The stage is triggered but doesn't block. The workflow immediately evaluates the next edge. Results are captured when they arrive. | No | Notifications, analytics updates, documentation generation, background benchmarks |
+| **parallel** | Multiple stages start simultaneously. The workflow waits for the group to complete per the join rule before proceeding. | Yes (group-level) | Testing + linting, multiple reviewers, parallel subtask execution |
+
+#### Sync Stages (Default)
+
+Most stages are sync. If the template doesn't specify an execution mode, the stage is sync.
+
+```
+sync_stage → transition evaluation → next_stage
+   │                                      │
+   │ (workflow blocks here)               │
+   └──────────────────────────────────────┘
+```
+
+Sync stages produce a result that feeds into edge conditions. The transition evaluation loop (§ 2.1) only fires after the sync stage completes.
+
+#### Async Stages
+
+Async stages fire-and-forget or fire-and-monitor. The workflow does NOT wait.
+
+```
+current_stage completes
+    │
+    ├── trigger async_stage_A (notification)     ← fire-and-forget
+    ├── trigger async_stage_B (benchmark)        ← monitored
+    │
+    ▼
+next_sync_stage starts immediately
+    │
+    ... (async_stage_B result arrives later) ...
+    │
+    ▼
+join_point can consume async results (if configured)
+```
+
+Async stages have two sub-modes:
+
+| Sub-mode | Tracking | Failure handling |
+| --- | --- | --- |
+| **fire-and-forget** | Event emitted on trigger. No further tracking. | Ignored — failures don't affect the run. |
+| **monitored** | Result captured when it arrives. Available at downstream join points. | Warning event emitted. Run continues. Optional: block at join point if async result required. |
+
+**When to use async stages:**
+
+- Sending notifications (Slack, email, webhook) — no reason to block for delivery confirmation
+- Updating analytics projections — can happen in background while work continues
+- Running performance benchmarks — results are informational, not gating
+- Generating documentation — nice to have, not blocking
+- Recording outcomes in memory — eventually consistent is fine
+
+#### Parallel Groups
+
+Parallel groups are the sync equivalent of doing multiple things at once. The workflow starts all stages in the group simultaneously and waits for the group to resolve before proceeding.
+
+```
+pre_parallel_stage completes
+    │
+    ├── parallel_stage_A starts ─┐
+    ├── parallel_stage_B starts ─┤ (all start simultaneously)
+    ├── parallel_stage_C starts ─┘
+    │
+    ▼
+join rule evaluated:
+    │
+    ├── all:      wait for A, B, and C to complete
+    ├── any:      proceed when first one completes (others continue in background)
+    ├── n_of_m:   proceed when N stages complete (others continue)
+    └── majority: proceed when >50% complete
+    │
+    ▼
+post_parallel_stage starts
+```
+
+**Join rules:**
+
+| Join Rule | Semantics | Example |
+| --- | --- | --- |
+| `all` (default) | All stages must complete. Any failure triggers failure handling. | Testing + linting: both must pass |
+| `any` | First completion triggers the transition. Others continue as monitored async. | Redundant workers: first response wins |
+| `n_of_m` | N of M stages must complete successfully. | 2-of-3 reviewers must approve |
+| `majority` | >50% must complete successfully. | Consensus voting |
+
+**Failure in parallel groups:**
+
+When a parallel stage fails, the behavior depends on the join rule:
+
+- `all`: Remaining stages continue but the group result is `failed`. No early termination — other stages may produce useful artifacts even if one failed.
+- `any`/`n_of_m`/`majority`: The failed stage is excluded from the count. If the join threshold can still be met, the group continues. If not, the group fails.
+- All failures are recorded as events regardless of join rule.
+
+**Template definition for parallel groups:**
+
+```json
+{
+  "phase_id": "quality_checks",
+  "execution_mode": "parallel",
+  "parallel_stages": [
+    {"stage_id": "testing", "operation": "script.test"},
+    {"stage_id": "linting", "operation": "script.lint"},
+    {"stage_id": "type_check", "operation": "script.typecheck"}
+  ],
+  "join_rule": "all",
+  "on_group_pass": {"transition_to": "reviewing"},
+  "on_group_fail": {"transition_to": "implementing"}
+}
+```
+
+#### Mixing Modes in a Workflow
+
+A single workflow template freely mixes sync, async, and parallel stages:
+
+```
+pending (sync)
+    │
+    ▼
+planning (sync) ──────────────── async: notify_stakeholders (fire-and-forget)
+    │
+    ▼
+plan_approval (sync, human gate)
+    │
+    ▼
+implementing (sync)
+    │
+    ▼
+quality_checks (parallel: test + lint + typecheck, join=all)
+    │                                          │
+    │ all pass                    async: update_analytics (monitored)
+    │                            async: run_benchmarks (monitored)
+    ▼
+reviewing (sync) ──── join point: benchmark results available here (optional)
+    │
+    ▼
+completed (sync)
+```
+
+This captures real development flow: most work is sequential (plan → implement → test → review), but some things naturally run in parallel (test + lint) and some things don't need to block (notifications, analytics).
+
+#### Effect on Transition Evaluation
+
+The transition evaluation loop (§ 2) handles execution modes as follows:
+
+1. **Sync stage completes** → standard edge evaluation on the result.
+2. **Async stage triggered** → no edge evaluation. The workflow continues to the next sync/parallel stage immediately.
+3. **Parallel group completes** → the join result (pass/fail) feeds into edge evaluation as if it were a single sync stage result.
+4. **Monitored async result arrives** → recorded as an event. If a downstream join point references this async stage, the result is available for edge conditions.
+
+### 1.4 Custom Templates
 
 Projects can define custom templates. Common customizations:
 
@@ -253,6 +412,19 @@ Acquire run lock (Redis distributed lock)
 Load run state + current phase + template
     │
     ▼
+Check execution mode of completed phase (§ 1.3):
+    │
+    ├── Async stage result → Record event, check join points, release lock
+    │   (no transition evaluation — async results don't drive flow)
+    │
+    ├── Parallel group member completed →
+    │   Check join rule. Group not resolved yet? Release lock.
+    │   Group resolved? Continue to edge evaluation below.
+    │
+    └── Sync stage completed (or parallel group resolved) →
+        Continue to edge evaluation below
+    │
+    ▼
 Get outgoing edges from current phase
     │
     ▼
@@ -267,8 +439,11 @@ For each edge:
     │   │         1. Update run.current_phase
     │   │         2. Record run_phases entry
     │   │         3. Emit run.phase_changed event
-    │   │         4. Determine next task (if phase requires work)
-    │   │         5. Enqueue task to appropriate queue
+    │   │         4. Trigger any async stages attached to this transition
+    │   │         5. Determine next task (if phase requires work)
+    │   │            - Sync phase → enqueue task, wait
+    │   │            - Parallel phase → enqueue all parallel tasks
+    │   │            - Async phase → trigger task, immediately evaluate next edge
     │   │         6. Release run lock
     │   │         DONE
     │   │
@@ -389,7 +564,7 @@ All gates pass → Proceed with transition
 Any gate fails → Handle failure (retry, rework, or block)
 ```
 
-**Parallel gate evaluation:** Independent gates (e.g., testing + linting) run in parallel. The orchestrator waits for all to complete before proceeding.
+**Parallel gate evaluation:** Independent gates (e.g., testing + linting) run as a parallel group (§ 1.3) with `join_rule=all`. The orchestrator waits for the group to resolve before proceeding. Gates attached to async stages are evaluated when the async result arrives — if the gate fails, a warning event is emitted but the run is not blocked (unless the async stage was configured as monitored with a required join point).
 
 ---
 

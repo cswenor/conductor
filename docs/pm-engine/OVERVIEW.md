@@ -7,9 +7,10 @@ Updated: 2026-02-19
 This document explains what the Conductor PM engine is, why it exists, and the principles that shape its design.
 
 For implementation detail, see:
-- `docs/pm-engine/DATA_MODEL.md`
-- `docs/pm-engine/INTELLIGENCE_MODULES.md`
-- `docs/pm-engine/INTERFACES.md`
+- `docs/pm-engine/DATA_MODEL.md` — the data layer (SQLite schema, event store, dependency graph)
+- `docs/pm-engine/INTELLIGENCE_MODULES.md` — worker role specifications (algorithms, contracts)
+- `docs/pm-engine/WORKFLOWS.md` — PM workflow templates (triage, sprint planning, review, etc.)
+- `docs/pm-engine/INTERFACES.md` — tool catalog (MCP, A2A, REST API schemas)
 
 ## What This Is
 
@@ -230,69 +231,183 @@ Result: the PM engine governs both execution and product direction quality, not 
 | Knowledge management | Docs + human recollection + chat history | Structured persistent memory retrievable by agents and humans |
 | Stakeholder communication | Manual status updates and narrative summaries | Automatically synthesized, explainable status with evidence and confidence |
 
-## 5. The Intelligence Stack
+## 5. Architecture: The Decomposed PM Engine
 
-The PM engine is layered so each level enables the next.
+The PM Engine is not a monolithic service. It decomposes into three layers that align with the rest of Conductor's architecture:
 
-### Foundation: Event Stream + Dependency Graph
+```
+┌─────────────────────────────────────────────────────┐
+│                  PM Workflows                       │
+│  (triage, sprint planning, retrospective, review,   │
+│   release notes, discovery, anomaly monitoring)     │
+│                                                     │
+│  Each workflow is a template executed by the        │
+│  orchestrator — same engine that runs dev workflows │
+└──────────────────────┬──────────────────────────────┘
+                       │ orchestrated by
+┌──────────────────────┴──────────────────────────────┐
+│                  PM Workers                         │
+│  (analytics, prediction, memory, calibration,       │
+│   capacity modeling, anomaly detection)             │
+│                                                     │
+│  Each intelligence module is a worker role.         │
+│  Can be script, AI, or hybrid. Pluggable.           │
+└──────────────────────┬──────────────────────────────┘
+                       │ reads/writes
+┌──────────────────────┴──────────────────────────────┐
+│                  PM Data Layer                       │
+│  (SQLite, event store, dependency graph, work items, │
+│   decisions, outcomes, sync, projections)            │
+│                                                     │
+│  Shared infrastructure. Direct API for reads.       │
+│  Workers write through the data layer.              │
+└─────────────────────────────────────────────────────┘
+```
 
-- Immutable event log for issue, PR, review, and state transitions.
-- Typed dependency graph capturing blockers, prerequisites, and related work.
-- Deterministic state reconstruction from events + graph.
+### 5.1 The Data Layer (Shared Infrastructure)
 
-### Analytics: Cycle Times, Velocity, and DORA
+The data layer is the foundation. It owns:
 
-- Cycle time decomposition (queued, active, review, blocked).
-- Throughput and velocity trends with segment filters.
-- Delivery quality and reliability indicators, including DORA-aligned metrics.
+- **Event store** (`pm_events`) — immutable log of all state transitions, decisions, outcomes. Source of truth for replay and analytics.
+- **Work item state** (`pm_work_items`, `pm_work_item_ai_current`) — current state of every work item, AI-computed predictions, and ranking fields.
+- **Dependency graph** (`pm_dependencies`, `pm_dependency_closure`, `pm_dependency_metrics`) — typed edges with cycle prevention, transitive closure, and critical path data.
+- **Decision memory** (`pm_decisions`, `pm_outcomes`, FTS5 indexes) — persistent knowledge base linking decisions to outcomes.
+- **Review findings** (`pm_review_findings`) — calibration data for self-improving review quality.
+- **Projections** (`pm_cycle_projections`, `pm_velocity_daily`, `pm_risk_snapshots`, etc.) — derived state for fast reads, rebuilt from events.
+- **Sync infrastructure** (`pm_sync_cursors`, `pm_sync_inbox`) — GitHub ↔ Conductor synchronization.
 
-### Prediction: Monte Carlo + Rework Prediction
+The data layer is exposed through direct API calls (MCP tools, REST, A2A). These are pure data queries — no intelligence computation, no multi-step workflows. Fast, deterministic, cacheable.
 
-- Monte Carlo schedule simulation from historical distributions and active constraints.
-- Date-confidence estimates for backlog slices and sprint scopes.
-- Rework likelihood prediction from change characteristics and historical outcomes.
+**Data layer tools** (direct API, always available):
+- `conductor_get_board`, `conductor_list_work_items`, `conductor_get_work_item`
+- `conductor_update_work_item`, `conductor_transition_work_item_state`
+- `conductor_add_dependency`, `conductor_resolve_dependency`, `conductor_get_dependencies`
+- `conductor_record_decision`, `conductor_record_outcome`
+- `conductor_sync_project_state`
+- `conductor_get_velocity`, `conductor_get_cycle_time_analytics`, `conductor_get_dora_metrics`
 
-### Memory: Decision + Outcome Tracking
+### 5.2 Worker Roles (Intelligence Modules)
 
-- Decisions captured with rationale, assumptions, and context.
-- Outcomes linked back to original decisions and forecasts.
-- Retrieval by similarity for planning, review, and triage augmentation.
+Each intelligence module from `INTELLIGENCE_MODULES.md` is a **worker role specification**. The module defines what computation happens; the worker system defines how and where it runs.
 
-### Synthesis: Risk Radar, Sprint Planning, Anomaly Detection
+| Intelligence Module | Worker Role | Typical Implementation | Sync/Async |
+| --- | --- | --- | --- |
+| Cycle Time Analytics | `pm.analytics.cycle_time` | Script (SQL + math) | Async (projection) |
+| Velocity Engine | `pm.analytics.velocity` | Script (SQL + math) | Async (projection) |
+| Monte Carlo Simulation | `pm.prediction.monte_carlo` | Script (simulation engine) | Sync (on-demand) |
+| Rework Prediction | `pm.prediction.rework` | Script + AI hybrid | Sync (per-item) |
+| Dependency Graph Analysis | `pm.graph.analysis` | Script (graph algorithms) | Sync (on-demand) |
+| Risk Radar | `pm.synthesis.risk_radar` | Script (aggregation) | Async (periodic snapshot) |
+| Decision Memory & Learning | `pm.memory.retrieval` | Script + AI hybrid | Sync (on-demand) |
+| Review Calibration | `pm.calibration.review` | Script (statistics) | Async (periodic) |
+| Capacity Modeling | `pm.capacity.model` | Script (EWMA + expertise) | Async (periodic) |
+| Anomaly Detection | `pm.detection.anomaly` | Script (statistical) | Async (continuous) |
 
-- Risk radar combining analytics, prediction, and live graph state.
-- Sprint planner producing ranked, feasible scope options with confidence levels.
-- Anomaly detection for drift (unexpected queue growth, review noise spikes, dependency churn).
+**Why this matters:**
 
-Each layer is useful independently, but the full value comes from composition.
+- **Script-first**: Most intelligence modules are pure computation (SQL queries, math, graph algorithms). They don't need LLMs. Making them workers means they have the same lifecycle, monitoring, and failure handling as any other worker.
+- **Pluggable**: A team could replace the built-in rework prediction (logistic regression) with a custom ML model that speaks the same worker protocol. The orchestrator doesn't care.
+- **Async by default**: Analytics and projections run in the background, updating projection tables. Only on-demand queries (Monte Carlo simulation, rework prediction for a specific item) are sync.
+- **Composable**: The Risk Radar worker consumes outputs from Velocity, Rework Prediction, Dependency Graph, Capacity, and Anomaly Detection workers. It's a synthesis worker that composes other worker outputs.
+
+### 5.3 Workflow Templates (PM Processes)
+
+Multi-step PM processes are **workflow templates** executed by the same orchestrator that runs development workflows. A triage process, a sprint planning session, a retrospective — these are all directed graphs of stages with transitions, just like a feature development workflow.
+
+PM workflows use the orchestrator's async/sync stage model (see `orchestrator/WORKFLOW_ENGINE.md § 1.3`):
+- **Sync stages** block until complete — wait for human approval, wait for simulation to finish.
+- **Async stages** run in the background — update projections, send notifications, record analytics.
+- **Parallel stages** run multiple workers concurrently — compute capacity + velocity + risk in parallel during sprint planning.
+
+See `WORKFLOWS.md` for the complete PM workflow template catalog.
+
+**Key PM workflows:**
+
+| Workflow | Trigger | Stages | Typical Duration |
+| --- | --- | --- | --- |
+| Triage | New work item created | classify → assess risk → find similar → route | Seconds (fully automated at L3) |
+| Sprint Planning | Iteration start or manual trigger | analyze capacity → rank backlog → simulate → propose plan → approve | Minutes (with human approval gate) |
+| Retrospective | Iteration end or manual trigger | gather metrics → identify patterns → synthesize narrative → present | Seconds (automated) to minutes (human discussion) |
+| PR Review | PR opened or review requested | analyze changes → check scope → evaluate quality → produce verdict | Seconds to minutes |
+| Release Notes | Release tag or manual trigger | gather PRs → classify changes → generate narrative | Seconds |
+| Discovery | Raw idea submitted | structure → validate spec → assess value → create work item | Minutes (may need human input) |
+| Anomaly Monitoring | Continuous (timer-driven) | compute baselines → detect deviations → corroborate → alert | Continuous background |
+
+### 5.4 How It All Connects
+
+The three layers interact through well-defined interfaces:
+
+```
+Human submits idea
+    │
+    ▼
+Orchestrator: start PM workflow "discovery"
+    │
+    ├── [sync] Worker: pm.triage.classifier — classifies type, area, priority
+    │   └── reads: pm_work_items (for similar items), pm_decisions_fts (for context)
+    │
+    ├── [async] Worker: pm.prediction.rework — predicts rework risk
+    │   └── reads: pm_outcomes (historical), pm_review_findings (calibration data)
+    │
+    ├── [sync] Worker: pm.memory.retrieval — finds relevant past decisions
+    │   └── reads: pm_decisions, pm_outcomes, FTS5 indexes
+    │
+    ├── [sync] Human gate: approve triage assessment
+    │
+    └── [sync] Data layer: create work item, emit event
+```
+
+The orchestrator doesn't know these workers are "PM intelligence." It sees workers with capabilities, assigns them tasks via the standard protocol, and advances the workflow based on their results. The PM Engine is not special — it's workers and data, coordinated by the same orchestrator that coordinates everything else.
+
+This means:
+- You can add a custom intelligence module by registering a new worker with the appropriate capability.
+- You can replace a built-in module by registering a worker with higher priority for the same capability.
+- PM workflows share the same failure handling, retry logic, circuit breakers, and observability as development workflows.
+- A PM workflow stage can trigger a development workflow (triage creates a work item → orchestrator starts a feature development run) and vice versa (development run completes → outcome recording PM workflow triggers).
 
 ## 6. Design Constraints
 
 Conductor's architecture is shaped by explicit constraints:
 
-- Local-first: SQLite-backed operation with no mandatory cloud dependency.
-- Dual interface: MCP endpoint for AI agents and web UI for human operators.
-- GitHub as collaboration layer, not PM layer: issues/PRs remain collaboration artifacts while PM intelligence is computed in Conductor.
-- SDK-first agents: first-class support for Claude Code SDK and Codex SDK integration patterns.
-- Worker-type-agnostic: AI agents, deterministic scripts, and human-in-the-loop workers all use the same A2A protocol and are interchangeable at the orchestrator level.
-- Self-hosted deployment: OpenClaw-inspired operational model for teams that require control, data locality, and offline resilience.
+- **Local-first**: SQLite-backed data layer with no mandatory cloud dependency. The PM data layer and script workers run entirely locally.
+- **Decomposed, not monolithic**: The PM Engine is three layers (data, workers, workflows), not one service. Each layer can be deployed, scaled, and replaced independently.
+- **Same orchestrator**: PM workflows use the same orchestrator as development workflows. No separate PM execution engine.
+- **Worker protocol**: PM intelligence workers speak the same A2A protocol as all other workers. A PM analytics script worker is architecturally identical to a lint script worker.
+- **Dual interface**: MCP endpoint for AI agents, REST API for programmatic access, and web UI for human operators. All interfaces query the same data layer.
+- **GitHub as collaboration layer, not PM layer**: Issues/PRs remain collaboration artifacts while PM intelligence is computed in Conductor's data layer.
+- **SDK-first agents**: First-class support for Claude Code SDK, Codex SDK, and other AI agent SDKs as PM workers.
+- **Self-hosted deployment**: OpenClaw-inspired operational model for teams that require control, data locality, and offline resilience.
 
 These constraints are product decisions, not temporary implementation shortcuts.
 
 ## 7. What This Enables
 
-This architecture enables capabilities that are hard or impossible in human-first PM systems:
+The decomposed architecture enables capabilities that are hard or impossible in monolithic PM systems:
 
-- Fully autonomous product development loop:
-  discovery -> triage -> planning -> execution -> review -> learning.
-- AI PM that improves over time through linked outcome memory and calibration.
-- Sprint planning grounded in observed distributions and graph constraints, not gut feeling.
-- Continuous risk detection that surfaces emerging failure modes before cascade.
-- Cross-session intelligence that preserves context across agent runs, tool changes, and handoffs.
+- **Fully autonomous product development loop**: discovery → triage → planning → execution → review → learning. Each phase is a workflow template with pluggable workers.
+- **AI PM that improves over time**: Linked outcome memory and calibration workers continuously refine predictions. Swap out the prediction model without touching the workflow.
+- **Sprint planning grounded in data**: Monte Carlo simulation workers consume capacity and cycle time worker outputs. The sprint planning workflow orchestrates them with async parallel stages for speed.
+- **Continuous risk detection**: Anomaly detection workers run as async background stages, updating risk snapshots without blocking any workflow.
+- **Cross-session intelligence**: The data layer persists context across agent runs, tool changes, and handoffs. Any worker can query it.
+- **Custom intelligence**: Register a new worker with a PM capability to extend the intelligence layer. No core code changes needed.
+- **Mixed sync/async PM operations**: Sprint planning runs capacity + velocity + risk radar workers in parallel (async), then runs Monte Carlo simulation (sync), then presents results to human (sync gate). The orchestrator manages the concurrency.
+
+## 8. Further Reading
+
+| Document | Content |
+| --- | --- |
+| `DATA_MODEL.md` | The PM data layer — SQLite schema, event store, dependency graph, projections |
+| `INTELLIGENCE_MODULES.md` | Worker role specifications — algorithms, contracts, and caching for each intelligence module |
+| `WORKFLOWS.md` | PM workflow templates — triage, sprint planning, review, retrospective, and more |
+| `INTERFACES.md` | Complete tool catalog — MCP, A2A, and REST API schemas for data layer and worker operations |
+| `../orchestrator/OVERVIEW.md` | The orchestrator that executes PM workflows (and dev workflows) |
+| `../orchestrator/WORKFLOW_ENGINE.md` | Template system including async/sync stage execution modes |
+| `../workers/OVERVIEW.md` | Worker model — roles, providers, configuration |
+| `../workers/PROTOCOL.md` | Wire protocol that PM workers (and all workers) speak |
 
 ## Closing Perspective
 
-Conductor does not treat AI as an assistant to human PM rituals. It treats PM itself as a computable intelligence problem.
+Conductor does not treat AI as an assistant to human PM rituals. It treats PM itself as a computable intelligence problem — decomposed into data, workers, and workflows like everything else in the system.
 
 The PM engine exists to answer, continuously and explainably:
 
@@ -300,5 +415,7 @@ The PM engine exists to answer, continuously and explainably:
 - What can we commit to with confidence?
 - Where is risk accumulating right now?
 - What are we learning from outcomes, and how should that change the next plan?
+
+These answers come from the composition of workers (intelligence modules), orchestrated through workflows (PM processes), grounded in shared data (the event store and dependency graph). The same architecture that runs a feature development workflow runs a sprint planning workflow. The same protocol that a linter speaks is the protocol a Monte Carlo simulator speaks.
 
 That is the foundation for reliable, autonomous, AI-optimized product development.

@@ -16,6 +16,47 @@ The spec is aligned with:
 - `docs/pm-engine/DATA_MODEL.md`
 - `docs/pm-engine/INTERFACES.md`
 
+## Relationship to Conductor Architecture
+
+Each intelligence module in this document is a **worker role specification**. In Conductor's decomposed architecture (see `OVERVIEW.md § 5`), intelligence modules are not functions inside a monolithic PM service — they are workers that:
+
+1. **Speak the standard worker protocol** (`workers/PROTOCOL.md`) — same task request/result format as any other worker.
+2. **Are assigned by the orchestrator** through PM workflow templates (`WORKFLOWS.md`) — the orchestrator doesn't know or care that these workers compute cycle times or rework predictions.
+3. **Can be replaced** — register a new worker with the same capability but different implementation (custom ML model, different algorithm, external API) and the orchestrator routes to it.
+4. **Run sync or async** depending on the workflow stage (see `orchestrator/WORKFLOW_ENGINE.md § 1.3`):
+   - **Sync**: On-demand queries that the workflow blocks on (Monte Carlo simulation, rework prediction for a specific item).
+   - **Async**: Background projection updates that don't gate any workflow (velocity projections, risk snapshots, calibration).
+
+### Module-to-Worker Mapping
+
+| Module | Worker Role | Primary Mode | Implementation Guidance |
+| --- | --- | --- | --- |
+| 1. Cycle Time Analytics | `pm.analytics.cycle_time` | Async (projection) | Pure script: SQL event scan + percentile math. No LLM. |
+| 2. Velocity Engine | `pm.analytics.velocity` | Async (projection) | Pure script: daily aggregation + rolling windows. No LLM. |
+| 3. Monte Carlo Simulation | `pm.prediction.monte_carlo` | Sync (on-demand) | Pure script: simulation engine with deterministic seed. No LLM. |
+| 4. Rework Prediction | `pm.prediction.rework` | Sync (per-item) | Script + AI hybrid: feature extraction is script, inference can be logistic regression (script) or LLM-based. |
+| 5. Dependency Graph Analysis | `pm.graph.analysis` | Sync (on-demand) | Pure script: graph algorithms (Kahn, Tarjan, longest-path DP). No LLM. |
+| 6. Risk Radar | `pm.synthesis.risk_radar` | Async (periodic) | Pure script: aggregation of other module outputs. No LLM. |
+| 7. Decision Memory & Learning | `pm.memory.retrieval` | Sync (on-demand) | Script + AI hybrid: FTS5 retrieval is script, similarity scoring can use embeddings (AI). |
+| 8. Review Calibration | `pm.calibration.review` | Async (periodic) | Pure script: statistics (hit rates, Wilson intervals, trends). No LLM. |
+| 9. Capacity Modeling | `pm.capacity.model` | Async (periodic) | Pure script: EWMA + expertise matrix + bus factor computation. No LLM. |
+| 10. Anomaly Detection | `pm.detection.anomaly` | Async (continuous) | Pure script: statistical baselines (MAD, z-scores) + corroboration. No LLM. |
+
+**Key observation:** 8 of 10 modules are pure script workers. They need zero LLM inference. This is by design — the intelligence stack is primarily mathematical/statistical, not generative. LLMs are expensive; SQL queries and math are cheap.
+
+### What This Document Specifies
+
+For each module, the specification below defines:
+- **Input data contract** — what tables/projections the worker reads
+- **Algorithm contract** — the computation, with pseudocode and correctness constraints
+- **Output payload contract** — the response schema
+- **Computational complexity** — performance characteristics
+- **Caching and invalidation** — how projections are maintained
+
+These are the **worker role requirements**. Any implementation that satisfies the input/output contracts and respects the algorithm constraints is a valid worker for that role.
+
+---
+
 ## Global Conventions
 
 ### 1. Time, ordering, and replay
