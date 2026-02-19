@@ -252,8 +252,8 @@ Reads:
 
 ### Algorithm
 Definitions:
-- Throughput = count of completed items per time window.
-- Output = value delivered, quality-adjusted.
+- Throughput = count of completed items per time window. **This is the primary velocity metric.**
+- Output = value delivered, quality-adjusted. **Optional enrichment.** Most projects will not have meaningful value scores early on. Throughput alone is sufficient for sprint planning and trend detection. Output becomes valuable once `pm_value_profiles` and `pm_outcomes` have accumulated data.
 
 Daily series construction (`d` = date bucket UTC):
 - `throughput[d] = count(distinct work_item_id completed on d)`
@@ -275,14 +275,24 @@ Rolling windows:
 - `output_7d`, `output_30d`
 
 Trend detection:
-- Compute Theil-Sen slope on trailing rolling series:
-  - 7d trend uses last 28 points
-  - 30d trend uses last 90 points
+
+Two methods, in order of preference:
+
+**Primary (sufficient for most projects): Rolling window comparison**
+- Compare current window average to prior window average of equal length.
+- `ratio = current_window_avg / prior_window_avg`
 - Label:
-  - accelerating: slope `> +epsilon`
-  - decelerating: slope `< -epsilon`
+  - accelerating: `ratio > 1.15` (15% increase)
+  - decelerating: `ratio < 0.85` (15% decrease)
   - stable: otherwise
-- Default `epsilon = 0.02 * median(series)` per window.
+- 7d trend compares last 7 days to prior 7 days.
+- 30d trend compares last 30 days to prior 30 days.
+- Thresholds (1.15/0.85) are configurable per project.
+
+**Secondary (when finer granularity needed): Linear regression slope**
+- OLS regression on rolling series (7d uses last 28 points, 30d uses last 90 points).
+- Classify by slope significance relative to series median.
+- This is simpler than Theil-Sen, sufficient for the use case, and easier to debug when trends look wrong.
 
 Pseudocode:
 
@@ -290,8 +300,10 @@ Pseudocode:
 daily = aggregate_by_day(completions, value)
 roll7 = rolling_sum(daily, 7)
 roll30 = rolling_sum(daily, 30)
-trend7 = classify(theil_sen(roll7.tail(28)), epsilon7)
-trend30 = classify(theil_sen(roll30.tail(90)), epsilon30)
+
+# Primary method
+trend7 = classify_ratio(roll7.tail(7).mean(), roll7.tail(14).head(7).mean())
+trend30 = classify_ratio(roll30.tail(30).mean(), roll30.tail(60).head(30).mean())
 ```
 
 ### Output format (`data`)
@@ -1057,7 +1069,9 @@ Reads:
 For each contributor `u`:
 - Build weekly delivered-value series from completed items.
 - EWMA velocity:
-  - `ewma_t = alpha*x_t + (1-alpha)*ewma_{t-1}`, default `alpha=0.3`
+  - `ewma_t = alpha*x_t + (1-alpha)*ewma_{t-1}`
+  - `alpha` is configurable per project (default `0.3`). Lower values (0.1-0.2) suit projects with bursty work patterns (nothing for a week, then 5 items in a day) where high alpha would be too reactive. Higher values (0.3-0.5) suit steady-flow teams.
+  - Configuration: `project_settings.capacity.ewma_alpha` (default 0.3, range [0.05, 0.8])
 - Estimate uncertainty from trailing residual variance.
 
 #### 9.2 Area expertise mapping
@@ -1192,9 +1206,21 @@ Trigger candidate when:
 - and persistence condition met (default 2 consecutive intervals)
 
 #### 10.2 Corroboration and suppression
-- High/critical anomalies require corroboration by at least one related signal.
-- Apply cooldown windows after acknowledgement to avoid alert storms.
-- Skip planned anomalies during configured freeze windows.
+
+High/critical anomalies require corroboration to reduce false positives. "Related signal" is defined by a corroboration matrix:
+
+| Anomaly Type | Corroborating Signals (at least one required) |
+| --- | --- |
+| `velocity_drop` | `stale_item_accumulation` OR `backlog_growth_spike` OR blocked_ratio increase > 10% |
+| `backlog_growth_spike` | `velocity_drop` OR intake_rate > 2x completion_rate for 3+ days |
+| `rework_spike` | rework_rate_30d > 2x rework_rate_90d OR `gate_regression` in same area |
+| `wip_limit_violation` | item age > 2x median cycle time for state |
+| `stale_item_accumulation` | `velocity_drop` OR blocked_ratio increase > 10% |
+
+Suppression rules:
+- **Cooldown**: After acknowledgement, suppress same anomaly type for configurable window (default 48 hours).
+- **Freeze windows**: During configured freeze periods (releases, holidays), suppress non-critical anomalies. Critical anomalies always surface.
+- **Deduplication**: Same anomaly type for same metric with overlapping time windows merges into one alert with updated severity.
 
 #### 10.3 Severity scoring
 `severity_0_100 = 100 * (0.50*magnitude + 0.30*duration + 0.20*blast_radius)`

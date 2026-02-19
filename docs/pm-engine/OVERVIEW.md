@@ -70,7 +70,7 @@ AI-first PM requires:
 
 The core object is not a board card in a column. The core object is decision-ready state computed from events, graph topology, historical outcomes, and current constraints.
 
-## 2. Seven Principles of AI-Optimized PM
+## 2. Eight Principles of AI-Optimized PM
 
 ### 1) State Is Queryable, Not Visual
 
@@ -153,16 +153,40 @@ Concrete examples:
 Design implication:
 - Explainability is required for trust, debugging, and governance.
 
+### 8) Workers Are Protocol-First, Not Intelligence-First
+
+Not every worker in the system needs to be an AI agent. A linter, a test runner, a deployment script, and a Terraform plan are all workers that communicate through the same protocol as an AI planner or implementer.
+
+Concrete examples:
+- An ESLint worker receives an A2A task request with a file list, runs the linter, and returns findings in the standard review response format. It has no LLM. It speaks the same protocol.
+- A CI worker monitors a GitHub Actions run and emits status events in the same A2A envelope as an AI reviewer would.
+- A notification worker watches for risk threshold breaches and sends Slack messages. It consumes the same event stream.
+
+Design implication:
+- The A2A message contract is the universal interface. Worker type (AI agent, deterministic script, human-in-the-loop) is a capability attribute, not an architectural distinction.
+- Agent Cards declare capabilities (`can_read_codebase`, `can_write_codebase`, `can_execute_commands`) without assuming intelligence. A script worker has fixed capabilities and no LLM dependency.
+- The orchestrator routes work based on declared capabilities, not on whether the worker contains an AI model.
+
 ## 3. The Product Development Lifecycle (vs Development Execution)
 
-Conductor models the full product lifecycle:
+Conductor models the full product lifecycle, not just the coding part. Each phase has defined inputs, outputs, and transition criteria.
 
-1. Product Discovery
-2. Triage
-3. Sprint Planning
-4. Development
-5. Review
-6. Done
+### The Six Phases
+
+| Phase | Primary Actor | Input | Output | Transition Trigger |
+| --- | --- | --- | --- | --- |
+| 1. Discovery | PM Agent or Human | Raw idea, user feedback, incident report | Structured work item with value profile | Work item created with `spec_readiness >= threshold` |
+| 2. Triage | PM Agent | New work item | Classified item (type, area, priority, risk, dependencies, similar items) | Triage assessment persisted, item moved to Ready or Backlog |
+| 3. Sprint Planning | PM Agent | Ready backlog, capacity model, dependency graph | Iteration plan with committed/stretch/excluded items, Monte Carlo confidence | Iteration activated, items assigned |
+| 4. Development | Planner + Implementer workers (AI or script) | Committed work item, approved plan | Tested patchset, PR | Tests pass, implementation complete |
+| 5. Review | Reviewer worker (AI or human) | PR, acceptance criteria, plan | Review verdict (approved/changes requested), calibrated findings | Approved or sent to rework |
+| 6. Done | PM Agent | Merged PR, closed issue | Recorded outcome, updated predictions, learning memory | Outcome recorded, work item terminal |
+
+Phase transitions are event-driven, not ceremony-driven. The orchestrator advances work through phases based on gate conditions, not meeting schedules. A work item can flow from Discovery to Done in minutes if all gates pass, or it can sit in any phase until its conditions are met.
+
+### Rework Is a First-Class Loop, Not an Exception
+
+When review requests changes, the item returns to Development with the review findings as input. This is not a failure state — it is a predicted, measured, and optimized loop. The rework prediction module estimates how likely this loop is before development starts, allowing the system to add extra review steps for high-risk items.
 
 ### Why Most AI Coding Tools Skip Product Phases
 
@@ -250,6 +274,7 @@ Conductor's architecture is shaped by explicit constraints:
 - Dual interface: MCP endpoint for AI agents and web UI for human operators.
 - GitHub as collaboration layer, not PM layer: issues/PRs remain collaboration artifacts while PM intelligence is computed in Conductor.
 - SDK-first agents: first-class support for Claude Code SDK and Codex SDK integration patterns.
+- Worker-type-agnostic: AI agents, deterministic scripts, and human-in-the-loop workers all use the same A2A protocol and are interchangeable at the orchestrator level.
 - Self-hosted deployment: OpenClaw-inspired operational model for teams that require control, data locality, and offline resilience.
 
 These constraints are product decisions, not temporary implementation shortcuts.

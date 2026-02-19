@@ -82,6 +82,8 @@ PRAGMA journal_mode = WAL;
 
 -- ============================================================
 -- Stakeholders
+-- Phase: 2 (post-MVP). Schema is defined now for forward compatibility.
+-- MVP uses issue creator + priority band for urgency signals.
 -- ============================================================
 
 CREATE TABLE pm_stakeholders (
@@ -646,6 +648,7 @@ CREATE INDEX idx_pm_iteration_items_work_item_active
 
 -- ============================================================
 -- Stakeholder Attachments and External Urgency
+-- Phase: 2 (post-MVP). See Stakeholders note above.
 -- ============================================================
 
 CREATE TABLE pm_work_item_stakeholders (
@@ -910,7 +913,9 @@ CREATE TABLE pm_review_findings (
   run_id TEXT REFERENCES runs(run_id) ON DELETE SET NULL,
 
   source TEXT NOT NULL CHECK (source IN ('agent', 'human', 'ci', 'external')),
-  category TEXT NOT NULL CHECK (category IN ('correctness', 'security', 'performance', 'maintainability', 'testing', 'spec')),
+  review_context TEXT NOT NULL DEFAULT 'code_review'
+    CHECK (review_context IN ('code_review', 'plan_review', 'spec_review', 'pr_comment', 'ci_check')),
+  category TEXT NOT NULL CHECK (category IN ('correctness', 'security', 'performance', 'maintainability', 'testing', 'spec', 'scope')),
   severity TEXT NOT NULL CHECK (severity IN ('blocking', 'high', 'medium', 'low', 'suggestion')),
   disposition TEXT NOT NULL CHECK (disposition IN ('open', 'fixed', 'accepted_risk', 'dismissed', 'duplicate')),
 
@@ -947,6 +952,8 @@ CREATE INDEX idx_pm_review_findings_run
 
 -- ============================================================
 -- Cross-Project Initiatives
+-- Phase: 2 (post-MVP). Schema defined for forward compatibility.
+-- MVP operates single-project; initiative tables remain empty.
 -- ============================================================
 
 CREATE TABLE pm_initiatives (
@@ -1101,7 +1108,9 @@ BEGIN
 END;
 
 -- ============================================================
--- Sync Layer (GitHub Migration + Steady-State Ingest)
+-- Sync Layer (Provider-Agnostic Migration + Steady-State Ingest)
+-- Supports GitHub (Phase 1), GitLab/Linear/Jira (Phase 2+).
+-- source_system column discriminates provider-specific behavior.
 -- ============================================================
 
 CREATE TABLE pm_sync_cursors (
@@ -1110,8 +1119,8 @@ CREATE TABLE pm_sync_cursors (
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
   repo_id TEXT NOT NULL REFERENCES repos(repo_id) ON DELETE CASCADE,
 
-  source_system TEXT NOT NULL CHECK (source_system IN ('github')),
-  cursor_kind TEXT NOT NULL CHECK (cursor_kind IN ('issues', 'issue_events', 'issue_comments', 'timeline')),
+  source_system TEXT NOT NULL CHECK (source_system IN ('github', 'gitlab', 'linear', 'jira', 'manual_import')),
+  cursor_kind TEXT NOT NULL CHECK (cursor_kind IN ('issues', 'issue_events', 'issue_comments', 'timeline', 'merge_requests', 'projects')),
 
   cursor_value TEXT,
 
@@ -1130,7 +1139,7 @@ CREATE INDEX idx_pm_sync_cursors_repo
 CREATE TABLE pm_sync_inbox (
   inbox_id INTEGER PRIMARY KEY,
 
-  source_system TEXT NOT NULL CHECK (source_system IN ('github')),
+  source_system TEXT NOT NULL CHECK (source_system IN ('github', 'gitlab', 'linear', 'jira', 'manual_import')),
   delivery_id TEXT NOT NULL,
 
   project_id TEXT REFERENCES projects(project_id) ON DELETE SET NULL,
@@ -1165,7 +1174,7 @@ CREATE TABLE pm_sync_conflicts (
   repo_id TEXT REFERENCES repos(repo_id) ON DELETE SET NULL,
   work_item_id INTEGER REFERENCES pm_work_items(work_item_id) ON DELETE SET NULL,
 
-  source_system TEXT NOT NULL CHECK (source_system IN ('github')),
+  source_system TEXT NOT NULL CHECK (source_system IN ('github', 'gitlab', 'linear', 'jira', 'manual_import')),
   field_name TEXT NOT NULL,
 
   local_value_json TEXT NOT NULL CHECK (json_valid(local_value_json)),
@@ -1667,14 +1676,19 @@ Urgency signals and stakeholder relationships let planning reflect real external
 10. Cross-project work is native.
 Dependencies, initiatives, and repo links allow multi-repo programs without separate schemas.
 
-11. Sync and conflict handling are first-class.
-Inbox/cursor/conflict tables make migration and steady-state ingestion deterministic and recoverable.
+11. Sync and conflict handling are first-class and provider-agnostic.
+Inbox/cursor/conflict tables make migration and steady-state ingestion deterministic and recoverable. The `source_system` discriminator on sync tables allows the same pipeline to ingest from GitHub, GitLab, Linear, Jira, or manual imports.
 
-## Migration Strategy from GitHub Issues (Sync Layer Design)
+12. Review findings distinguish source and context.
+The `source` column identifies who generated the finding (agent, human, CI). The `review_context` column identifies what was being reviewed (code, plan, spec, PR comment). This separation enables accurate calibration — an AI code review finding has different false-positive patterns than a human PR comment or a CI check.
+
+## Migration Strategy (Provider-Agnostic Sync Layer Design)
+
+The sync layer is designed to ingest from any issue tracker, not just GitHub. Phase 1 implements GitHub; the same ingress pipeline, normalizer, and conflict resolution model apply to GitLab, Linear, Jira, and manual imports in later phases.
 
 ### Phase 0: Preconditions
 - Enable schema in one migration and seed `pm_event_types`.
-- Build label-to-field mapping rules per project (`type`, `area`, `priority`, `risk`).
+- Build label-to-field mapping rules per project per source system (`type`, `area`, `priority`, `risk`).
 - Create initial `pm_event_project_sequences` rows for existing projects with `last_sequence = 0`.
 
 ### Phase 1: One-Time Backfill
@@ -1730,7 +1744,10 @@ Conflict handling:
 - Rebuild projections from `pm_events` when drift is detected.
 - Full repo re-backfill remains safe because upserts + idempotency keys prevent duplication.
 
-### Canonical GitHub Mapping
+### Canonical Mapping: GitHub (Phase 1)
+
+Each source system requires its own field mapping. GitHub is the reference implementation; additional providers follow the same pattern with provider-specific normalizers.
+
 - `issues.node_id` -> `pm_external_items.external_node_id`
 - `issues.number` -> `pm_external_items.external_number`
 - `issues.title` -> `pm_work_items.title`

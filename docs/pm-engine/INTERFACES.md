@@ -12,6 +12,28 @@ This document is the normative interface specification for Conductor PM Engine a
 
 Every capability in this document is transport-equivalent: same semantic input contract, same semantic output contract, same side effects, same authorization and policy checks.
 
+## Implementation Tiers
+
+All 52 tools are specified here for completeness. They are grouped into implementation tiers to guide build order:
+
+| Tier | Tools | Rationale |
+| --- | --- | --- |
+| **Tier 1 (MVP)** ~20 tools | Board/workflow CRUD (get_board, list/get/update/transition work items), dependency management (add/resolve/get), triage, plan iteration, suggest next, start/cancel/get run, list runs, record decision/outcome, sync, velocity, cycle time | Core loop: triage → plan → execute → review → learn |
+| **Tier 2 (Intelligence)** ~15 tools | Monte Carlo, rework prediction, risk radar, anomalies, standup/retro generation, PR review, PR impact, scope creep detection, approve/reject plan, retry run, workflow health | Prediction, quality gates, and operational intelligence |
+| **Tier 3 (Advanced)** ~17 tools | Backlog forecast, delay simulation/explanation, estimate comparison, graph export/analysis/critical path, capacity modeling, session context builder, spec validation, backlog ranking, decompose work item, assign iteration items, release notes, query/suggest memory | Portfolio optimization, advanced analytics, full memory system |
+
+All tiers share the same schemas and service layer. Tiering affects build priority, not architecture.
+
+## Transport Parity and Schema Deduplication
+
+Each operation has exactly ONE canonical input schema and ONE canonical output schema. The MCP tool, A2A message payload, and Web API request body all use the same schema.
+
+- MCP: `conductor_{operation}` tool with input/output schemas defined in Part 1.
+- A2A: The A2A workflow payload wraps the same input schema inside the A2A envelope. Do NOT define separate "payload schemas" that duplicate MCP schemas.
+- Web API: `POST /api/pm/tools/{tool_name}` with the MCP input schema as request body.
+
+Where Part 3 (A2A Message Contracts) defines workflow-specific payloads, these exist ONLY for multi-step workflows that combine multiple tool calls into a single agent interaction (e.g., triage request includes similar items + predictions in one response). Single-tool A2A calls MUST use the MCP schema directly.
+
 ## Normative Terms
 - MUST: required for compliant implementation.
 - SHOULD: recommended unless there is a documented reason to differ.
@@ -66,6 +88,10 @@ export const SortDirection = z.enum(['asc', 'desc']);
 
 export const WorkItemType = z.enum(['epic', 'feature', 'bug', 'chore', 'spike', 'incident', 'task']);
 export const WorkItemState = z.enum(['backlog', 'ready', 'in_progress', 'blocked', 'in_review', 'done', 'cancelled']);
+// Priority uses numeric bands (p0=critical through p4=lowest) for extensibility.
+// Human-readable mapping: p0=critical, p1=high, p2=normal, p3=low, p4=backlog.
+// The claude-pm-toolkit used string labels (critical/high/normal/low).
+// Conductor standardizes on p0-p4 with display labels resolved at presentation layer.
 export const PriorityBand = z.enum(['p0', 'p1', 'p2', 'p3', 'p4']);
 export const RiskLevel = z.enum(['low', 'medium', 'high', 'critical']);
 
@@ -436,7 +462,7 @@ export const RunArtifactSchema = z.object({
 });
 ```
 
-## Part 1: MCP Tool Catalog (52 Tools)
+## Part 1: MCP Tool Catalog (55 Tools)
 
 All tools return `makeToolResultSchema(<OutputSchema>)` and MUST enforce project-scoped authz before execution.
 
@@ -1489,6 +1515,44 @@ export const ConductorCompareEstimatesVsActualsOutputSchema = z.object({
 
 ### 8. Run Management (7)
 
+#### Run Phase Transition Graph
+
+Run phases form a directed graph, not a linear sequence. This allows rework loops, replanning, and parallel execution paths.
+
+```text
+                    ┌─────────────────────────────────────┐
+                    │                                     ▼
+pending ──► planning ──► awaiting_plan_approval ──► executing ──► awaiting_review ──► completed
+                ▲              │                      │    ▲          │
+                │              │                      │    │          │
+                │              ▼                      ▼    │          ▼
+                │          cancelled              blocked ─┘      cancelled
+                │                                     │
+                └─────────────────────────────────────┘
+                        (retry with rewind_to=planning:start)
+```
+
+Valid transitions:
+| From | To | Trigger |
+| --- | --- | --- |
+| `pending` | `planning` | Run started, planner worker assigned |
+| `planning` | `awaiting_plan_approval` | Plan artifact created |
+| `planning` | `cancelled` | Cancel requested |
+| `awaiting_plan_approval` | `executing` | Plan approved (human or AI per autonomy level) |
+| `awaiting_plan_approval` | `planning` | Plan rejected with revision request |
+| `awaiting_plan_approval` | `cancelled` | Cancel requested |
+| `executing` | `awaiting_review` | Implementation complete, tests pass |
+| `executing` | `blocked` | Tests fail, dependency unresolved, or policy block |
+| `executing` | `cancelled` | Cancel requested |
+| `blocked` | `executing` | Blocker resolved (retry) |
+| `blocked` | `planning` | Retry with `rewind_to=planning:start` (redesign) |
+| `blocked` | `cancelled` | Cancel after max retries |
+| `awaiting_review` | `completed` | Review approved |
+| `awaiting_review` | `executing` | Changes requested (rework loop) |
+| `awaiting_review` | `cancelled` | Cancel requested |
+
+The `rewind_to` parameter on `conductor_retry_run` enables non-linear recovery: a blocked run can go back to planning (not just retry execution) when the failure requires a fundamentally different approach.
+
 #### Schemas
 ```ts
 import { z } from 'zod/v4';
@@ -1608,6 +1672,90 @@ export const ConductorListRunsOutputSchema = z.object({
 | `conductor_get_run_status` | Read full run status view (phase, gates, timeline, artifacts). | `ConductorGetRunStatusInputSchema` | `ToolResult<ConductorGetRunStatusOutputSchema>` | None | `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_ERROR` |
 | `conductor_list_runs` | List runs by project/phase/status/result filters. | `ConductorListRunsInputSchema` | `ToolResult<ConductorListRunsOutputSchema>` | None | `UNAUTHORIZED`, `FORBIDDEN`, `VALIDATION_ERROR` |
 
+### 9. Event Subscription (3)
+
+These tools enable push-based notification when state changes occur. Without event subscription, consumers must poll — which is inefficient for real-time orchestration and external integrations.
+
+#### Schemas
+```ts
+import { z } from 'zod/v4';
+
+export const EventFilterSchema = z.object({
+  event_types: z.array(z.string()).optional(),
+  entity_types: z.array(z.string()).optional(),
+  work_item_ids: z.array(WorkItemId).optional(),
+  run_ids: z.array(RunId).optional(),
+  min_severity: RiskLevel.optional(),
+});
+
+export const ConductorSubscribeEventsInputSchema = z.object({
+  project_id: ProjectId,
+  subscriber_id: z.string().min(1),
+  subscriber_type: z.enum(['webhook', 'sse', 'websocket', 'a2a_callback']),
+  callback_url: z.string().url().optional(),
+  filter: EventFilterSchema.optional(),
+  ttl_hours: z.number().int().min(1).max(720).default(24),
+});
+
+export const ConductorSubscribeEventsOutputSchema = z.object({
+  subscription_id: z.string().min(1),
+  subscriber_id: z.string().min(1),
+  expires_at: IsoDateTime,
+  filter: EventFilterSchema.optional(),
+});
+
+export const ConductorUnsubscribeEventsInputSchema = z.object({
+  subscription_id: z.string().min(1),
+});
+
+export const ConductorUnsubscribeEventsOutputSchema = z.object({
+  subscription_id: z.string().min(1),
+  unsubscribed_at: IsoDateTime,
+});
+
+export const ConductorListSubscriptionsInputSchema = z.object({
+  project_id: ProjectId,
+  subscriber_id: z.string().optional(),
+  include_expired: z.boolean().default(false),
+});
+
+export const ConductorListSubscriptionsOutputSchema = z.object({
+  subscriptions: z.array(z.object({
+    subscription_id: z.string().min(1),
+    subscriber_id: z.string().min(1),
+    subscriber_type: z.enum(['webhook', 'sse', 'websocket', 'a2a_callback']),
+    filter: EventFilterSchema.optional(),
+    created_at: IsoDateTime,
+    expires_at: IsoDateTime,
+    is_active: z.boolean(),
+  })),
+});
+```
+
+#### Tool Catalog
+| Tool | Description | Input schema | Output format | Side effects | Error conditions |
+|---|---|---|---|---|---|
+| `conductor_subscribe_events` | Register for push notifications on PM events matching filter criteria. | `ConductorSubscribeEventsInputSchema` | `ToolResult<ConductorSubscribeEventsOutputSchema>` | Creates subscription record; begins event delivery to callback. | `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_ERROR`, `CONFLICT` |
+| `conductor_unsubscribe_events` | Cancel an active event subscription. | `ConductorUnsubscribeEventsInputSchema` | `ToolResult<ConductorUnsubscribeEventsOutputSchema>` | Marks subscription inactive; stops event delivery. | `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND` |
+| `conductor_list_subscriptions` | List active event subscriptions for a project. | `ConductorListSubscriptionsInputSchema` | `ToolResult<ConductorListSubscriptionsOutputSchema>` | None | `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `VALIDATION_ERROR` |
+
+**Event delivery format:** When a subscribed event fires, the system delivers an A2A-formatted notification to the callback URL:
+
+```json
+{
+  "protocol": "a2a/1.0",
+  "message_type": "event_notification",
+  "subscription_id": "sub_abc123",
+  "event": {
+    "event_id": "evt_789",
+    "event_type": "work_item.state_changed",
+    "project_id": "proj_1",
+    "occurred_at": "2026-02-19T18:30:00Z",
+    "payload": { "work_item_id": 42, "from_state": "in_progress", "to_state": "done" }
+  }
+}
+```
+
 ## Part 2: A2A Agent Card Specification
 
 ### Agent Card Schema (Normative)
@@ -1627,7 +1775,7 @@ export const AgentCardSchema = z.object({
   card_id: z.string().min(1),
   version: z.literal('1.0'),
   display_name: z.string().min(1),
-  agent_type: z.enum(['pm', 'planner', 'implementer', 'reviewer']),
+  agent_type: z.enum(['pm', 'planner', 'implementer', 'reviewer', 'script']),
   description: z.string().min(1),
   skills: z.array(AgentSkillSchema).min(1),
   capabilities: z.object({
@@ -1637,6 +1785,7 @@ export const AgentCardSchema = z.object({
     can_read_codebase: z.boolean(),
     can_write_codebase: z.boolean(),
     can_execute_commands: z.boolean(),
+    requires_llm: z.boolean().default(true),
     max_parallel_tasks: z.number().int().min(1).default(1),
     requires_human_gate_for: z.array(z.string()).default([]),
   }),
@@ -1887,6 +2036,58 @@ export const AgentCardSchema = z.object({
 }
 ```
 
+### Script Worker Card
+
+Not every worker is an AI agent. Linters, test runners, deployment scripts, and CI monitors are all workers that communicate through the same A2A protocol. The Script Worker card represents deterministic, non-AI workers.
+
+```json
+{
+  "card_id": "conductor.script-worker",
+  "version": "1.0",
+  "display_name": "Script Worker",
+  "agent_type": "script",
+  "description": "Deterministic worker that executes structured scripts (linting, testing, deployment, CI monitoring) and reports results via A2A protocol. No LLM dependency.",
+  "skills": [
+    {
+      "skill_id": "execute_script",
+      "name": "Execute Script",
+      "operation": "script.execute",
+      "description": "Run a configured script and return structured results.",
+      "input_schema_ref": "ScriptExecutionRequestPayloadSchema",
+      "output_schema_ref": "ScriptExecutionResponsePayloadSchema"
+    }
+  ],
+  "capabilities": {
+    "accepts_operations": ["script.execute", "script.lint", "script.test", "script.deploy", "script.monitor"],
+    "emits_artifacts": ["TEST_REPORT", "LINT_REPORT", "DEPLOY_STATUS"],
+    "mcp_tools_allowed": [
+      "conductor_get_run_status",
+      "conductor_detect_scope_creep"
+    ],
+    "can_read_codebase": true,
+    "can_write_codebase": false,
+    "can_execute_commands": true,
+    "requires_llm": false,
+    "max_parallel_tasks": 8,
+    "requires_human_gate_for": ["deploy_production"]
+  },
+  "input_format": {
+    "mime": "application/json",
+    "schema_ref": "ScriptExecutionRequestPayloadSchema"
+  },
+  "output_format": {
+    "mime": "application/json",
+    "schema_ref": "ScriptExecutionResponsePayloadSchema"
+  }
+}
+```
+
+Key differences from AI agent cards:
+- `requires_llm: false` — no model API key or token budget needed.
+- `max_parallel_tasks: 8` — deterministic workers can scale higher than AI agents.
+- `agent_type: "script"` — the orchestrator knows this worker has fixed behavior; no need for prompt engineering or context window management.
+- The A2A message format is identical. The orchestrator does not need to know whether a worker is AI or script — it routes based on declared capabilities.
+
 ## Part 3: A2A Message Contracts
 
 ### Base Envelope (Normative)
@@ -1926,6 +2127,11 @@ export const A2AWorkflowOperation = z.enum([
   'review.code',
   'review.scope',
   'pm.record_outcome',
+  'script.execute',
+  'script.lint',
+  'script.test',
+  'script.deploy',
+  'script.monitor',
 ]);
 
 export const A2AWorkflowRequestEnvelopeSchema = z.object({
@@ -2145,6 +2351,36 @@ export const OutcomeRecordingResponsePayloadSchema = z.object({
   linked_learning_updates: z.array(z.string()),
 });
 ```
+
+#### 7. Script execution request/response
+```ts
+export const ScriptExecutionRequestPayloadSchema = z.object({
+  operation: z.enum(['script.execute', 'script.lint', 'script.test', 'script.deploy', 'script.monitor']),
+  project_id: ProjectId,
+  run_id: RunId.optional(),
+  work_item_id: WorkItemId.optional(),
+  script_id: z.string().min(1),
+  workspace: z.object({
+    worktree_path: z.string().min(1),
+    base_branch: z.string().min(1),
+  }).optional(),
+  args: z.record(z.string(), JsonValueSchema).default({}),
+  timeout_seconds: z.number().int().min(1).max(3600).default(300),
+});
+
+export const ScriptExecutionResponsePayloadSchema = z.object({
+  operation: z.enum(['script.execute', 'script.lint', 'script.test', 'script.deploy', 'script.monitor']),
+  script_id: z.string().min(1),
+  exit_code: z.number().int(),
+  passed: z.boolean(),
+  summary: z.string(),
+  findings: z.array(ReviewFindingSchema).default([]),
+  artifacts: z.array(A2AArtifactRefSchema).default([]),
+  duration_seconds: z.number().min(0),
+});
+```
+
+Script workers use the same A2A envelope (`A2AWorkflowRequestEnvelopeSchema` / `A2AWorkflowResponseEnvelopeSchema`) as AI agents. The orchestrator does not need to know whether a worker is AI or script — it routes based on the `operation` field and the worker's declared capabilities in its Agent Card.
 
 ## Part 4: Autonomy Levels
 
