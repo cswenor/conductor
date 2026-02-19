@@ -301,7 +301,11 @@ daily = aggregate_by_day(completions, value)
 roll7 = rolling_sum(daily, 7)
 roll30 = rolling_sum(daily, 30)
 
-# Primary method
+# Primary method — rolling window comparison
+# classify_ratio handles edge cases:
+#   - prior_avg == 0 and current_avg == 0 → "stable" (no data)
+#   - prior_avg == 0 and current_avg > 0 → "accelerating" (from zero)
+#   - insufficient history (< 2 full windows) → "insufficient_data"
 trend7 = classify_ratio(roll7.tail(7).mean(), roll7.tail(14).head(7).mean())
 trend30 = classify_ratio(roll30.tail(30).mean(), roll30.tail(60).head(30).mean())
 ```
@@ -319,12 +323,14 @@ trend30 = classify_ratio(roll30.tail(30).mean(), roll30.tail(60).head(30).mean()
     "throughput": {
       "window": "30d",
       "state": "accelerating",
-      "slope_per_day": 0.19
+      "ratio": 1.22,
+      "method": "rolling_window_comparison"
     },
     "output": {
       "window": "30d",
       "state": "stable",
-      "slope_per_day": 0.03
+      "ratio": 1.04,
+      "method": "rolling_window_comparison"
     }
   },
   "daily_series": [
@@ -340,8 +346,9 @@ trend30 = classify_ratio(roll30.tail(30).mean(), roll30.tail(60).head(30).mean()
 ### Computational complexity
 - Daily aggregation from completions: `O(W)`
 - Rolling calculations: `O(days)`
-- Trend estimation (Theil-Sen): `O(days log days)` optimized
-- Total typical: `O(W + days log days)`
+- Trend estimation (rolling window comparison): `O(1)` per window
+- Trend estimation (OLS regression, secondary): `O(days)`
+- Total typical: `O(W + days)`
 
 ### Caching strategy
 - Persist daily aggregates in `pm_velocity_daily`
@@ -1181,12 +1188,13 @@ Reads:
 - Risk snapshots from Module 6
 
 ### Anomaly classes
-Minimum supported classes:
-- velocity_drop
-- backlog_growth_spike
-- rework_spike
-- wip_limit_violation
-- stale_item_accumulation
+Canonical anomaly types (shared with INTERFACES.md anomaly enum):
+- `velocity_drop`
+- `backlog_growth_spike`
+- `rework_spike`
+- `wip_limit_violation`
+- `stale_item_accumulation`
+- `gate_regression` (review quality degradation in a specific area)
 
 ### Algorithm
 

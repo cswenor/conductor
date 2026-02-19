@@ -14,7 +14,7 @@ Every capability in this document is transport-equivalent: same semantic input c
 
 ## Implementation Tiers
 
-All 52 tools are specified here for completeness. They are grouped into implementation tiers to guide build order:
+All 55 tools are specified here for completeness. They are grouped into implementation tiers to guide build order:
 
 | Tier | Tools | Rationale |
 | --- | --- | --- |
@@ -26,13 +26,14 @@ All tiers share the same schemas and service layer. Tiering affects build priori
 
 ## Transport Parity and Schema Deduplication
 
-Each operation has exactly ONE canonical input schema and ONE canonical output schema. The MCP tool, A2A message payload, and Web API request body all use the same schema.
+Each atomic operation has exactly ONE canonical input schema and ONE canonical output schema. The MCP tool, A2A message payload, and Web API request body all use the same schema.
 
 - MCP: `conductor_{operation}` tool with input/output schemas defined in Part 1.
-- A2A: The A2A workflow payload wraps the same input schema inside the A2A envelope. Do NOT define separate "payload schemas" that duplicate MCP schemas.
+- A2A: The A2A workflow payload wraps the same input schema inside the A2A envelope.
 - Web API: `POST /api/pm/tools/{tool_name}` with the MCP input schema as request body.
 
-Where Part 3 (A2A Message Contracts) defines workflow-specific payloads, these exist ONLY for multi-step workflows that combine multiple tool calls into a single agent interaction (e.g., triage request includes similar items + predictions in one response). Single-tool A2A calls MUST use the MCP schema directly.
+**When to define separate A2A payloads (Part 3):**
+Part 3 defines composite workflow payloads for multi-step agent interactions that orchestrate multiple tool calls into a single request/response cycle (e.g., triage includes similar items + predictions; review includes PR diff + findings + verdict). These composite payloads SHOULD compose Part 1 schemas by reference (`$ref` or embedding) rather than redefining fields. Single-tool A2A calls MUST use the MCP schema directly — do NOT create a wrapper payload for a 1:1 mapping.
 
 ## Normative Terms
 - MUST: required for compliant implementation.
@@ -379,10 +380,14 @@ export const SimilarItemSchema = z.object({
   outcome_hint: z.enum(['positive', 'neutral', 'negative']).optional(),
 });
 
+// ReviewFindingSchema aligns with pm_review_findings DB table.
+// DB columns: source, review_context, category, severity, disposition.
+// Interface uses the same vocabulary to avoid mapping ambiguity.
 export const ReviewFindingSchema = z.object({
   finding_id: z.string().optional(),
-  type: z.enum(['BLOCKING', 'SUGGESTION']),
-  severity: z.enum(['critical', 'high', 'medium', 'low']).optional(),
+  category: z.enum(['correctness', 'security', 'performance', 'maintainability', 'testing', 'spec', 'scope']),
+  severity: z.enum(['blocking', 'high', 'medium', 'low', 'suggestion']),
+  review_context: z.enum(['code_review', 'plan_review', 'spec_review', 'pr_comment', 'ci_check']).default('code_review'),
   location: z.string().min(1),
   issue: z.string().min(1),
   fix: z.string().min(1),
@@ -1023,7 +1028,7 @@ export const ConductorGetAnomaliesOutputSchema = z.object({
     anomaly_id: z.string().min(1),
     detected_at: IsoDateTime,
     level: RiskLevel,
-    type: z.enum(['velocity_drop', 'backlog_spike', 'rework_spike', 'stale_wip', 'gate_regression']),
+    type: z.enum(['velocity_drop', 'backlog_growth_spike', 'rework_spike', 'wip_limit_violation', 'stale_item_accumulation', 'gate_regression']),
     summary: z.string(),
     evidence: z.array(z.string()),
     acknowledged: z.boolean().default(false),
@@ -1612,7 +1617,9 @@ export const ConductorCancelRunOutputSchema = z.object({
 export const ConductorRetryRunInputSchema = z.object({
   run_id: RunId,
   actor_id: z.string().min(1),
-  rewind_to: z.enum(['planning:start', 'awaiting_plan_approval', 'executing:start', 'awaiting_review']).optional(),
+  // Valid rewind targets from blocked: planning:start or executing:start (see Run Phase Transition Graph).
+  // awaiting_plan_approval and awaiting_review are not valid rewind targets — they are gate states, not entry points.
+  rewind_to: z.enum(['planning:start', 'executing:start']).optional(),
   context_mode: z.enum(['preserve', 'truncate']).default('preserve'),
   comment: z.string().optional(),
 });
@@ -1688,11 +1695,13 @@ export const EventFilterSchema = z.object({
   min_severity: RiskLevel.optional(),
 });
 
+// Persistent subscriptions are webhook/a2a_callback only (stored in pm_event_subscriptions).
+// SSE and WebSocket are connection-based and handled at the transport layer, not stored.
 export const ConductorSubscribeEventsInputSchema = z.object({
   project_id: ProjectId,
   subscriber_id: z.string().min(1),
-  subscriber_type: z.enum(['webhook', 'sse', 'websocket', 'a2a_callback']),
-  callback_url: z.string().url().optional(),
+  subscriber_type: z.enum(['webhook', 'a2a_callback']),
+  callback_url: z.string().url(), // Required — push-based delivery needs a target URL.
   filter: EventFilterSchema.optional(),
   ttl_hours: z.number().int().min(1).max(720).default(24),
 });
@@ -1723,11 +1732,13 @@ export const ConductorListSubscriptionsOutputSchema = z.object({
   subscriptions: z.array(z.object({
     subscription_id: z.string().min(1),
     subscriber_id: z.string().min(1),
-    subscriber_type: z.enum(['webhook', 'sse', 'websocket', 'a2a_callback']),
+    subscriber_type: z.enum(['webhook', 'a2a_callback']),
+    callback_url: z.string().url(),
     filter: EventFilterSchema.optional(),
     created_at: IsoDateTime,
     expires_at: IsoDateTime,
     is_active: z.boolean(),
+    consecutive_failures: z.number().int().min(0).default(0),
   })),
 });
 ```
@@ -2133,6 +2144,22 @@ export const A2AWorkflowOperation = z.enum([
   'script.deploy',
   'script.monitor',
 ]);
+
+// A2A message types: task_request, task_result, event_notification
+export const A2AMessageType = z.enum(['task_request', 'task_result', 'event_notification']);
+
+export const A2AEventNotificationSchema = z.object({
+  protocol: z.literal('a2a/1.0'),
+  message_type: z.literal('event_notification'),
+  subscription_id: z.string().min(1),
+  event: z.object({
+    event_id: z.string().min(1),
+    event_type: z.string().min(1),
+    project_id: ProjectId,
+    occurred_at: IsoDateTime,
+    payload: z.record(z.string(), JsonValueSchema),
+  }),
+});
 
 export const A2AWorkflowRequestEnvelopeSchema = z.object({
   protocol: z.literal('a2a/1.0'),

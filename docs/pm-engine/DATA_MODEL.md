@@ -244,7 +244,7 @@ CREATE TABLE pm_external_items (
   external_item_id INTEGER PRIMARY KEY,
   work_item_id INTEGER NOT NULL REFERENCES pm_work_items(work_item_id) ON DELETE CASCADE,
 
-  source_system TEXT NOT NULL CHECK (source_system IN ('github', 'jira', 'linear', 'manual_import')),
+  source_system TEXT NOT NULL CHECK (source_system IN ('github', 'gitlab', 'linear', 'jira', 'manual_import')),
   repo_id TEXT REFERENCES repos(repo_id) ON DELETE SET NULL,
 
   external_node_id TEXT,
@@ -1036,7 +1036,8 @@ CREATE TABLE pm_events (
   actor_type TEXT NOT NULL CHECK (actor_type IN ('human', 'agent', 'system', 'external')),
   actor_id TEXT NOT NULL,
 
-  source TEXT NOT NULL CHECK (source IN ('conductor', 'github_webhook', 'github_poll', 'manual', 'ai', 'migration')),
+  -- source tracks ingestion origin, not provider. Provider is on pm_external_items.source_system.
+  source TEXT NOT NULL CHECK (source IN ('conductor', 'provider_webhook', 'provider_poll', 'manual', 'ai', 'migration')),
 
   correlation_id TEXT,
   causation_event_id INTEGER REFERENCES pm_events(event_id),
@@ -1117,7 +1118,8 @@ CREATE TABLE pm_sync_cursors (
   sync_cursor_id INTEGER PRIMARY KEY,
 
   project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
-  repo_id TEXT NOT NULL REFERENCES repos(repo_id) ON DELETE CASCADE,
+  -- repo_id is nullable: Jira/Linear cursors may be project-level without a repo.
+  repo_id TEXT REFERENCES repos(repo_id) ON DELETE CASCADE,
 
   source_system TEXT NOT NULL CHECK (source_system IN ('github', 'gitlab', 'linear', 'jira', 'manual_import')),
   cursor_kind TEXT NOT NULL CHECK (cursor_kind IN ('issues', 'issue_events', 'issue_comments', 'timeline', 'merge_requests', 'projects')),
@@ -1130,7 +1132,8 @@ CREATE TABLE pm_sync_cursors (
   backfill_complete INTEGER NOT NULL DEFAULT 0 CHECK (backfill_complete IN (0, 1)),
   last_error TEXT,
 
-  UNIQUE (project_id, repo_id, source_system, cursor_kind)
+  -- Composite key uses COALESCE for nullable repo_id
+  UNIQUE (project_id, COALESCE(repo_id, '__no_repo__'), source_system, cursor_kind)
 );
 
 CREATE INDEX idx_pm_sync_cursors_repo
@@ -1190,6 +1193,79 @@ CREATE TABLE pm_sync_conflicts (
 CREATE INDEX idx_pm_sync_conflicts_pending
   ON pm_sync_conflicts(project_id, resolution, detected_at DESC)
   WHERE resolution = 'pending';
+
+-- ============================================================
+-- Event Subscriptions (Push Notifications)
+-- ============================================================
+
+CREATE TABLE pm_event_subscriptions (
+  subscription_id TEXT PRIMARY KEY,
+
+  project_id TEXT NOT NULL REFERENCES projects(project_id) ON DELETE CASCADE,
+  subscriber_id TEXT NOT NULL,
+  subscriber_type TEXT NOT NULL CHECK (subscriber_type IN ('webhook', 'a2a_callback')),
+  -- SSE and WebSocket are connection-based, not stored subscriptions.
+  -- They are handled at the transport layer, not in the database.
+
+  callback_url TEXT NOT NULL,
+
+  filter_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(filter_json)),
+  -- JSON object matching EventFilterSchema: event_types, entity_types, work_item_ids, etc.
+
+  ttl_hours INTEGER NOT NULL DEFAULT 24 CHECK (ttl_hours >= 1 AND ttl_hours <= 720),
+
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  expires_at TEXT NOT NULL,
+  is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+
+  last_delivery_at TEXT,
+  consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  -- Auto-deactivate after 5 consecutive failures
+  CHECK (consecutive_failures >= 0)
+);
+
+CREATE INDEX idx_pm_event_subscriptions_active
+  ON pm_event_subscriptions(project_id, is_active, expires_at)
+  WHERE is_active = 1;
+
+CREATE INDEX idx_pm_event_subscriptions_expiry
+  ON pm_event_subscriptions(expires_at)
+  WHERE is_active = 1;
+
+CREATE TABLE pm_event_delivery_log (
+  delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+  subscription_id TEXT NOT NULL REFERENCES pm_event_subscriptions(subscription_id) ON DELETE CASCADE,
+  event_id INTEGER NOT NULL REFERENCES pm_events(event_id) ON DELETE CASCADE,
+
+  attempted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  status TEXT NOT NULL CHECK (status IN ('delivered', 'failed', 'retrying')),
+  http_status INTEGER,
+  error_message TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_pm_event_delivery_log_sub
+  ON pm_event_delivery_log(subscription_id, attempted_at DESC);
+
+-- ============================================================
+-- Project Settings (Per-Project Configuration)
+-- ============================================================
+
+CREATE TABLE pm_project_settings (
+  project_id TEXT PRIMARY KEY REFERENCES projects(project_id) ON DELETE CASCADE,
+
+  settings_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(settings_json)),
+  -- JSON object with configurable per-project knobs:
+  -- {
+  --   "capacity": { "ewma_alpha": 0.3 },
+  --   "velocity": { "trend_threshold": 1.15 },
+  --   "anomaly": { "cooldown_hours": 48, "freeze_windows": [] },
+  --   "sync": { "source_systems": ["github"] }
+  -- }
+
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 
 -- END PM ENGINE DDL
 ```
