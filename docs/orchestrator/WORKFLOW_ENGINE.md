@@ -286,6 +286,19 @@ Async stages have two sub-modes:
 - Generating documentation — nice to have, not blocking
 - Recording outcomes in memory — eventually consistent is fine
 
+**Async failure handling:**
+
+Fire-and-forget failures are silently recorded as events but never block the run. For monitored async stages, the failure path depends on configuration:
+
+| Scenario | Behavior |
+| --- | --- |
+| Monitored async fails, no downstream join requires it | Warning event emitted. Run continues normally. |
+| Monitored async fails, downstream join references it | Join point evaluates the failure. If the join condition requires the async result (explicit `required_async_results` list), the join blocks and the orchestrator retries the async stage up to `max_async_retries` (default: 1). If retries are exhausted, the join fails. |
+| Monitored async never responds (timeout) | After `async_timeout_ms` (default: 300000), the orchestrator emits `async_stage_timeout` event. Same handling as failure above. |
+| Multiple monitored async stages in fan-out | Each is tracked independently. A single async failure does NOT cancel siblings. The join point evaluates all results (including failures) when the last one completes or times out. |
+
+**Critical invariant for fan-out tasks:** When a run completes or is cancelled, the orchestrator MUST garbage-collect any outstanding async tasks. Outstanding fire-and-forget tasks are cancelled with best-effort delivery. Outstanding monitored tasks are cancelled and their results discarded. This prevents orphaned async work from consuming resources after the run is done.
+
 #### Parallel Groups
 
 Parallel groups are the sync equivalent of doing multiple things at once. The workflow starts all stages in the group simultaneously and waits for the group to resolve before proceeding.

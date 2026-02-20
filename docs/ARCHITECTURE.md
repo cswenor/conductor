@@ -347,7 +347,7 @@ All other webhooks are informational (fact events). Only the Orchestrator emits 
 1. **Wait**: Orchestrator pauses, PR awaits human review in GitHub
 2. **Human Action**: Human reviews PR in GitHub, requests changes or merges
 3. **If Changes Requested**: Webhook notifies Conductor, run status → `executing`, agent addresses feedback
-4. **If Merged**: Webhook notifies Conductor, run status → `completed`, Worktree Manager cleans up
+4. **If Merged**: Webhook notifies Conductor, run phase → `completed`, status → `finished`, Worktree Manager cleans up
 
 Note: Merge happens in GitHub (human clicks merge button). Conductor detects it via webhook.
 

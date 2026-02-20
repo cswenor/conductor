@@ -151,6 +151,7 @@ Orchestrator → Worker:
     },
     "artifacts": []
   },
+  "checkpoint": null,
   "constraints": {
     "timeout_ms": 600000,
     "token_budget": 100000,
@@ -169,6 +170,23 @@ Orchestrator → Worker:
 ```
 
 **Note:** `provider_config` is only present for AI workers. Script workers receive `script_config` instead. Human workers receive `notification_config`.
+
+**Checkpoint field:** When resuming a task from a checkpoint (worker crash, context overflow), the orchestrator populates `checkpoint` with the last valid checkpoint. When starting a fresh task, `checkpoint` is `null`. The worker MUST check this field on startup to decide whether to resume or begin from scratch.
+
+```json
+{
+  "checkpoint": {
+    "checkpoint_id": "chk-uuid-1",
+    "completed_steps": ["read_requirements", "analyze_codebase"],
+    "remaining_steps": ["draft_plan", "finalize_plan"],
+    "artifacts_so_far": [
+      { "type": "PLAN", "path": ".conductor/plans/42-draft.md", "hash": "sha256:..." }
+    ],
+    "conversation_summary": "Analyzed JWT auth requirements...",
+    "resume_from": "draft_plan"
+  }
+}
+```
 
 ### 1.6 Task Progress (Streaming)
 

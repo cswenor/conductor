@@ -288,8 +288,9 @@ Human workers are people who perform tasks through Conductor's interfaces.
 | Role | Capabilities | Typical Assignment |
 | --- | --- | --- |
 | `human_reviewer` | `review.code`, `review.plan` | Named reviewer or team queue |
-| `human_approver` | `gate.plan_approval`, `gate.merge_approval` | Project owner or designated approver |
-| `human_security` | `review.security` | Security team member |
+| `plan_approver` | `gate.plan_approval` | Project owner or designated approver |
+| `merge_approver` | `gate.merge_approval` | Project owner or designated approver |
+| `human_security` | `review.code`, `review.security` | Security team member |
 | `human_product` | `review.requirements`, `gate.scope_approval` | Product owner |
 
 Human workers don't register via the protocol the way AI and script workers do. Instead, the orchestrator creates human tasks and routes them through notification channels. The human responds via the interface, and the response is translated into a task result.
@@ -898,7 +899,51 @@ interface Checkpoint {
 }
 ```
 
-Checkpoints are stored by the worker runtime and referenced by the orchestrator when reassigning a task. If a worker dies, the orchestrator creates a new task with the checkpoint context so the replacement worker can pick up where the previous one left off.
+### 8.1.1 Checkpoint Ownership and Storage
+
+Checkpoints follow a **worker-writes, orchestrator-owns** model:
+
+1. **Worker writes:** The worker emits `task.checkpoint` messages during execution. The worker holds an ephemeral copy in memory.
+2. **Orchestrator persists:** The orchestrator receives the checkpoint via the protocol transport and persists it to PostgreSQL (`run_events` table with `event_type='checkpoint'`). This is the durable copy.
+3. **Orchestrator injects:** When creating a retry/resume task, the orchestrator reads the latest valid checkpoint from the database and injects it into the `task.request` as the `checkpoint` field (see `PROTOCOL.md § 1.5`).
+
+Workers MUST NOT rely on their own in-memory checkpoint state for resumption — they may be assigned to a different worker instance. The `task.request.checkpoint` field is the sole resumption input.
+
+### 8.1.2 Failover Restart Semantics
+
+When a worker fails mid-task (crash, timeout, context overflow), the restart follows this sequence:
+
+```
+Worker dies / times out
+    │
+    ▼
+Orchestrator detects (heartbeat timeout or error result)
+    │
+    ▼
+Load latest checkpoint from DB for this task
+    │
+    ├── Checkpoint exists AND valid (anchors still hold)
+    │   → Create new task.request with checkpoint field populated
+    │   → resume_from tells new worker where to continue
+    │   → Artifacts from checkpoint are assumed present (verified by hash)
+    │
+    ├── Checkpoint exists BUT invalid (anchors broken, e.g., branch force-pushed)
+    │   → Discard checkpoint
+    │   → Create fresh task.request (checkpoint: null)
+    │   → Worker starts from scratch
+    │
+    └── No checkpoint
+        → Create fresh task.request (checkpoint: null)
+        → Worker starts from phase beginning
+    │
+    ▼
+Increment attempt_number
+If attempt_number > max_attempts → block run, escalate
+```
+
+**Artifact verification:** When resuming from a checkpoint, the orchestrator verifies that each artifact in `artifacts_so_far` exists at its declared path with the expected hash. If any artifact is missing or corrupted, the checkpoint is treated as invalid.
+
+**Context overflow special case:** When a worker reports `CONTEXT_TOO_LARGE`, the orchestrator creates a resume task with the checkpoint AND a directive to the worker to use `conversation_summary` instead of loading the full conversation history. This prevents the same overflow from recurring.
 
 ### 8.2 Checkpoint Frequency
 
@@ -943,6 +988,56 @@ Budgets are enforced at multiple levels:
 | Per-provider | Rate limits from provider config | Provider adapter enforces |
 
 When a budget is hit, the orchestrator emits a `budget.exhausted` event and blocks the affected entity (task, run, or project). A human can increase the budget via the interface.
+
+### 9.2.1 Budget Storage and Locking
+
+Budget tracking uses PostgreSQL with row-level locking to prevent concurrent task starts from exceeding limits:
+
+```typescript
+interface BudgetRecord {
+  scope: 'task' | 'run' | 'project';   // Budget level
+  scope_id: string;                      // task_id, run_id, or project_id
+
+  // Configured limits (set by human, immutable during execution)
+  token_limit: number;                   // Max tokens allowed
+  cost_limit_usd: number;               // Max cost allowed (0 = unlimited)
+
+  // Running totals (updated by orchestrator after each task completes)
+  tokens_consumed: number;               // Tokens used so far
+  cost_consumed_usd: number;             // Cost incurred so far
+
+  // Derived (NOT stored — computed on read)
+  // tokens_remaining = token_limit - tokens_consumed
+  // cost_remaining = cost_limit_usd - cost_consumed_usd
+
+  updated_at: string;                    // Last update timestamp
+}
+```
+
+**Locking protocol:**
+
+```
+Before dispatching a task:
+    │
+    ▼
+SELECT ... FROM budgets WHERE scope_id = <run_id> FOR UPDATE
+    │
+    ├── tokens_consumed + estimated_tokens > token_limit
+    │   → Reject dispatch, emit budget.exhausted event
+    │
+    └── Within budget
+        → Reserve estimated_tokens (optimistic)
+        → Dispatch task
+        │
+        ▼
+On task completion:
+    → UPDATE budgets SET tokens_consumed = tokens_consumed + actual_tokens,
+      cost_consumed_usd = cost_consumed_usd + actual_cost
+      WHERE scope_id = <run_id>
+    → Release reservation difference
+```
+
+**Key invariant:** `token_limit` and `cost_limit_usd` are configuration values set by the human. `tokens_consumed` and `cost_consumed_usd` are running counters updated by the orchestrator. These are never conflated — the budget check always compares consumed against limit.
 
 ### 9.3 Cost Optimization
 

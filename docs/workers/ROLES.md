@@ -1003,7 +1003,33 @@ Summary of every built-in role, organized by worker class.
 | 22 | `merge_approver` | human | `gate.merge_approval` | No |
 | 23 | `pm_engine` | service | All `conductor_*` operations | No |
 | 24 | `ci_service` | service | `script.ci_trigger`, `script.ci_status` | No |
-| 25-34 | `pm.analytics.*`, `pm.prediction.*`, etc. | script | PM intelligence operations | No (8/10) |
-| 35-52 | `pm.triage.*`, `pm.planning.*`, etc. | script/ai | PM workflow operations | Partial (6/18) |
+| 25 | `pm.analytics.cycle_time` | script | `pm.analytics.cycle_time` | No |
+| 26 | `pm.analytics.velocity` | script | `pm.analytics.velocity` | No |
+| 27 | `pm.prediction.monte_carlo` | script | `pm.prediction.monte_carlo` | No |
+| 28 | `pm.prediction.rework` | script/hybrid | `pm.prediction.rework` | Yes (optional) |
+| 29 | `pm.graph.analysis` | script | `pm.graph.analysis` | No |
+| 30 | `pm.synthesis.risk_radar` | script | `pm.synthesis.risk_radar` | No |
+| 31 | `pm.memory.retrieval` | script/hybrid | `pm.memory.retrieval` | Yes (optional) |
+| 32 | `pm.calibration.review` | script | `pm.calibration.review` | No |
+| 33 | `pm.capacity.model` | script | `pm.capacity.model` | No |
+| 34 | `pm.detection.anomaly` | script | `pm.detection.anomaly` | No |
+| 35 | `pm.triage.classifier` | script/ai | `pm.triage` | Yes (optional) |
+| 36 | `pm.synthesis.risk_assessor` | script | Combines triage + rework + similar | No |
+| 37 | `pm.planning.ranker` | script | Rank backlog by WSJF, risk, deps | No |
+| 38 | `pm.planning.proposer` | script | Produce iteration plan | No |
+| 39 | `pm.discovery.structurer` | ai | Transform raw idea → structured item | Yes |
+| 40 | `pm.discovery.validator` | script/ai | Assess spec readiness | Yes (optional) |
+| 41 | `pm.valuation.assessor` | script/ai | Score value dimensions | Yes (optional) |
+| 42 | `pm.review.analyzer` | script/ai | PR vs acceptance criteria | Yes |
+| 43 | `pm.review.scope_checker` | script | Check PR scope vs plan | No |
+| 44 | `pm.review.evaluator` | ai | Code quality findings | Yes |
+| 45 | `pm.review.verdict` | script | Final review verdict | No |
+| 46 | `pm.synthesis.pattern_miner` | script | Extract retrospective patterns | No |
+| 47 | `pm.reporting.retrospective` | ai | Generate retrospective narrative | Yes |
+| 48 | `pm.reporting.release_notes` | ai | Generate release notes | Yes |
+| 49 | `pm.reporting.standup` | ai | Generate daily standup | Yes |
+| 50 | `pm.memory.recorder` | script | Record decisions and outcomes | No |
+| 51 | `pm.memory.decay_checker` | script | Check for stale decisions | No |
+| 52 | `pm.memory.linker` | script | Link outcomes to decisions | No |
 
 **Totals: 52 built-in roles** — 6 AI, 11 script, 5 human, 2 service, 10 PM intelligence, 18 PM workflow.
