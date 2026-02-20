@@ -43,7 +43,7 @@ V3 preserves V2's two-layer navigation model (global + project-scoped) but repla
 
 **Sidebar rules:**
 - Always visible on desktop (collapsible to icons on narrow screens)
-- Approvals badge count updates via WebSocket (30s polling fallback)
+- Approvals badge count updates via WebSocket in real-time (30s polling only if WebSocket disconnected)
 - Project health dots: 🟢 Healthy, 🟡 Needs Attention, 🔴 Blocked
 - Active project highlighted; clicking switches project context
 
@@ -609,7 +609,7 @@ Issues from connected repos with "Start Run" capability:
 │  │ 42 │ Add JWT authentication       │ webapp │ backend, auth │ [Start ▶] │    │
 │  │ 55 │ Fix login race condition     │ webapp │ bug, frontend │ [Start ▶] │    │
 │  │ 67 │ Add user search              │ webapp │ feature       │ ● Active  │    │
-│  │ 78 │ Upgrade to Next.js 15        │ webapp │ infra         │ [Start ▶] │    │
+│  │ 78 │ Upgrade to Next.js 16        │ webapp │ infra         │ [Start ▶] │    │
 │  │ 81 │ Add rate limiting            │ webapp │ security      │ ✓ Done    │    │
 │                                                                                 │
 │  Showing 5 of 23 open issues                                                   │
@@ -835,41 +835,59 @@ Mobile push notifications for gate arrivals. Tapping opens directly to the appro
 
 | Layer | Technology | Why |
 | --- | --- | --- |
-| **Framework** | Next.js 15 (App Router) | Server components for initial load, client for real-time |
-| **Styling** | Tailwind CSS + Radix UI primitives | Consistent, accessible, composable |
-| **Real-time** | WebSocket (via orchestrator event bus) | Live marble movement, streaming output |
+| **Framework** | Next.js 16 (App Router) | Server components for initial load, client for real-time |
+| **Styling** | Tailwind CSS v4 + Radix UI primitives (shadcn/ui) | CSS-first config, consistent, accessible, composable |
+| **Real-time** | **WebSocket-first** via `next-ws` + orchestrator event bus | Live marble movement, streaming output — **no polling as primary transport** |
 | **Pipeline viz** | SVG (React component) | Interactive, accessible, animatable with CSS |
 | **Waterfall viz** | Canvas (offscreen rendering) | Performance for 100+ task bars |
-| **State** | React Server Components + SWR | Server-first, client revalidation |
+| **State** | React Server Components + TanStack Query v5 | Server-first, client revalidation, built-in WebSocket cache invalidation |
 | **Auth** | GitHub OAuth | Single sign-on with the connected repos |
 | **Diff view** | Monaco Editor (read-only diff mode) | Industry-standard diff UX |
+| **Deployment** | Self-hosted (Docker / `next start` standalone) | WebSocket requires persistent connections — not serverless |
+
+> **Why these versions (updated Feb 2026):**
+>
+> - **Next.js 16** (current LTS: 16.1.x) — over Next.js 15 for improved App Router performance and React 19 integration
+> - **Tailwind CSS v4** — CSS-first configuration with `@theme` directive (no more `tailwind.config.js`), 5x faster full builds, 100x faster incremental builds
+> - **Radix UI** (via shadcn/ui) — Feb 2026 unified package; alternative: JollyUI (shadcn + React Aria) if deeper accessibility needed
+> - **TanStack Query v5** over SWR — superior for complex real-time apps: built-in WebSocket cache invalidation, `streamedQuery` for streaming data, `broadcastQueryClient` for multi-tab sync
+> - **`next-ws`** — adds native WebSocket `UPGRADE` handler support to Next.js App Router routes, enabling `ws://` connections at `/api/ws` without a separate server process
+> - **Self-hosted requirement** — WebSocket connections are stateful and long-lived; Vercel/serverless platforms don't support them. Conductor runs self-hosted via Docker or `next start --standalone`
 
 ### 11.2 Data Flow
+
+**Architecture: WebSocket-first.** The WebSocket connection is the primary data transport for all live state. REST endpoints are used for initial page loads and mutations only. There is no polling loop in steady state.
 
 ```
 Orchestrator DB (PostgreSQL)
     │
     ▼
-API Routes (Next.js)  ◄──── WebSocket ──── Orchestrator event bus
+Next.js Server (self-hosted, next start --standalone)
     │
-    ├── GET  /api/dashboard         → Dashboard aggregate data
-    ├── GET  /api/runs              → Run list (filterable by phase, project)
-    ├── GET  /api/runs/:id          → Run detail + timeline + cost
-    ├── GET  /api/runs/:id/tasks    → Task list for waterfall rendering
-    ├── GET  /api/gates             → Pending gates (approval inbox)
-    ├── GET  /api/gates/count       → Badge count for sidebar
-    ├── POST /api/gates/:id/resolve → Approve/reject/grant with comment
-    ├── GET  /api/artifacts/:id     → Artifact content (rendered markdown/diff)
-    ├── GET  /api/projects          → Project list with health
-    ├── GET  /api/projects/:id      → Project detail + settings
-    ├── GET  /api/analytics         → Cross-project analytics
-    ├── POST /api/runs              → Start a new run
-    ├── POST /api/runs/:id/pause    → Pause a run
-    ├── POST /api/runs/:id/cancel   → Cancel a run (with escalation level)
-    └── WS   /api/ws                → Real-time event stream
+    ├── REST  /api/dashboard         → Dashboard aggregate data (initial load)
+    ├── REST  /api/runs              → Run list (initial load, filterable)
+    ├── REST  /api/runs/:id          → Run detail + timeline + cost (initial load)
+    ├── REST  /api/runs/:id/tasks    → Task list for waterfall rendering (initial load)
+    ├── REST  /api/gates             → Pending gates (initial load)
+    ├── REST  /api/gates/count       → Badge count (initial load)
+    ├── POST  /api/gates/:id/resolve → Approve/reject/grant with comment
+    ├── REST  /api/artifacts/:id     → Artifact content (rendered markdown/diff)
+    ├── REST  /api/projects          → Project list with health (initial load)
+    ├── REST  /api/projects/:id      → Project detail + settings (initial load)
+    ├── REST  /api/analytics         → Cross-project analytics (load on visit)
+    ├── POST  /api/runs              → Start a new run
+    ├── POST  /api/runs/:id/pause    → Pause a run
+    ├── POST  /api/runs/:id/cancel   → Cancel a run (with escalation level)
+    │
+    └── WS    /api/ws                → PRIMARY real-time event stream (via next-ws UPGRADE handler)
+              │
+              ├── Subscribes to orchestrator event bus on connection
+              ├── Multiplexes all event types over single connection
+              ├── Client sends: subscribe/unsubscribe per run/project scope
+              └── Server sends: all events in § 11.3 table
     │
     ▼
-React Components
+React Components (TanStack Query v5 for cache + WebSocket invalidation)
     ├── PipelineView           → SVG marble pipeline (§ 2)
     ├── WaterfallView          → Canvas timeline waterfall (§ 4)
     ├── ApprovalPanel          → Gate approval experience (§ 5)
@@ -884,32 +902,68 @@ React Components
     └── HistoryTimeline        → Date-grouped past runs
 ```
 
-### 11.3 Real-Time Events (WebSocket)
+### 11.3 Real-Time Events (WebSocket-First)
 
-| Event | Trigger | UI Effect |
-| --- | --- | --- |
-| `run.created` | New run started | Marble appears at first pipeline stage |
-| `run.phase_changed` | Run moves to new phase | Marble slides to new pipeline stage (300ms ease-out) |
-| `task.started` | Worker begins task | New bar appears in waterfall, bouncing ball jumps |
-| `task.progress` | Worker reports progress | Bar grows, progress % updates |
-| `task.completed` | Worker finishes | Bar completes, shimmer stops |
-| `gate.waiting` | Human gate reached | Marble changes to ◉ (pulse), notification fires |
-| `gate.resolved` | Human approves/rejects | Marble changes back to ● or ◆, moves on |
-| `run.finished` | Run completes/fails/cancelled | Marble fades to ✓ or ✗ |
-| `budget.warning` | Budget threshold hit | Cost card flashes amber |
-| `budget.exhausted` | Budget exceeded | Cost card turns red, affected runs show ◆ |
-| `worker.circuit_open` | Worker type failing | Worker status badge turns red in Workers view |
-| `escalation.step` | Gate timeout escalation | Countdown timer updates in Needs Attention |
+**WebSocket is the primary transport.** All live state updates flow through a single multiplexed WebSocket connection per browser tab. Polling exists only as a degraded fallback when WebSocket is unavailable.
 
-**Fallback polling intervals** (when WebSocket disconnects):
+#### Connection Lifecycle
 
-| Screen | Interval |
+```
+Browser tab opens
+    │
+    ▼
+Connect WS to /api/ws (with auth token in first message)
+    │
+    ├─ On open: Subscribe to relevant scopes (projects, runs)
+    ├─ On message: TanStack Query cache invalidation per event type
+    ├─ On close: Exponential backoff reconnect (1s, 2s, 4s, 8s, max 30s)
+    │            Show yellow banner after 5s: "Reconnecting..."
+    │            Activate polling fallback after 15s disconnected
+    └─ On error: Same as close
+```
+
+**Client → Server messages:**
+
+| Message | Purpose |
+| --- | --- |
+| `{ type: "auth", token: "..." }` | Authenticate on connect |
+| `{ type: "subscribe", scope: "run:42" }` | Subscribe to events for run #42 |
+| `{ type: "subscribe", scope: "project:acme/webapp" }` | Subscribe to project events |
+| `{ type: "unsubscribe", scope: "run:42" }` | Unsubscribe when navigating away |
+| `{ type: "ping" }` | Keepalive (every 30s) |
+
+**Server → Client events:**
+
+| Event | Trigger | UI Effect | TanStack Query Invalidation |
+| --- | --- | --- | --- |
+| `run.created` | New run started | Marble appears at first pipeline stage | `["runs"]`, `["dashboard"]` |
+| `run.phase_changed` | Run moves to new phase | Marble slides to new pipeline stage (300ms ease-out) | `["runs", runId]` |
+| `task.started` | Worker begins task | New bar appears in waterfall, bouncing ball jumps | `["runs", runId, "tasks"]` |
+| `task.progress` | Worker reports progress | Bar grows, progress % updates | (direct state update, no refetch) |
+| `task.completed` | Worker finishes | Bar completes, shimmer stops | `["runs", runId, "tasks"]` |
+| `gate.waiting` | Human gate reached | Marble changes to ◉ (pulse), notification fires | `["gates"]`, `["gates", "count"]` |
+| `gate.resolved` | Human approves/rejects | Marble changes back to ● or ◆, moves on | `["gates"]`, `["gates", "count"]` |
+| `run.finished` | Run completes/fails/cancelled | Marble fades to ✓ or ✗ | `["runs"]`, `["dashboard"]` |
+| `budget.warning` | Budget threshold hit | Cost card flashes amber | `["runs", runId]` |
+| `budget.exhausted` | Budget exceeded | Cost card turns red, affected runs show ◆ | `["runs", runId]` |
+| `worker.circuit_open` | Worker type failing | Worker status badge turns red in Workers view | `["workers"]` |
+| `escalation.step` | Gate timeout escalation | Countdown timer updates in Needs Attention | `["gates"]` |
+
+**Multi-tab sync:** TanStack Query's `broadcastQueryClient` plugin synchronizes cache state across browser tabs via the Broadcast Channel API. When one tab receives a WebSocket event, all tabs update without redundant connections.
+
+#### Degraded Mode: Polling Fallback
+
+Polling activates **only** when WebSocket has been disconnected for >15 seconds. A yellow banner displays: "Live updates paused — refreshing periodically. [Reconnect]"
+
+| Screen | Polling Interval (degraded only) |
 | --- | --- |
 | Dashboard | 30s |
 | Run Detail | 10s |
 | Approvals | 15s |
 | Work (active tab) | 30s |
 | Analytics | Load on visit only |
+
+**When WebSocket reconnects:** Polling stops immediately. Banner disappears. Client sends a `subscribe` for all active scopes and requests a state snapshot to catch up on missed events.
 
 ### 11.4 Performance Budget
 
@@ -996,7 +1050,7 @@ This spec supersedes CONTROL_PLANE_UX.md (v1) and CONTROL_PLANE_UX_V2.md (v2). K
 | --- | --- | --- |
 | Table-based run views | Pipeline + waterfall | Visual flow reveals timing and state |
 | Phase timeline (horizontal) | Waterfall (vertical, time-proportional) | Shows actual time distribution |
-| Polling-only real-time | WebSocket with polling fallback | True real-time marble movement |
+| Polling-only real-time | **WebSocket-first** (polling only as degraded fallback) | True real-time marble movement, no polling in steady state |
 | No cost visibility | Cost per run, per day, budget tracking | Cost awareness drives optimization |
 | Desktop-only | Responsive with mobile-first approval | Operators approve from anywhere |
 | No analytics | Time/cost/velocity analytics | Data-driven process improvement |
@@ -1260,7 +1314,7 @@ The collapsed summary line reads: `Today: 4 started · 2 done · $18.40 · 3.2h 
 
 **Client-side throttling:** The WebSocket client buffers events and applies them in `requestAnimationFrame` batches. This prevents DOM thrashing when multiple events arrive in the same frame.
 
-**Degraded mode:** If WebSocket event rate exceeds 50 events/second sustained for >5 seconds, the client switches to polling mode (30s interval) and shows a banner: "High activity detected — switched to periodic refresh."
+**Degraded mode:** If WebSocket event rate exceeds 50 events/second sustained for >5 seconds, the client switches to coalesced mode (batching all events into 1-second windows) and shows a banner: "High activity — updates batched." It does NOT fall back to polling — the WebSocket connection stays open; only the rendering frequency is throttled.
 
 ### A.11 Mobile Reject Comment (HIGH #11)
 
@@ -1317,7 +1371,7 @@ Every screen handles these states:
 | **Loading** | Skeleton placeholders (not spinner). Pipeline shows gray empty stages. |
 | **Empty (no data)** | Contextual message + CTA (see § 3.2 for dashboard; each screen has equivalent) |
 | **Error (API failure)** | Red banner at top: "Failed to load [section]. [Retry]". Other sections still render. |
-| **WebSocket offline** | Yellow banner: "Live updates paused — refreshing every 30s. [Reconnect]" |
+| **WebSocket offline** | Yellow banner: "Live updates paused — reconnecting..." (after 15s: activates polling fallback + "[Reconnect Now]" button) |
 | **Partial data** | Each dashboard section loads independently. Failed sections show error; successful sections render. |
 | **Stale data** | If data is >5m old, show "Last updated X min ago" label. |
 
@@ -1403,9 +1457,9 @@ Only one panel exists. No collision between task panel and artifact drawer.
 
 ### A.18 Polling Interval Consistency (MEDIUM #18)
 
-**Resolution — Single source of truth:**
+**Resolution — Single source of truth. WebSocket is the primary transport. Polling activates ONLY when WebSocket has been disconnected for >15 seconds:**
 
-| Screen | WebSocket | Polling Fallback |
+| Screen | WebSocket (primary) | Polling (degraded fallback only) |
 | --- | --- | --- |
 | Dashboard | Real-time | 30s |
 | Run Detail | Real-time | 10s |
@@ -1416,7 +1470,7 @@ Only one panel exists. No collision between task panel and artifact drawer.
 | History | None | Load on visit |
 | Sidebar badge | Real-time | 30s |
 
-This is the **only** polling interval table. No other section may define conflicting intervals.
+This is the **only** polling interval table. No other section may define conflicting intervals. In normal operation, no polling occurs — all updates arrive via WebSocket. See § 11.3 for the full connection lifecycle and degraded mode activation rules.
 
 ### A.19 First-Run Experience (SUGGESTION #19)
 
