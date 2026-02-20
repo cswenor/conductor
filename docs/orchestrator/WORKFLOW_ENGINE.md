@@ -92,7 +92,7 @@ The standard feature development workflow. Used for features, tasks, and any wor
 | Phase | Worker Type | Required Capability | Gate | Execution Mode |
 | --- | --- | --- | --- | --- |
 | planning | AI | `planning.create` | — | sync |
-| plan_approval | Human (L0-L1) or Auto (L2-L3) | — | `plan_approval` | sync |
+| plan_approval | Human (L0-L2) or Auto (L3) | — | `plan_approval` | sync |
 | implementing | AI | `implementation.execute` | — | sync |
 | testing + linting | Script | `script.test`, `script.lint` | `tests_pass` | **parallel** (join=all) |
 | reviewing | AI + Human | `review.code` | `code_review` | sync |
@@ -317,6 +317,18 @@ post_parallel_stage starts
 | `any` | First completion triggers the transition. Others continue as monitored async. | Redundant workers: first response wins |
 | `n_of_m` | N of M stages must complete successfully. | 2-of-3 reviewers must approve |
 | `majority` | >50% must complete successfully. | Consensus voting |
+
+**Mutation rule:** Parallel stages MUST NOT mutate the worktree. Any stage that writes files (e.g., `script.format`) must run as a **pre-parallel sync stage**, not within the group. This prevents read/write races where one stage modifies files that sibling stages are reading.
+
+```
+formatter (sync, mutating) ──► parallel_group (read-only) ──► next phase
+                                 ├── testing
+                                 ├── linting
+                                 ├── typechecking
+                                 └── security_scan
+```
+
+If a mutating stage is mistakenly placed inside a parallel group, the orchestrator MUST reject the template at validation time (startup or template reload).
 
 **Failure in parallel groups:**
 
@@ -635,7 +647,7 @@ The orchestrator can modify a workflow at runtime. This is the key difference be
 
 | Action | Reason |
 | --- | --- |
-| Remove mandatory gates | Human merge gate cannot be removed at any autonomy level |
+| Remove mandatory gates | Human merge gate is human-required at L0-L2. At L3, AI merge is allowed when risk + CI policy passes (see `INTERFACES.md` Default Policy Matrix). The merge gate itself cannot be removed from the template. |
 | Skip completed phases | Cannot rewrite history |
 | Modify completed or cancelled runs | Immutable after final state |
 | Exceed hard limits | `max_review_rounds` can be increased but cannot exceed a system-wide ceiling (10) |

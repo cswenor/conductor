@@ -251,7 +251,17 @@ Commits: 1 commit on branch feature/42-jwt-auth
 EVENT: run.parallel_group_started { run_id: "run-abc", group: "quality_checks" }
 ```
 
-### Workers Invoked (ALL IN PARALLEL):
+### Workers Invoked:
+
+**Pre-parallel (sync, mutating):**
+
+| # | Worker | Role | Operation | Mode | Duration |
+|---|--------|------|-----------|------|----------|
+| 5.0 | prettier-worker | formatter | `script.format` | sync | 3s |
+
+Formatter runs FIRST because it mutates files. It must complete before read-only checks start. (See WORKFLOW_ENGINE.md § 1.3 "Mutation rule".)
+
+**Parallel group (all read-only):**
 
 | # | Worker | Role | Operation | Mode | Duration |
 |---|--------|------|-----------|------|----------|
@@ -259,20 +269,19 @@ EVENT: run.parallel_group_started { run_id: "run-abc", group: "quality_checks" }
 | 5.2 | eslint-worker | linter | `script.lint` | parallel | 8s |
 | 5.3 | tsc-worker | typechecker | `script.typecheck` | parallel | 12s |
 | 5.4 | semgrep-worker | security_scanner | `script.security_scan` | parallel | 15s |
-| 5.5 | prettier-worker | formatter | `script.format` | parallel | 3s |
 
 **Join rule:** `all` — every check must pass before proceeding to review.
 
 **What happens:**
 
-1. All 5 script workers start simultaneously on the worktree
-2. Results arrive as each completes:
-   - Formatter (5.5, 3s): 2 files reformatted → auto-committed
+1. Formatter runs first (5.0, 3s): 2 files reformatted → auto-committed
+2. All 4 read-only workers start simultaneously on the (now-formatted) worktree
+3. Results arrive as each completes:
    - Linter (5.2, 8s): Clean ✓
    - Type checker (5.3, 12s): Clean ✓
    - Security scanner (5.4, 15s): 1 finding — "Missing input validation on refresh token parameter" (medium severity)
    - Tests (5.1, 25s): 14/14 pass ✓
-3. **Security finding triggers rework** — the parallel group FAILS because security_scan found a medium+ severity issue
+4. **Security finding triggers rework** — the parallel group FAILS because security_scan found a medium+ severity issue
 
 **Dynamic adaptation point:** The security scanner finding is medium severity. Project policy says: `security_scan_block_threshold: medium`. If the threshold were `high`, the medium finding would be logged but wouldn't block.
 
@@ -384,7 +393,7 @@ PR #87: approved
 ## Phase 8: Merge and Completion
 
 ```
-EVENT: run.phase_changed { run_id: "run-abc", phase: "completed" }
+EVENT: run.merge_gate_started { run_id: "run-abc" }
 ```
 
 ### Workers Invoked:
@@ -404,25 +413,28 @@ EVENT: run.phase_changed { run_id: "run-abc", phase: "completed" }
 
 **What happens:**
 
-1. @carol approves merge (8.1)
-2. CI status verified: all checks green (8.2)
+1. CI status verified: all checks green (8.2) — this is a prerequisite for merge
+2. @carol approves merge (8.1) — at L2, human required; at L3, auto-merge if CI green + risk ≤ medium
 3. PR #87 merged via squash merge
-4. **Post-merge async fan-out** (all fire in parallel, none blocking):
+4. **Run transitions to `completed` phase, status `finished`** — ONLY after merge is confirmed
+5. **Post-merge async fan-out** (all fire in parallel, none blocking):
    - Outcome recorded (8.3): `{ result: "delivered", cycle_hours: 8.5, review_rounds: 1, rework_cycles: 1 }`
    - Issue moved to Done (8.4)
    - Slack notification (8.5): "Issue #42 delivered. PR #87 merged."
    - Documentation updated (8.6): README API section updated with JWT auth docs
    - Metrics collected (8.7): cycle time, token usage, cost breakdown
 
+**Dynamic adaptation point (outcome recording):** If `require_outcome_logging=true` in policy, outcome recording (8.3) becomes a **monitored async stage with retry**. The run is marked `finished` immediately, but if outcome recording fails after 3 retries, a warning event is emitted and a dead-letter entry is created for manual reconciliation. The run does NOT reopen.
+
 **Dynamic adaptation point (documentation):** The documenter is async-monitored. If it fails:
 - Warning event emitted
-- Run is already completed — docs failure doesn't reopen the run
+- Run is already finished — docs failure doesn't reopen the run
 - Human can manually trigger `docs.update` later
 - If docs are critical (project policy `docs_required: true`), it becomes a sync stage instead
 
 **State after Phase 8:**
 ```
-Run run-abc: status=completed
+Run run-abc: phase=completed, status=finished
 Issue #42: Done
 PR #87: merged
 Branch: feature/42-jwt-auth (deleted after merge)

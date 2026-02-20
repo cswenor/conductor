@@ -2142,29 +2142,62 @@ export const A2AArtifactRefSchema = z.object({
   content_type: z.string().optional(),
 });
 
+// Canonical operation registry. Every operation used in workflow templates,
+// role capabilities, and task routing MUST appear here. CI validates this
+// enum against ROLES.md § 7 Operation Reference.
 export const A2AWorkflowOperation = z.enum([
+  // PM operations
   'pm.triage',
   'pm.decompose',
   'pm.plan_iteration',
   'pm.suggest_next',
   'pm.forecast',
   'pm.risk',
+  'pm.record_outcome',
+  'pm.standup',
+  'pm.retrospective',
+  'pm.release_notes',
+  // Planning operations
   'planning.create',
   'planning.revise',
   'planning.scope_map',
+  // Implementation operations
   'implementation.execute',
+  'implementation.fix',
   'implementation.test',
   'implementation.prepare_pr',
+  // Review operations
   'review.plan',
   'review.code',
   'review.scope',
-  'pm.record_outcome',
+  'review.security',
+  'review.requirements',
+  // Research operations
+  'research.investigate',
+  'research.evaluate',
+  // Documentation operations
+  'docs.generate',
+  'docs.update',
+  // Script operations
   'script.execute',
   'script.lint',
   'script.test',
   'script.typecheck',
+  'script.build',
+  'script.format',
   'script.deploy',
   'script.monitor',
+  'script.security_scan',
+  'script.migrate',
+  'script.notify',
+  'script.metrics',
+  'script.validate',
+  'script.ci_trigger',
+  'script.ci_status',
+  // Gate operations
+  'gate.plan_approval',
+  'gate.merge_approval',
+  'gate.scope_approval',
 ]);
 
 // A2A message types: task_request, task_result, event_notification
@@ -2757,6 +2790,45 @@ export const AutonomyPolicySchema = z.object({
 - Kill switch MUST stop new autonomous dispatch immediately.
 - Policy exceptions remain human-only unless explicitly changed in a future schema version.
 
+### Human Gate Timeout Escalation Ladder
+
+When a human gate (plan_approval, merge_approval, scope_approval, code review) times out:
+
+```
+Step 1: Primary assignee timeout (configurable, default 4h for approval, 24h for review)
+  → Notify backup assignee (if configured)
+  → Event: gate_escalation { step: 1, from: primary, to: backup }
+
+Step 2: Backup assignee timeout (same timeout as primary)
+  → Notify team channel
+  → Event: gate_escalation { step: 2, from: backup, to: team }
+
+Step 3: Team channel timeout (configurable, default 48h)
+  → Terminal escalation policy applies:
+    - 'auto_reject': Run cancelled with reason "gate_timeout"
+    - 'auto_approve': Gate auto-approved (ONLY if autonomy >= L3)
+    - 'block': Run blocked indefinitely, requires manual intervention
+    - 'cancel': Run cancelled (default)
+  → Event: gate_terminal_escalation { policy: <chosen>, gate: <gate_id> }
+```
+
+The terminal escalation policy is configured per gate in the project settings. Default is `cancel`.
+
+**Startup validation:** If a project's autonomy level requires human gates (L0-L2), the orchestrator MUST verify at startup that at least one routable assignee exists for each required gate. If not, emit a `configuration_warning` event and log a warning. Runs will still start but may block at gates.
+
+### Quality Gate Thresholds
+
+Security scan and other quality checks have configurable blocking thresholds:
+
+```ts
+export const QualityGateThresholds = z.object({
+  security_scan_block_threshold: z.enum(['low', 'medium', 'high', 'critical']).default('medium'),
+  lint_block_threshold: z.enum(['warning', 'error']).default('error'),
+  test_coverage_minimum: z.number().min(0).max(100).default(0), // 0 = no minimum
+  type_error_tolerance: z.number().int().min(0).default(0), // 0 = zero tolerance
+});
+```
+
 ### Escalation Triggers (All Levels)
 A run MUST escalate to human attention (`phase=blocked`) when:
 - A policy check blocks at pre-push or merge boundary.
@@ -2764,6 +2836,7 @@ A run MUST escalate to human attention (`phase=blocked`) when:
 - Retry attempts exceed `blocked_retry_limit`.
 - Required artifacts are missing after retry.
 - A required decision returns `INSUFFICIENT_DATA`.
+- No worker variant is available for a structurally required capability (not a transient unavailability — provider outage is handled by failover, but zero registered variants for a capability is a configuration error).
 
 ## Implementation Notes
 - Use `zod/v4` consistently.
