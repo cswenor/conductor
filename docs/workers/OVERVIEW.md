@@ -1003,12 +1003,16 @@ interface BudgetRecord {
   cost_limit_usd: number;               // Max cost allowed (0 = unlimited)
 
   // Running totals (updated by orchestrator after each task completes)
-  tokens_consumed: number;               // Tokens used so far
-  cost_consumed_usd: number;             // Cost incurred so far
+  tokens_consumed: number;               // Tokens actually used (final)
+  cost_consumed_usd: number;             // Cost actually incurred (final)
+
+  // Reservation (optimistic hold for in-flight tasks)
+  tokens_reserved: number;               // Tokens held for dispatched but incomplete tasks
+  cost_reserved_usd: number;             // Cost held for dispatched but incomplete tasks
 
   // Derived (NOT stored — computed on read)
-  // tokens_remaining = token_limit - tokens_consumed
-  // cost_remaining = cost_limit_usd - cost_consumed_usd
+  // tokens_available = token_limit - tokens_consumed - tokens_reserved
+  // cost_available = cost_limit_usd - cost_consumed_usd - cost_reserved_usd
 
   updated_at: string;                    // Last update timestamp
 }
@@ -1022,19 +1026,28 @@ Before dispatching a task:
     ▼
 SELECT ... FROM budgets WHERE scope_id = <run_id> FOR UPDATE
     │
-    ├── tokens_consumed + estimated_tokens > token_limit
+    ├── tokens_consumed + tokens_reserved + estimated_tokens > token_limit
     │   → Reject dispatch, emit budget.exhausted event
     │
     └── Within budget
-        → Reserve estimated_tokens (optimistic)
+        → UPDATE budgets SET tokens_reserved = tokens_reserved + estimated_tokens
         → Dispatch task
         │
         ▼
 On task completion:
-    → UPDATE budgets SET tokens_consumed = tokens_consumed + actual_tokens,
-      cost_consumed_usd = cost_consumed_usd + actual_cost
+    → UPDATE budgets SET
+        tokens_consumed = tokens_consumed + actual_tokens,
+        tokens_reserved = tokens_reserved - estimated_tokens,
+        cost_consumed_usd = cost_consumed_usd + actual_cost,
+        cost_reserved_usd = cost_reserved_usd - estimated_cost
       WHERE scope_id = <run_id>
-    → Release reservation difference
+
+On task failure/cancellation:
+    → UPDATE budgets SET
+        tokens_reserved = tokens_reserved - estimated_tokens,
+        cost_reserved_usd = cost_reserved_usd - estimated_cost
+      WHERE scope_id = <run_id>
+    → (consumed unchanged — failed tasks still count partial tokens used)
 ```
 
 **Key invariant:** `token_limit` and `cost_limit_usd` are configuration values set by the human. `tokens_consumed` and `cost_consumed_usd` are running counters updated by the orchestrator. These are never conflated — the budget check always compares consumed against limit.

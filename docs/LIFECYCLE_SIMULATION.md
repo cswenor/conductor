@@ -295,11 +295,12 @@ EVENT: run.phase_changed { run_id: "run-abc", phase: "executing" }  ← retry lo
 | # | Worker | Role | Operation | Mode | Duration |
 |---|--------|------|-----------|------|----------|
 | 5.6 | impl-claude-sonnet | implementer | `implementation.fix` | sync | 2 min |
-| 5.7-5.11 | (same 5 workers) | (same) | (same) | parallel | 25s |
+| 5.7 | prettier-worker | formatter | `script.format` | sync (pre-parallel) | 2s |
+| 5.8-5.11 | (same 4 workers) | (same) | (same) | parallel | 25s |
 
 1. Orchestrator creates a fix task with the security finding as input
 2. Implementer adds input validation to the refresh endpoint (2 minutes)
-3. Quality checks re-run (all parallel again)
+3. Formatter runs first (sync, mutating), then quality checks re-run (4 workers parallel)
 4. This time all pass ✓
 
 **Retry tracking:** Attempt 1 of 3 (max_test_fix_attempts=3). If all 3 fail, the run enters `blocked` state and escalates to human.
@@ -465,12 +466,12 @@ Time    Worker                    Operation                    Mode      Phase
         ─── Phase: executing ───
 47:05   impl-claude-sonnet        implementation.execute       sync      implementing
 55:05   slack-notifier            script.notify                async     implementing
-        ─── Phase: quality checks (parallel) ───
+        ─── Phase: quality checks (formatter pre-parallel, then parallel group) ───
+55:08   prettier-worker           script.format                sync      testing (pre-parallel, mutating)
 55:10   vitest-worker             script.test                  parallel  testing
 55:10   eslint-worker             script.lint                  parallel  testing
 55:10   tsc-worker                script.typecheck             parallel  testing
 55:10   semgrep-worker            script.security_scan         parallel  testing
-55:10   prettier-worker           script.format                parallel  testing
 55:35   (group failed — security finding)
         ─── Fix cycle ───
 55:40   impl-claude-sonnet        implementation.fix           sync      implementing

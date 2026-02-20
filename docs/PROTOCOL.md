@@ -996,7 +996,7 @@ The protocol requires TEST_REPORT artifacts to include: pass/fail counts, overal
 **Producer:** Reviewer
 **Consumer:** Implementer, Human
 
-The protocol requires REVIEW artifacts to include: summary, verdict (APPROVED/CHANGES_REQUESTED), and findings. The exact markdown structure may evolve.
+The protocol requires REVIEW artifacts to include: summary, verdict (APPROVED/CHANGES_REQUESTED/NEEDS_DISCUSSION), and findings. The exact markdown structure may evolve.
 
 ```markdown
 # Code Review
@@ -1004,7 +1004,7 @@ The protocol requires REVIEW artifacts to include: summary, verdict (APPROVED/CH
 ## Summary
 {Overall assessment}
 
-## Verdict: {APPROVED | CHANGES_REQUESTED}
+## Verdict: {APPROVED | CHANGES_REQUESTED | NEEDS_DISCUSSION}
 
 ## Findings
 

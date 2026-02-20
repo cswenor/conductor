@@ -2145,6 +2145,12 @@ export const A2AArtifactRefSchema = z.object({
 // Canonical operation registry. Every operation used in workflow templates,
 // role capabilities, and task routing MUST appear here. CI validates this
 // enum against ROLES.md § 7 Operation Reference.
+//
+// Schema coverage: PM operations (pm.*) have explicit A2A workflow contracts
+// below (§ Workflow Contracts). Development operations (planning.*, implementation.*,
+// review.*, research.*, docs.*, script.*, gate.*) use the generic task.request/
+// task.result format from PROTOCOL.md § 1.5/1.8. Their input/output shapes are
+// determined by the worker's role spec (ROLES.md), not by A2A-specific schemas.
 export const A2AWorkflowOperation = z.enum([
   // PM operations
   'pm.triage',

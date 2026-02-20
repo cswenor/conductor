@@ -298,10 +298,10 @@ All other webhooks are informational (fact events). Only the Orchestrator emits 
 
 1. **Trigger**: Operator clicks "Start Run" in Conductor UI (selecting one or more issues)
 2. **Validation**: Orchestrator checks if repo is registered, policies allow activation
-3. **Run Creation**: Orchestrator creates Run record in DB (status: `pending`)
+3. **Run Creation**: Orchestrator creates Run record in DB (phase: `pending`, status: `active`)
 4. **Environment Setup**: Worktree Manager creates worktree, allocates ports
 5. **GitHub Mirror**: Orchestrator posts "Run started" comment to issue
-6. **Run Activation**: Run status → `planning`
+6. **Run Activation**: Run phase → `planning`
 
 ### Planning Phase
 
@@ -311,7 +311,7 @@ All other webhooks are informational (fact events). Only the Orchestrator emits 
 4. **Review Agent**: Agent Runtime invokes review agent to critique plan
 5. **Iteration**: If review rejects, planning agent revises (up to N times)
 6. **Plan Posting**: Orchestrator posts final plan to issue as comment
-7. **Gate**: Run status → `awaiting_plan_approval`
+7. **Gate**: Run phase → `awaiting_plan_approval`
 
 ### Human Approval Gate
 
@@ -320,7 +320,7 @@ All other webhooks are informational (fact events). Only the Orchestrator emits 
 3. **Decision**: Operator clicks Approve or Reject in UI (with optional comment)
 4. **DB Update**: Orchestrator records decision in DB (authoritative)
 5. **GitHub Mirror**: Orchestrator posts decision + comment to issue thread
-6. **Resume**: Run status → `executing` or `cancelled`
+6. **Resume**: Run phase → `executing` or `cancelled`
 
 ### Execution Phase
 
@@ -331,7 +331,7 @@ All other webhooks are informational (fact events). Only the Orchestrator emits 
 5. **Test Interpretation**: Tester agent produces interpretation artifact, but **Orchestrator stores the authoritative pass/fail result**
 6. **Self-Review**: Review agent checks implementation against plan
 7. **Iteration**: If tests fail (per Orchestrator's ground truth) or review rejects, implementation agent retries (up to N times)
-8. **Completion**: Run status → `proposing`
+8. **Completion**: Run phase → `proposing`
 
 **Why Orchestrator owns test truth:** Test results feed into gates. Gates require authoritative data, not agent interpretation. The Orchestrator captures exit codes and stores them; agents provide human-readable analysis only.
 

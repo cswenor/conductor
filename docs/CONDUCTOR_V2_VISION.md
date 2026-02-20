@@ -75,7 +75,7 @@ In claude-pm-toolkit, we replaced GitHub Projects with **local-first SQLite** an
 - `suggest_approach` — Query past decisions and lessons for new work in a specific area
 
 **Triage & Planning (8 tools):**
-- `triage_issue` — One-call complete issue intelligence (tier, type, area, priority, size, risk, rework probability, similar past work)
+- `conductor_triage_work_item` — One-call complete issue intelligence (tier, type, area, priority, size, risk, rework probability, similar past work)
 - `auto_label` — AI classification from issue content analysis
 - `decompose_issue` — Break large issues into dependency-ordered subtasks
 - `plan_sprint` — AI-powered sprint planning combining dependency graph + capacity + Monte Carlo
@@ -242,7 +242,7 @@ The PM Agent handles everything before development starts:
 | Capability | Source | Description |
 |-----------|--------|-------------|
 | **Issue Intake** | New in v2 | Natural language → structured issue with acceptance criteria |
-| **Auto-Triage** | `triage_issue`, `auto_label` | Classify type, area, priority, risk, size, spec readiness |
+| **Auto-Triage** | `conductor_triage_work_item`, `auto_label` | Classify type, area, priority, risk, size, spec readiness |
 | **Decomposition** | `decompose_issue` | Break epics into dependency-ordered subtasks with critical path |
 | **Dependency Mapping** | `add_dependency`, `analyze_dependency_graph` | Build and maintain the dependency DAG with cycle detection |
 | **Similar Work Lookup** | `suggest_approach` | Find past decisions and lessons for similar work |
@@ -452,7 +452,7 @@ A2A's Task lifecycle maps naturally onto BullMQ jobs:
 | `working` | Job active | Agent processing |
 | `input-required` | Job paused | Human gate / clarification needed |
 | `completed` | Job completed | Work done, artifacts available |
-| `canceled` | Job removed | Work canceled |
+| `cancelled` | Job removed | Work cancelled |
 | `failed` | Job failed | Error occurred |
 
 ### Agent Cards (Capability Discovery)
@@ -650,7 +650,7 @@ conductor_get_board        — Board summary with health score
 conductor_get_issue        — Issue details with enrichments
 conductor_move_issue       — Transition workflow state
 conductor_add_dependency   — Add issue dependency
-conductor_triage_issue     — Full triage analysis
+conductor_conductor_triage_work_item     — Full triage analysis
 conductor_decompose_issue  — Break into subtasks
 conductor_plan_sprint      — Generate sprint plan
 conductor_suggest_next     — Recommend next issue
