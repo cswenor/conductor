@@ -29,11 +29,11 @@ Phase: testing                       vitest-worker
 ```
 {domain}.{action}
 
-domain:   planning | implementation | review | script | research | pm | reporting
+domain:   planning | implementation | review | script | research | docs | pm | reporting | gate
 action:   create | execute | revise | code | lint | test | typecheck | build | deploy | ...
 ```
 
-Examples: `planning.create`, `implementation.execute`, `review.code`, `script.lint`, `pm.triage`, `reporting.retrospective`
+Examples: `planning.create`, `implementation.execute`, `review.code`, `script.lint`, `pm.triage`, `docs.generate`, `gate.plan_approval`
 
 ### 1.2 Role Inheritance
 
@@ -65,7 +65,7 @@ roles:
 | --- | --- |
 | Role ID | `planner` |
 | Worker Class | `ai` |
-| Capabilities | `planning.create`, `planning.revise` |
+| Capabilities | `planning.create`, `planning.revise`, `planning.scope_map` |
 | Sandbox | `read-only` (reads codebase, doesn't modify) |
 | Default Model | `claude-sonnet-4-6` |
 | Temperature | `0.7` (creative but grounded) |
@@ -108,7 +108,7 @@ Do not implement — plan only.
 | --- | --- |
 | Role ID | `implementer` |
 | Worker Class | `ai` |
-| Capabilities | `implementation.execute`, `implementation.fix` |
+| Capabilities | `implementation.execute`, `implementation.fix`, `implementation.test`, `implementation.prepare_pr` |
 | Sandbox | `workspace-write` (writes to worktree, no system access) |
 | Default Model | `claude-sonnet-4-6` |
 | Temperature | `0.3` (precise, less creative) |
@@ -151,7 +151,7 @@ Do not introduce security vulnerabilities.
 | --- | --- |
 | Role ID | `reviewer` |
 | Worker Class | `ai` |
-| Capabilities | `review.code`, `review.plan` |
+| Capabilities | `review.code`, `review.plan`, `review.scope` |
 | Sandbox | `read-only` |
 | Default Model | `claude-sonnet-4-6` |
 | Temperature | `0.2` (precise, conservative) |
@@ -228,6 +228,92 @@ Cite specific code, documentation, or external sources for every claim.
 - `RESEARCH` artifact: Markdown research document
 
 **Typical Workflow Stages:** `researching` (spike)
+
+### 2.5 Security Reviewer
+
+**Purpose:** Review code changes with focus on security vulnerabilities and threat modeling.
+
+| Property | Value |
+| --- | --- |
+| Role ID | `security_reviewer` |
+| Worker Class | `ai` |
+| Inherits | `reviewer` |
+| Capabilities | `review.code`, `review.plan`, `review.scope`, `review.security` |
+| Sandbox | `read-only` |
+| Default Model | `claude-opus-4-6` (highest reasoning for security analysis) |
+| Temperature | `0.1` (minimal creativity — precision critical) |
+| Token Budget | `80,000` per task |
+| Timeout | `8 minutes` |
+
+**System Prompt Append (extends reviewer prompt):**
+
+```
+Additionally, you are a security specialist. Check for:
+
+1. OWASP Top 10 vulnerabilities (injection, XSS, CSRF, auth bypass, etc.)
+2. Secrets or credentials in code or config
+3. Insecure deserialization or input handling
+4. Missing authorization checks on new endpoints
+5. Path traversal, command injection, SSRF
+6. Insecure cryptographic choices
+7. Information disclosure in error messages or logs
+
+Every security finding MUST include:
+- CWE identifier (e.g., CWE-79 for XSS)
+- Severity rating per CVSS 3.1 methodology
+- Concrete exploit scenario (how an attacker would use this)
+- Specific fix with code example
+
+False positives in security findings are expensive. Only flag issues you can demonstrate.
+```
+
+**When assigned:** Security reviewers are selected when:
+- Work item has `area: security` label
+- Changed files touch authentication, authorization, or crypto paths
+- Project policy requires security review for all PRs
+- Explicit request via `review.security` operation in workflow template
+
+**Typical Workflow Stages:** `reviewing` (feature with security label), custom security review stages
+
+### 2.6 Documenter
+
+**Purpose:** Generate and update documentation based on code changes and specifications.
+
+| Property | Value |
+| --- | --- |
+| Role ID | `documenter` |
+| Worker Class | `ai` |
+| Capabilities | `docs.generate`, `docs.update` |
+| Sandbox | `workspace-write` (writes doc files) |
+| Default Model | `claude-sonnet-4-6` |
+| Temperature | `0.4` |
+| Token Budget | `40,000` per task |
+| Timeout | `5 minutes` |
+
+**System Prompt Core:**
+
+```
+You are a technical writer. Generate clear, accurate documentation.
+
+Given code changes and their purpose, produce or update documentation that:
+1. Explains what changed and why
+2. Updates API docs, README sections, or user guides as needed
+3. Follows the project's existing documentation style and structure
+4. Includes code examples where helpful
+5. Does NOT duplicate information already in code comments
+
+Write for the reader who will use this code, not the person who wrote it.
+```
+
+**Input:**
+- Code changes artifact (PATCHSET or CODE)
+- Work item description and acceptance criteria
+- Existing documentation files
+
+**Output:**
+- `PLAN` artifact: Updated documentation files (reuses PLAN type since docs are markdown)
+
+**Typical Workflow Stages:** Async stage triggered after implementation completes (fire-and-forget or monitored).
 
 ---
 
@@ -310,9 +396,91 @@ Script roles wrap deterministic tools. They don't need LLMs.
 | Runtime | `node` |
 | Timeout | `1 minute` |
 
+### 3.7 Security Scanner
+
+| Property | Value |
+| --- | --- |
+| Role ID | `security_scanner` |
+| Worker Class | `script` |
+| Capabilities | `script.security_scan` |
+| Default Script | `npm audit` / `trivy` / `semgrep` (configurable) |
+| Runtime | `node` or `bash` |
+| Sandbox | `read-only` |
+| Timeout | `5 minutes` |
+
+**Input:** Worktree path, optional file filter
+**Output:** Security findings (parsed into `ReviewFindingSchema` format with CWE identifiers)
+**Exit codes:** 0 = clean, 1 = findings, 2 = error
+
+### 3.8 Migrator
+
+| Property | Value |
+| --- | --- |
+| Role ID | `migrator` |
+| Worker Class | `script` |
+| Capabilities | `script.migrate` |
+| Default Script | `prisma migrate` / `knex migrate` / custom (configurable) |
+| Runtime | `node` or `python` |
+| Sandbox | `full-access` (needs DB connection, filesystem) |
+| Timeout | `5 minutes` |
+
+**Input:** Migration direction (up/down), target version (optional)
+**Output:** Migration result (applied count, current version)
+**Exit codes:** 0 = success, 1 = failure, 2 = error
+
+### 3.9 Notifier
+
+| Property | Value |
+| --- | --- |
+| Role ID | `notifier` |
+| Worker Class | `script` |
+| Capabilities | `script.notify` |
+| Default Script | Webhook/Slack/email dispatcher (configurable) |
+| Runtime | `bash` or `node` |
+| Sandbox | `read-only` + network (sends outbound requests only) |
+| Timeout | `30 seconds` |
+
+**Input:** Notification type, recipient channel, message template, context data
+**Output:** Delivery status (sent/failed, recipient, timestamp)
+**Note:** Always used as async fire-and-forget stages. Notification failure never blocks a run.
+
+### 3.10 Metrics Collector
+
+| Property | Value |
+| --- | --- |
+| Role ID | `metrics` |
+| Worker Class | `script` |
+| Capabilities | `script.metrics` |
+| Default Script | Custom collector (configurable) |
+| Runtime | `node` or `python` |
+| Sandbox | `read-only` |
+| Timeout | `2 minutes` |
+
+**Input:** Metric query type, scope (run/project/iteration)
+**Output:** `METRICS` artifact (JSON with metric values, timestamps, dimensions)
+**Note:** Typically async. Feeds PM Engine dashboards and analytics.
+
+### 3.11 Validator
+
+| Property | Value |
+| --- | --- |
+| Role ID | `validator` |
+| Worker Class | `script` |
+| Capabilities | `script.validate` |
+| Default Script | Schema validator (JSON Schema, OpenAPI, etc.) |
+| Runtime | `node` or `python` |
+| Sandbox | `read-only` |
+| Timeout | `1 minute` |
+
+**Input:** File paths to validate, schema references
+**Output:** Validation results (pass/fail, specific schema violations)
+**Exit codes:** 0 = valid, 1 = invalid, 2 = error
+
 ---
 
 ## 4. Built-in Human Roles
+
+Human workers are routed through Conductor's interfaces (Web UI, GitHub PR reviews, Slack, email). They respond with the same task result format as AI and script workers.
 
 ### 4.1 Code Reviewer (Human)
 
@@ -320,13 +488,38 @@ Script roles wrap deterministic tools. They don't need LLMs.
 | --- | --- |
 | Role ID | `human_reviewer` |
 | Worker Class | `human` |
-| Capabilities | `review.code`, `review.security` |
+| Capabilities | `review.code`, `review.plan` |
 | Timeout | `24 hours` (configurable) |
 
 **Task routing:** Via PR review request on GitHub/GitLab, or Conductor Web UI notification.
 **Response format:** Approve, request changes, or comment (same format as AI reviewer).
 
-### 4.2 Plan Approver
+### 4.2 Security Reviewer (Human)
+
+| Property | Value |
+| --- | --- |
+| Role ID | `human_security` |
+| Worker Class | `human` |
+| Capabilities | `review.code`, `review.security` |
+| Timeout | `24 hours` |
+
+**Task routing:** Via security-team-specific notification channel. Assigned when PR touches security-sensitive paths or when project policy requires human security review.
+**Response format:** Same as human_reviewer, with additional security-specific finding fields.
+
+### 4.3 Product Owner
+
+| Property | Value |
+| --- | --- |
+| Role ID | `human_product` |
+| Worker Class | `human` |
+| Capabilities | `review.requirements`, `gate.scope_approval` |
+| Timeout | `48 hours` |
+
+**Task routing:** Via Conductor Web UI, Slack, or email.
+**Response format:** Approve scope, reject with feedback, or request clarification.
+**When assigned:** Discovery workflows (spec validation), scope change approvals, requirement disputes.
+
+### 4.4 Plan Approver
 
 | Property | Value |
 | --- | --- |
@@ -338,7 +531,7 @@ Script roles wrap deterministic tools. They don't need LLMs.
 **Task routing:** Via Conductor Web UI, Slack notification, or email.
 **Response format:** Approve or reject with comments.
 
-### 4.3 Merge Approver
+### 4.5 Merge Approver
 
 | Property | Value |
 | --- | --- |
@@ -349,11 +542,55 @@ Script roles wrap deterministic tools. They don't need LLMs.
 
 ---
 
-## 5. Built-in PM Roles
+## 5. Built-in Service Roles
+
+Service workers are long-running processes that accept tasks continuously. Unlike AI workers (spawned per task) and script workers (executed per task), service workers register once and serve indefinitely.
+
+### 5.1 PM Engine
+
+| Property | Value |
+| --- | --- |
+| Role ID | `pm_engine` |
+| Worker Class | `service` |
+| Capabilities | All `conductor_*` PM intelligence tools (55 operations) |
+| Sandbox | Own SQLite database (read/write), GitHub API (read) |
+| Instances | Singleton per project |
+| Timeout | Varies per operation (30s for queries, 5min for sync) |
+
+**Architecture:** The PM Engine is the largest service worker. It wraps 10 intelligence modules, each of which could be modeled as its own worker. At the current scale they run in-process as a monolith; at scale they could be decomposed into separate service workers.
+
+**Operations (subset):** `conductor_triage_work_item`, `conductor_plan_iteration`, `conductor_get_risk_radar`, `conductor_predict_completion`, `conductor_suggest_next_work_item`, `conductor_decompose_work_item`, `conductor_sync_from_source`, etc.
+
+**State:** Maintains SQLite database (`.pm/state.db`) with work items, events, decisions, outcomes, dependencies, and projections.
+
+**Health:** Exposes `/health` endpoint. Auto-syncs on startup if data is stale (>1hr). Reports sync lag as a health metric.
+
+### 5.2 CI Service
+
+| Property | Value |
+| --- | --- |
+| Role ID | `ci_service` |
+| Worker Class | `service` |
+| Capabilities | `script.ci_trigger`, `script.ci_status` |
+| Sandbox | Network access (GitHub Actions API, GitLab CI API) |
+| Instances | Singleton per project |
+| Timeout | `ci_trigger`: 30s, `ci_status`: 10s |
+
+**Architecture:** Wraps the project's CI system (GitHub Actions, GitLab CI, CircleCI, etc.) behind a uniform interface. The orchestrator triggers CI runs and polls for status without knowing which CI system is in use.
+
+**Operations:**
+- `script.ci_trigger` — Start a CI workflow (e.g., run tests on a PR branch)
+- `script.ci_status` — Query status of a CI run (pending, running, passed, failed)
+
+**Webhook integration:** Optionally receives CI webhooks for real-time status updates instead of polling.
+
+---
+
+## 6. Built-in PM Roles
 
 PM worker roles fall into two categories:
 
-### 5.1 Intelligence Module Roles
+### 6.1 Intelligence Module Roles
 
 These are specified in detail in `../pm-engine/INTELLIGENCE_MODULES.md`. Each has an algorithm contract, input/output schemas, and caching strategy.
 
@@ -370,7 +607,7 @@ These are specified in detail in `../pm-engine/INTELLIGENCE_MODULES.md`. Each ha
 | `pm.capacity.model` | `pm.capacity.model` | script | `INTELLIGENCE_MODULES.md § 9` |
 | `pm.detection.anomaly` | `pm.detection.anomaly` | script | `INTELLIGENCE_MODULES.md § 10` |
 
-### 5.2 Workflow-Specific PM Roles
+### 6.2 Workflow-Specific PM Roles
 
 These are simpler roles used in PM workflow stages (`../pm-engine/WORKFLOWS.md`). They typically compose intelligence module outputs or interact with the data layer.
 
@@ -390,33 +627,41 @@ These are simpler roles used in PM workflow stages (`../pm-engine/WORKFLOWS.md`)
 | `pm.synthesis.pattern_miner` | Extract patterns from retrospective data | script | No |
 | `pm.reporting.retrospective` | Generate retrospective narrative | AI | Yes |
 | `pm.reporting.release_notes` | Generate release notes from PR data | AI | Yes |
+| `pm.reporting.standup` | Generate daily standup from activity data | AI | Yes |
 | `pm.memory.recorder` | Record decisions and outcomes to data layer | script | No |
 | `pm.memory.decay_checker` | Check for stale decisions | script | No |
 | `pm.memory.linker` | Link outcomes to decisions | script | No |
 
-**Key observation:** Only 5 of 17 workflow-specific PM roles need an LLM (structurer, analyzer, evaluator, retrospective, release notes). The rest are script workers that compose data and apply rules.
+**Key observation:** Only 6 of 18 workflow-specific PM roles need an LLM (structurer, analyzer, evaluator, retrospective, release notes, standup). The rest are script workers that compose data and apply rules.
 
 ---
 
-## 6. Operation Reference
+## 7. Operation Reference
 
 Complete list of operation identifiers used in workflow templates. Each operation maps to a role capability.
 
-### 6.1 Development Operations
+### 7.1 Development Operations
 
 | Operation | Description | Typical Role |
 | --- | --- | --- |
 | `planning.create` | Create an implementation plan | planner |
 | `planning.revise` | Revise a plan based on feedback | planner |
+| `planning.scope_map` | Map acceptance criteria to files and tests | planner |
 | `implementation.execute` | Implement changes per plan | implementer |
 | `implementation.fix` | Fix issues from test/lint/review | implementer |
+| `implementation.test` | Run implementation-scoped tests | implementer |
+| `implementation.prepare_pr` | Create PR from worktree changes | implementer |
 | `review.code` | Review code changes | reviewer |
 | `review.plan` | Review an implementation plan | reviewer |
+| `review.scope` | Check scope alignment against plan | reviewer |
 | `review.security` | Security-focused review | security_reviewer |
+| `review.requirements` | Validate requirements coverage | human_product |
 | `research.investigate` | Open-ended research | researcher |
 | `research.evaluate` | Evaluate specific options | researcher |
+| `docs.generate` | Generate documentation from changes | documenter |
+| `docs.update` | Update existing documentation | documenter |
 
-### 6.2 Script Operations
+### 7.2 Script Operations
 
 | Operation | Description | Typical Role |
 | --- | --- | --- |
@@ -427,29 +672,195 @@ Complete list of operation identifiers used in workflow templates. Each operatio
 | `script.format` | Format code | formatter |
 | `script.deploy` | Deploy to environment | deployer |
 | `script.security_scan` | Run security scanner | security_scanner |
+| `script.migrate` | Run database migrations | migrator |
+| `script.notify` | Send notifications | notifier |
+| `script.metrics` | Collect and report metrics | metrics |
+| `script.validate` | Validate schemas/configs | validator |
+| `script.ci_trigger` | Trigger CI workflow | ci_service |
+| `script.ci_status` | Query CI run status | ci_service |
 
-### 6.3 Gate Operations
+### 7.3 Gate Operations
 
 | Operation | Description | Typical Role |
 | --- | --- | --- |
 | `gate.plan_approval` | Approve/reject a plan | plan_approver (human) |
 | `gate.merge_approval` | Approve/reject a merge | merge_approver (human) |
+| `gate.scope_approval` | Approve/reject scope changes | human_product |
 
-### 6.4 PM Operations
+### 7.4 PM Operations
 
 | Operation | Description | Typical Role |
 | --- | --- | --- |
 | `pm.triage` | Classify and assess a work item | pm.triage.classifier |
+| `pm.decompose` | Break work item into subtasks | pm_engine |
+| `pm.suggest_next` | Recommend next work item | pm_engine |
+| `pm.forecast` | Monte Carlo completion forecast | pm_engine |
+| `pm.risk` | Compute risk radar | pm_engine |
 | `pm.plan_iteration` | Create an iteration plan | pm.planning.ranker + proposer |
+| `pm.record_outcome` | Record work outcome | pm.memory.recorder |
 | `pm.review_pr` | Review a PR (PM-level) | pm.review.analyzer + evaluator |
 | `pm.retrospective` | Generate retrospective | pm.reporting.retrospective |
 | `pm.release_notes` | Generate release notes | pm.reporting.release_notes |
+| `pm.standup` | Generate daily standup | pm.reporting.standup |
 
 ---
 
-## 7. Custom Role Authoring
+## 8. Worker Variant Registry
 
-### 7.1 Defining a Custom Role
+A **worker variant** is a concrete instance of a role, bound to a specific provider and model configuration. Multiple variants of the same role enable failover, cost optimization, and A/B testing.
+
+### 8.1 Typical Production Registry
+
+```
+Role: planner
+├── planner-claude-opus         provider: anthropic   model: claude-opus-4-6      cost: $$$   quality: highest
+├── planner-claude-sonnet       provider: anthropic   model: claude-sonnet-4-6    cost: $$    quality: high
+├── planner-gpt4                provider: openai      model: gpt-4.1              cost: $$$   quality: highest
+├── planner-gemini-pro          provider: google      model: gemini-2.5-pro       cost: $$    quality: high
+└── planner-local-llama         provider: ollama      model: llama-3.3-70b        cost: $     quality: medium
+
+Role: implementer
+├── impl-claude-sonnet          provider: anthropic   model: claude-sonnet-4-6    cost: $$    quality: high
+├── impl-claude-opus            provider: anthropic   model: claude-opus-4-6      cost: $$$   quality: highest
+├── impl-gpt4                   provider: openai      model: gpt-4.1              cost: $$    quality: high
+├── impl-codex                  provider: openai      model: codex                cost: $$    quality: high (code-specific)
+└── impl-local-deepseek         provider: ollama      model: deepseek-coder-v3    cost: $     quality: medium
+
+Role: reviewer
+├── reviewer-claude-opus        provider: anthropic   model: claude-opus-4-6      cost: $$$   quality: highest
+├── reviewer-gpt4               provider: openai      model: gpt-4.1              cost: $$$   quality: highest
+├── reviewer-gemini-pro         provider: google      model: gemini-2.5-pro       cost: $$    quality: high
+└── reviewer-sonnet             provider: anthropic   model: claude-sonnet-4-6    cost: $$    quality: high
+
+Role: security_reviewer
+├── sec-reviewer-claude-opus    provider: anthropic   model: claude-opus-4-6      cost: $$$   quality: highest
+└── sec-reviewer-gpt4           provider: openai      model: gpt-4.1              cost: $$$   quality: highest
+
+Role: researcher
+├── researcher-claude-opus      provider: anthropic   model: claude-opus-4-6      cost: $$$   quality: highest
+├── researcher-gemini-pro       provider: google      model: gemini-2.5-pro       cost: $$    quality: high (1M context)
+└── researcher-local            provider: ollama      model: llama-3.3-70b        cost: $     quality: medium
+
+Role: documenter
+├── docs-claude-sonnet          provider: anthropic   model: claude-sonnet-4-6    cost: $$    quality: high
+├── docs-gpt4-mini              provider: openai      model: gpt-4.1-mini         cost: $     quality: good
+└── docs-haiku                  provider: anthropic   model: claude-haiku-4-5     cost: $     quality: good
+
+Role: pm.triage.classifier
+├── triage-haiku                provider: anthropic   model: claude-haiku-4-5     cost: $     quality: good (fast, cheap)
+├── triage-gpt4-nano            provider: openai      model: gpt-4.1-nano         cost: $     quality: good
+└── triage-script               provider: —           model: —                    cost: free  quality: heuristic only
+
+Role: pm.reporting.retrospective
+├── retro-claude-sonnet         provider: anthropic   model: claude-sonnet-4-6    cost: $$    quality: high
+└── retro-gpt4-mini             provider: openai      model: gpt-4.1-mini         cost: $     quality: good
+
+Script roles (no variants — one instance per project):
+├── eslint-worker               role: linter          runtime: node
+├── vitest-worker               role: tester          runtime: node
+├── tsc-worker                  role: typechecker     runtime: node
+├── build-worker                role: builder         runtime: node
+├── prettier-worker             role: formatter       runtime: node
+├── vercel-deploy               role: deployer        runtime: bash
+├── semgrep-worker              role: security_scanner runtime: bash
+├── prisma-migrate              role: migrator        runtime: node
+├── slack-notifier              role: notifier        runtime: node
+├── metrics-collector           role: metrics         runtime: node
+├── schema-validator            role: validator       runtime: node
+
+Human roles (no variants — humans are humans):
+├── @alice                      role: human_reviewer  routing: github-pr
+├── @bob                        role: plan_approver   routing: web-ui
+├── @carol                      role: merge_approver  routing: web-ui
+├── @dave                       role: human_security  routing: slack-channel
+├── @eve                        role: human_product   routing: web-ui
+
+Service roles (singletons):
+├── pm-engine-v1                role: pm_engine       instances: 1
+└── github-ci-adapter           role: ci_service      instances: 1
+```
+
+### 8.2 Dynamic Selection Rules
+
+The orchestrator selects from variants based on runtime conditions. This is not static configuration — it adapts.
+
+| Signal | Selection Effect |
+| --- | --- |
+| **Work item risk level** | `risk >= high` → use highest-quality variant (Opus, GPT-4.1) |
+| **Provider health** | Provider circuit breaker open → failover to next provider |
+| **Cost budget** | Monthly budget remaining < 20% → prefer cheaper variants |
+| **Task complexity** | Simple tasks (estimated_scope=small) → use cheaper models |
+| **Area expertise** | If variant has higher success rate in this area → rank boost |
+| **Rework probability** | `predict_rework > 0.5` → use highest-quality variant |
+| **Time of day** | Off-peak → batch via Anthropic Batch API (50% cost reduction) |
+| **Queue depth** | High queue → spread across providers for parallelism |
+| **Token budget** | Task needs >100K tokens → only variants with 200K+ context |
+| **Privacy policy** | `privacy: strict` → only local providers (Ollama) |
+
+### 8.3 Dynamic Adaptation Scenarios
+
+**Scenario 1: Provider outage**
+```
+Anthropic API returns 503 for 3 consecutive requests
+→ Circuit breaker opens for anthropic provider (30s cooldown)
+→ All anthropic variants marked unavailable
+→ Orchestrator routes to next-ranked variant:
+    planner-claude-opus → planner-gpt4
+    impl-claude-sonnet → impl-gpt4
+    reviewer-claude-opus → reviewer-gpt4
+→ After 30s, circuit breaker half-opens (allows 1 probe request)
+→ If probe succeeds, circuit closes, anthropic variants available again
+→ Event: provider_failover { from: anthropic, to: openai, duration_ms: 30000 }
+```
+
+**Scenario 2: Cost optimization mid-sprint**
+```
+Budget tracker: $180 spent of $200 monthly budget (90%)
+→ Cost policy activates tier downgrade:
+    planner: claude-opus-4-6 → claude-sonnet-4-6 (save ~60%)
+    reviewer: claude-opus-4-6 → claude-sonnet-4-6 (save ~60%)
+    implementer: unchanged (already sonnet)
+→ Critical work items exempt (risk_level=critical always gets best model)
+→ Event: cost_policy_activated { budget_remaining_pct: 10, downgraded: [planner, reviewer] }
+```
+
+**Scenario 3: Quality regression detected**
+```
+PM Engine detects: rework rate for impl-gpt4 is 45% (vs 15% for impl-claude-sonnet)
+→ Area-specific: only in backend area (frontend is fine)
+→ Orchestrator adjusts ranking:
+    For backend work items: impl-claude-sonnet +20 rank boost
+    For frontend work items: no change
+→ Event: quality_adjustment { worker: impl-gpt4, area: backend, rework_rate: 0.45 }
+```
+
+**Scenario 4: Model upgrade rollout**
+```
+New model released: claude-sonnet-4-7
+→ Admin adds new variant: impl-claude-sonnet-47
+→ Canary policy: route 10% of implementation tasks to new variant
+→ After 20 tasks: compare rework rate, cycle time, test pass rate
+→ If metrics equal or better: increase to 50%, then 100%
+→ If metrics worse: disable variant, alert admin
+→ Event: canary_evaluation { variant: impl-claude-sonnet-47, tasks: 20, result: promoted }
+```
+
+**Scenario 5: Privacy-sensitive project**
+```
+Project policy: privacy=strict (no data leaves network)
+→ All cloud providers filtered out
+→ Only local variants available:
+    planner-local-llama, impl-local-deepseek, researcher-local
+→ If no local variant exists for a role: run blocked, human escalation
+→ Quality may be lower, but data sovereignty is maintained
+→ Event: privacy_filter { excluded_providers: [anthropic, openai, google] }
+```
+
+---
+
+## 9. Custom Role Authoring
+
+### 9.1 Defining a Custom Role
 
 ```yaml
 # In conductor.project.yaml or conductor.roles.yaml
@@ -484,7 +895,7 @@ custom_roles:
     default_max_parallel: 1
 ```
 
-### 7.2 Using Custom Roles in Workflow Templates
+### 9.2 Using Custom Roles in Workflow Templates
 
 Reference the capability in the workflow template:
 
@@ -500,7 +911,7 @@ templates:
 
 The orchestrator will route `my_domain.my_action` to any worker whose role declares that capability.
 
-### 7.3 Custom Role Checklist
+### 9.3 Custom Role Checklist
 
 Before deploying a custom role:
 
@@ -516,7 +927,7 @@ Before deploying a custom role:
 
 ---
 
-## 8. Role Selection Algorithm
+## 10. Role Selection Algorithm
 
 When the orchestrator needs to assign a task with a specific operation, it selects from registered workers:
 
@@ -534,15 +945,19 @@ Find all workers whose role includes "review.code" capability
 Filter by:
     1. Worker status (available, not at max_parallel)
     2. Project scope (worker enabled for this project)
-    3. Provider health (provider not down)
-    4. Circuit breaker (not open for this worker type)
+    3. Provider health (provider not down, circuit breaker closed)
+    4. Privacy policy (provider allowed for this project's data classification)
+    5. Token budget (variant has sufficient context window for task)
     │
     ▼
 Rank by:
-    1. Capability priority boost (from worker_capabilities table)
-    2. Availability (fewer current tasks = higher rank)
-    3. Success rate (historical task success/failure ratio)
-    4. Area match (PM Engine area expertise, if available)
+    1. Risk-based quality boost (high risk → highest quality variant)
+    2. Cost tier (within budget constraints)
+    3. Capability priority boost (from worker_capabilities table)
+    4. Availability (fewer current tasks = higher rank)
+    5. Success rate (historical task success/failure ratio)
+    6. Area match (PM Engine area expertise, if available)
+    7. Canary weighting (if A/B testing is active)
     │
     ▼
 Assign top-ranked worker
@@ -553,3 +968,42 @@ Assign top-ranked worker
 - **Cost optimization:** Use cheaper models for low-risk tasks, expensive models for high-risk
 - **A/B testing:** Compare model performance on the same role over time
 - **Specialization:** `security_reviewer` has `review.code` + `review.security`, so it gets assigned security-sensitive reviews
+- **Privacy isolation:** Local-only variants for sensitive projects
+- **Canary deployments:** Gradually roll out new models with controlled traffic
+
+---
+
+## 11. Complete Role Census
+
+Summary of every built-in role, organized by worker class.
+
+| # | Role ID | Worker Class | Capabilities | LLM? |
+| --- | --- | --- | --- | --- |
+| 1 | `planner` | ai | `planning.create`, `planning.revise`, `planning.scope_map` | Yes |
+| 2 | `implementer` | ai | `implementation.execute`, `implementation.fix`, `implementation.test`, `implementation.prepare_pr` | Yes |
+| 3 | `reviewer` | ai | `review.code`, `review.plan`, `review.scope` | Yes |
+| 4 | `researcher` | ai | `research.investigate`, `research.evaluate` | Yes |
+| 5 | `security_reviewer` | ai | `review.code`, `review.plan`, `review.scope`, `review.security` | Yes |
+| 6 | `documenter` | ai | `docs.generate`, `docs.update` | Yes |
+| 7 | `linter` | script | `script.lint` | No |
+| 8 | `tester` | script | `script.test` | No |
+| 9 | `typechecker` | script | `script.typecheck` | No |
+| 10 | `builder` | script | `script.build` | No |
+| 11 | `deployer` | script | `script.deploy` | No |
+| 12 | `formatter` | script | `script.format` | No |
+| 13 | `security_scanner` | script | `script.security_scan` | No |
+| 14 | `migrator` | script | `script.migrate` | No |
+| 15 | `notifier` | script | `script.notify` | No |
+| 16 | `metrics` | script | `script.metrics` | No |
+| 17 | `validator` | script | `script.validate` | No |
+| 18 | `human_reviewer` | human | `review.code`, `review.plan` | No |
+| 19 | `human_security` | human | `review.code`, `review.security` | No |
+| 20 | `human_product` | human | `review.requirements`, `gate.scope_approval` | No |
+| 21 | `plan_approver` | human | `gate.plan_approval` | No |
+| 22 | `merge_approver` | human | `gate.merge_approval` | No |
+| 23 | `pm_engine` | service | All `conductor_*` operations | No |
+| 24 | `ci_service` | service | `script.ci_trigger`, `script.ci_status` | No |
+| 25-34 | `pm.analytics.*`, `pm.prediction.*`, etc. | script | PM intelligence operations | No (8/10) |
+| 35-52 | `pm.triage.*`, `pm.planning.*`, etc. | script/ai | PM workflow operations | Partial (6/18) |
+
+**Totals: 52 built-in roles** — 6 AI, 11 script, 5 human, 2 service, 10 PM intelligence, 18 PM workflow.
