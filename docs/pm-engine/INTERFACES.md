@@ -1884,7 +1884,7 @@ export const AgentCardSchema = z.object({
       "pm.risk",
       "pm.record_outcome"
     ],
-    "emits_artifacts": ["TRIAGE", "ITERATION_PLAN", "FORECAST", "RISK_REPORT", "STANDUP", "RETRO"],
+    "emits_artifacts": ["PLAN", "STANDUP", "RETRO", "RELEASE_NOTES", "METRICS"],
     "mcp_tools_allowed": [
       "conductor_triage_work_item",
       "conductor_decompose_work_item",
@@ -1992,7 +1992,7 @@ export const AgentCardSchema = z.object({
   ],
   "capabilities": {
     "accepts_operations": ["implementation.execute", "implementation.test", "implementation.prepare_pr"],
-    "emits_artifacts": ["PATCHSET", "TEST_REPORT", "PR_DRAFT"],
+    "emits_artifacts": ["CODE", "PATCHSET", "TEST_REPORT"],
     "mcp_tools_allowed": [
       "conductor_get_run_status",
       "conductor_detect_scope_creep",
@@ -2090,8 +2090,8 @@ Not every worker is an AI agent. Linters, test runners, deployment scripts, and 
     }
   ],
   "capabilities": {
-    "accepts_operations": ["script.execute", "script.lint", "script.test", "script.deploy", "script.monitor"],
-    "emits_artifacts": ["TEST_REPORT", "LINT_REPORT", "DEPLOY_STATUS"],
+    "accepts_operations": ["script.execute", "script.lint", "script.test", "script.typecheck", "script.deploy", "script.monitor"],
+    "emits_artifacts": ["TEST_REPORT", "DEPLOY_LOG", "METRICS"],
     "mcp_tools_allowed": [
       "conductor_get_run_status",
       "conductor_detect_scope_creep"
@@ -2162,6 +2162,7 @@ export const A2AWorkflowOperation = z.enum([
   'script.execute',
   'script.lint',
   'script.test',
+  'script.typecheck',
   'script.deploy',
   'script.monitor',
 ]);
@@ -2407,7 +2408,7 @@ export const OutcomeRecordingResponsePayloadSchema = z.object({
 #### 7. Script execution request/response
 ```ts
 export const ScriptExecutionRequestPayloadSchema = z.object({
-  operation: z.enum(['script.execute', 'script.lint', 'script.test', 'script.deploy', 'script.monitor']),
+  operation: z.enum(['script.execute', 'script.lint', 'script.test', 'script.typecheck', 'script.deploy', 'script.monitor']),
   project_id: ProjectId,
   run_id: RunId.optional(),
   work_item_id: WorkItemId.optional(),
@@ -2421,7 +2422,7 @@ export const ScriptExecutionRequestPayloadSchema = z.object({
 });
 
 export const ScriptExecutionResponsePayloadSchema = z.object({
-  operation: z.enum(['script.execute', 'script.lint', 'script.test', 'script.deploy', 'script.monitor']),
+  operation: z.enum(['script.execute', 'script.lint', 'script.test', 'script.typecheck', 'script.deploy', 'script.monitor']),
   script_id: z.string().min(1),
   exit_code: z.number().int(),
   passed: z.boolean(),
