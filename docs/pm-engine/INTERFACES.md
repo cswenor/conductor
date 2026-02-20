@@ -116,6 +116,16 @@ export const RunPhase = z.enum([
   'cancelled',
 ]);
 
+// NOTE: Workflow templates use descriptive phase names (e.g., 'plan_approval',
+// 'implementing', 'reviewing', 'testing', 'reworking') that are more human-readable.
+// The orchestrator maps these to RunPhase values via the template's phase_mapping table:
+//   template 'plan_approval'  → RunPhase 'awaiting_plan_approval'
+//   template 'implementing'   → RunPhase 'executing'
+//   template 'testing'        → RunPhase 'executing' (sub-phase)
+//   template 'reviewing'      → RunPhase 'awaiting_review'
+//   template 'reworking'      → RunPhase 'executing' (sub-phase)
+// See WORKFLOW_ENGINE.md § 1.2 for template phase definitions.
+
 export const RunStep = z.enum([
   'setup_worktree',
   'route',
@@ -404,7 +414,7 @@ export const RiskDimensionSchema = z.object({
     'stakeholder',
     'knowledge',
   ]),
-  score: z.number().min(0).max(1),
+  score: z.number().min(0).max(100),
   trend: z.enum(['up', 'flat', 'down']),
   evidence: z.array(z.string()).default([]),
 });
@@ -459,7 +469,18 @@ export const RunTimelineEventSchema = z.object({
 
 export const RunArtifactSchema = z.object({
   artifact_id: z.string().min(1),
-  artifact_type: z.enum(['PLAN', 'PATCHSET', 'REVIEW', 'TEST_REPORT', 'STANDUP', 'RETRO', 'RELEASE_NOTES']),
+  artifact_type: z.enum([
+    // Development artifacts
+    'PLAN', 'PLAN_METADATA', 'CODE', 'PATCHSET', 'TEST_REPORT',
+    // Review artifacts
+    'REVIEW', 'REVIEW_FINDINGS', 'REVIEW_VERDICT',
+    // Research artifacts
+    'RESEARCH',
+    // PM reporting artifacts
+    'STANDUP', 'RETRO', 'RELEASE_NOTES',
+    // Operational artifacts
+    'DEPLOY_LOG', 'METRICS', 'CUSTOM',
+  ]),
   created_at: IsoDateTime,
   uri: z.string().optional(),
   content_type: z.string().optional(),
@@ -1011,7 +1032,7 @@ export const ConductorGetRiskRadarInputSchema = z.object({
 });
 
 export const ConductorGetRiskRadarOutputSchema = z.object({
-  overall_risk: z.number().min(0).max(1),
+  overall_risk: z.number().min(0).max(100),
   risk_level: RiskLevel,
   dimensions: z.array(RiskDimensionSchema),
 });
@@ -1373,7 +1394,7 @@ export const ConductorReviewPullRequestInputSchema = z.object({
 });
 
 export const ConductorReviewPullRequestOutputSchema = z.object({
-  verdict: z.enum(['APPROVED', 'CHANGES_REQUESTED']),
+  verdict: z.enum(['APPROVED', 'CHANGES_REQUESTED', 'NEEDS_DISCUSSION']),
   summary: z.string(),
   findings: z.array(ReviewFindingSchema),
   posted_comment_url: z.string().url().optional(),
@@ -2111,7 +2132,7 @@ export const A2ATaskState = z.enum([
   'input-required',
   'completed',
   'failed',
-  'canceled',
+  'cancelled',
 ]);
 
 export const A2AArtifactRefSchema = z.object({
@@ -2161,6 +2182,10 @@ export const A2AEventNotificationSchema = z.object({
   }),
 });
 
+// A2A envelope wraps the internal task format (see ../workers/PROTOCOL.md § 1.5).
+// The orchestrator's message router translates between internal dispatch (compact
+// `type` field, structured input/constraints) and A2A envelopes (versioned protocol
+// header, generic payload, agent routing). Workers never see the A2A envelope directly.
 export const A2AWorkflowRequestEnvelopeSchema = z.object({
   protocol: z.literal('a2a/1.0'),
   message_type: z.literal('task_request'),
@@ -2342,7 +2367,7 @@ export const ReviewResponsePayloadSchema = z.object({
   operation: z.enum(['review.plan', 'review.code']),
   artifact_type: z.literal('REVIEW'),
   review: z.object({
-    verdict: z.enum(['APPROVED', 'CHANGES_REQUESTED']),
+    verdict: z.enum(['APPROVED', 'CHANGES_REQUESTED', 'NEEDS_DISCUSSION']),
     summary: z.string(),
     findings: z.array(ReviewFindingSchema),
     scope_alignment: z.object({
@@ -2408,6 +2433,235 @@ export const ScriptExecutionResponsePayloadSchema = z.object({
 ```
 
 Script workers use the same A2A envelope (`A2AWorkflowRequestEnvelopeSchema` / `A2AWorkflowResponseEnvelopeSchema`) as AI agents. The orchestrator does not need to know whether a worker is AI or script — it routes based on the `operation` field and the worker's declared capabilities in its Agent Card.
+
+#### 8. Decompose request/response
+```ts
+export const DecomposeRequestPayloadSchema = z.object({
+  operation: z.literal('pm.decompose'),
+  project_id: ProjectId,
+  work_item_id: WorkItemId,
+  max_subtasks: z.number().int().min(2).max(20).default(8),
+  include_dependencies: z.boolean().default(true),
+});
+
+export const DecomposeResponsePayloadSchema = z.object({
+  operation: z.literal('pm.decompose'),
+  subtasks: z.array(z.object({
+    title: z.string(),
+    type: WorkItemType,
+    area: z.string().optional(),
+    acceptance_criteria: z.array(z.string()),
+    size_estimate: z.enum(['xs', 'sm', 'md', 'lg', 'xl']),
+    risk_level: RiskLevel,
+    dependencies: z.array(z.string()).default([]),
+  })),
+  critical_path: z.array(z.string()),
+  parallelization_ratio: z.number().min(0).max(1),
+  execution_phases: z.array(z.object({
+    phase: z.number().int(),
+    subtask_titles: z.array(z.string()),
+  })),
+});
+```
+
+#### 9. Suggest next request/response
+```ts
+export const SuggestNextRequestPayloadSchema = z.object({
+  operation: z.literal('pm.suggest_next'),
+  project_id: ProjectId,
+  max_suggestions: z.number().int().min(1).max(10).default(5),
+  focus_area: z.string().optional(),
+});
+
+export const SuggestNextResponsePayloadSchema = z.object({
+  operation: z.literal('pm.suggest_next'),
+  suggestions: z.array(z.object({
+    work_item_id: WorkItemId,
+    title: z.string(),
+    score: z.number().min(0).max(100),
+    rationale: z.array(z.string()),
+    estimated_hours_p50: z.number().min(0).optional(),
+  })),
+});
+```
+
+#### 10. Forecast request/response
+```ts
+export const ForecastRequestPayloadSchema = z.object({
+  operation: z.literal('pm.forecast'),
+  project_id: ProjectId,
+  item_count: z.number().int().min(1),
+  sprint_days: z.number().int().min(1).max(90).default(14),
+  wip_limit: z.number().int().min(1).default(1),
+  area: z.string().optional(),
+});
+
+export const ForecastResponsePayloadSchema = z.object({
+  operation: z.literal('pm.forecast'),
+  throughput_percentiles: z.record(z.string(), z.number()),
+  completion_probability: z.number().min(0).max(1),
+  completion_dates: z.object({
+    p50: IsoDateTime,
+    p80: IsoDateTime,
+    p95: IsoDateTime,
+  }),
+  histogram: z.array(z.object({ bucket: z.number(), count: z.number() })),
+});
+```
+
+#### 11. Risk radar request/response
+```ts
+export const RiskRadarRequestPayloadSchema = z.object({
+  operation: z.literal('pm.risk'),
+  project_id: ProjectId,
+  range: DateRangeSchema.optional(),
+});
+
+export const RiskRadarResponsePayloadSchema = z.object({
+  operation: z.literal('pm.risk'),
+  overall_risk: z.number().min(0).max(100),
+  risk_level: RiskLevel,
+  dimensions: z.array(RiskDimensionSchema),
+  mitigations: z.array(z.object({
+    dimension: z.string(),
+    action: z.string(),
+    priority: z.enum(['high', 'medium', 'low']),
+  })),
+});
+```
+
+#### 12. Plan revision request/response
+```ts
+export const PlanRevisionRequestPayloadSchema = z.object({
+  operation: z.literal('planning.revise'),
+  project_id: ProjectId,
+  run_id: RunId,
+  work_item_id: WorkItemId,
+  original_plan_artifact_id: z.string().min(1),
+  revision_reason: z.enum(['review_feedback', 'scope_change', 'implementation_blocker', 'user_request']),
+  feedback: z.array(z.object({
+    source: z.string(),
+    comment: z.string(),
+  })),
+});
+
+export const PlanRevisionResponsePayloadSchema = z.object({
+  operation: z.literal('planning.revise'),
+  artifact_type: z.literal('PLAN'),
+  plan: PlanResponsePayloadSchema.shape.plan,
+  changes_summary: z.array(z.string()),
+  open_questions: z.array(z.string()),
+});
+```
+
+#### 13. Scope map request/response
+```ts
+export const ScopeMapRequestPayloadSchema = z.object({
+  operation: z.literal('planning.scope_map'),
+  project_id: ProjectId,
+  work_item_id: WorkItemId,
+  plan_artifact_id: z.string().min(1).optional(),
+  acceptance_criteria: z.array(z.string()),
+});
+
+export const ScopeMapResponsePayloadSchema = z.object({
+  operation: z.literal('planning.scope_map'),
+  scope_map: z.array(z.object({
+    criterion: z.string(),
+    files: z.array(z.string()),
+    tests: z.array(z.string()),
+    status: z.enum(['planned', 'in_progress', 'done', 'not_started']),
+  })),
+  out_of_scope_detected: z.array(z.string()),
+});
+```
+
+#### 14. Test execution request/response
+```ts
+export const TestExecutionRequestPayloadSchema = z.object({
+  operation: z.literal('implementation.test'),
+  project_id: ProjectId,
+  run_id: RunId.optional(),
+  work_item_id: WorkItemId.optional(),
+  workspace: z.object({
+    worktree_path: z.string().min(1),
+    base_branch: z.string().min(1),
+  }),
+  test_scope: z.enum(['unit', 'integration', 'e2e', 'all']).default('all'),
+  changed_files: z.array(z.string()).default([]),
+});
+
+export const TestExecutionResponsePayloadSchema = z.object({
+  operation: z.literal('implementation.test'),
+  artifact_type: z.literal('TEST_REPORT'),
+  passed: z.boolean(),
+  exit_code: z.number().int(),
+  total: z.number().int().min(0),
+  passed_count: z.number().int().min(0),
+  failed_count: z.number().int().min(0),
+  skipped_count: z.number().int().min(0),
+  summary: z.string(),
+  failures: z.array(z.object({
+    test_name: z.string(),
+    file: z.string(),
+    error: z.string(),
+  })).default([]),
+  duration_seconds: z.number().min(0),
+});
+```
+
+#### 15. PR preparation request/response
+```ts
+export const PreparePrRequestPayloadSchema = z.object({
+  operation: z.literal('implementation.prepare_pr'),
+  project_id: ProjectId,
+  run_id: RunId,
+  work_item_id: WorkItemId,
+  workspace: z.object({
+    worktree_path: z.string().min(1),
+    base_branch: z.string().min(1),
+    target_branch: z.string().min(1),
+  }),
+  acceptance_criteria: z.array(z.string()).default([]),
+  plan_artifact_id: z.string().min(1).optional(),
+});
+
+export const PreparePrResponsePayloadSchema = z.object({
+  operation: z.literal('implementation.prepare_pr'),
+  pr_number: z.number().int().positive(),
+  pr_url: z.string().url(),
+  title: z.string(),
+  body_md: z.string(),
+  changed_files: z.array(z.string()),
+  commit_count: z.number().int().min(1),
+});
+```
+
+#### 16. Scope review request/response
+```ts
+export const ScopeReviewRequestPayloadSchema = z.object({
+  operation: z.literal('review.scope'),
+  project_id: ProjectId,
+  run_id: RunId.optional(),
+  work_item_id: WorkItemId,
+  plan_artifact_id: z.string().min(1),
+  changed_files: z.array(z.string()),
+  acceptance_criteria: z.array(z.string()),
+});
+
+export const ScopeReviewResponsePayloadSchema = z.object({
+  operation: z.literal('review.scope'),
+  in_scope: z.boolean(),
+  scope_creep_ratio: z.number().min(0).max(1),
+  out_of_scope_files: z.array(z.object({
+    file: z.string(),
+    reason: z.string(),
+  })),
+  untouched_plan_files: z.array(z.string()),
+  verdict: z.enum(['CLEAN', 'MINOR_DRIFT', 'SCOPE_CREEP']),
+  recommendations: z.array(z.string()),
+});
+```
 
 ## Part 4: Autonomy Levels
 

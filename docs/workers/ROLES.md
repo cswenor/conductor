@@ -135,8 +135,9 @@ Do not introduce security vulnerabilities.
 - Tool access: file read/write, grep, glob, bash (workspace-scoped)
 
 **Output:**
-- `CODE_CHANGES` artifact: Git diff of all changes
-- `TEST_RESULTS` artifact: Test output from changes
+- `CODE` artifact: Source files modified in worktree
+- `PATCHSET` artifact: Git diff of all changes
+- `TEST_REPORT` artifact: Test output from changes
 
 **Checkpoint behavior:** Checkpoints after each file modification. If interrupted, resumes from last checkpoint.
 

@@ -436,7 +436,7 @@ Orchestrator processes:
 
 When an issue is opened, the orchestrator can optionally auto-triage it:
 
-1. Query PM Engine: `triage_issue(issueNumber)` for type, area, priority, and size estimate.
+1. Query PM Engine: `conductor_triage_work_item(project_id, work_item_id)` for type, area, priority, and size estimate.
 2. If auto-triage is enabled and confidence is high, create a run automatically.
 3. If confidence is low, surface in the Web UI for human triage.
 
@@ -580,7 +580,7 @@ Worker → Orchestrator:
 | State | Meaning | Orchestrator Action |
 | --- | --- | --- |
 | `completed` | Task succeeded | Evaluate transitions from current phase |
-| `failed` | Task failed | Check `unrecoverable` flag: if false, retry; if true, block run and escalate |
+| `failed` | Task failed | Check `recoverable` flag: if true, retry; if false, block run and escalate |
 | `input-required` | Worker needs human input | Route to human via interface, run enters `blocked` |
 
 The A2A `A2ATaskState` enum also includes `submitted` (task queued) and `working` (task in progress), but these are only used in progress updates, not in final results.

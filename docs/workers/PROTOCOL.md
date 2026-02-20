@@ -112,6 +112,12 @@ If `drain: true`, the orchestrator waits for active tasks to complete before rem
 
 Orchestrator → Worker:
 
+> **Wire format note:** Internal task dispatch (below) uses a compact `type` field. The
+> A2A inter-agent envelope (see `../pm-engine/INTERFACES.md` Part 2) wraps this same
+> payload with versioned `protocol`/`message_type` headers and agent routing fields.
+> Workers receive the internal format; A2A translation is handled by the orchestrator's
+> message router.
+
 ```json
 {
   "type": "task.request",
@@ -522,13 +528,22 @@ Operations follow the pattern `<domain>.<action>`:
 
 ### 5.2 Artifact Types
 
+> **Canonical enum:** See `../pm-engine/INTERFACES.md` `RunArtifactSchema.artifact_type` for the authoritative list.
+
 | Type | Producer | Consumer | Format |
 | --- | --- | --- | --- |
 | `PLAN` | Planner | Implementer, Reviewer | Markdown |
-| `CODE` | Implementer | Reviewer, Tester | Source files |
-| `TEST_REPORT` | Tester | Orchestrator (gate), Reviewer | JSON |
+| `PLAN_METADATA` | Planner | Orchestrator (traceability) | JSON |
+| `CODE` | Implementer | Reviewer, Tester | Source files (patchset) |
+| `PATCHSET` | Implementer | Reviewer, Git | Git diff / patch file |
+| `TEST_REPORT` | Tester, Linter, Typechecker | Orchestrator (gate), Reviewer | JSON |
 | `REVIEW` | Reviewer | Implementer (rework), Human | Markdown + structured |
+| `REVIEW_FINDINGS` | Reviewer | Implementer, Human | Structured JSON |
+| `REVIEW_VERDICT` | Reviewer | Orchestrator (gate) | Enum (APPROVED/CHANGES_REQUESTED/NEEDS_DISCUSSION) |
 | `RESEARCH` | Researcher | Planner, Human | Markdown |
+| `STANDUP` | PM Engine | Human, Dashboard | Markdown |
+| `RETRO` | PM Engine | Human, Dashboard | Markdown |
+| `RELEASE_NOTES` | PM Engine | Human, Dashboard | Markdown |
 | `DEPLOY_LOG` | Deployer | Human, Orchestrator | Text |
 | `METRICS` | Metrics collector | PM Engine, Dashboard | JSON |
 | `CUSTOM` | Any | Any | Any |
