@@ -29,20 +29,36 @@ Each intelligence module in this document is a **worker role specification**. In
 
 ### Module-to-Worker Mapping
 
-| Module | Worker Role | Primary Mode | Implementation Guidance |
+| Module | Worker Role | Modes | Implementation Guidance |
 | --- | --- | --- | --- |
-| 1. Cycle Time Analytics | `pm.analytics.cycle_time` | Async (projection) | Pure script: SQL event scan + percentile math. No LLM. |
-| 2. Velocity Engine | `pm.analytics.velocity` | Async (projection) | Pure script: daily aggregation + rolling windows. No LLM. |
+| 1. Cycle Time Analytics | `pm.analytics.cycle_time` | Async (projection), Sync (on-demand query) | Pure script: SQL event scan + percentile math. No LLM. |
+| 2. Velocity Engine | `pm.analytics.velocity` | Async (projection), Sync (on-demand query) | Pure script: daily aggregation + rolling windows. No LLM. |
 | 3. Monte Carlo Simulation | `pm.prediction.monte_carlo` | Sync (on-demand) | Pure script: simulation engine with deterministic seed. No LLM. |
-| 4. Rework Prediction | `pm.prediction.rework` | Sync (per-item) | Script + AI hybrid: feature extraction is script, inference can be logistic regression (script) or LLM-based. |
-| 5. Dependency Graph Analysis | `pm.graph.analysis` | Sync (on-demand) | Pure script: graph algorithms (Kahn, Tarjan, longest-path DP). No LLM. |
-| 6. Risk Radar | `pm.synthesis.risk_radar` | Async (periodic) | Pure script: aggregation of other module outputs. No LLM. |
+| 4. Rework Prediction | `pm.prediction.rework` | Sync (per-item query), Async (batch recalibration) | Script + AI hybrid: feature extraction is script, inference can be logistic regression (script) or LLM-based. |
+| 5. Dependency Graph Analysis | `pm.graph.analysis` | Sync (on-demand), Async (projection refresh) | Pure script: graph algorithms (Kahn, Tarjan, longest-path DP). No LLM. |
+| 6. Risk Radar | `pm.synthesis.risk_radar` | Async (periodic snapshot), Sync (dashboard query) | Pure script: aggregation of other module outputs. No LLM. |
 | 7. Decision Memory & Learning | `pm.memory.retrieval` | Sync (on-demand) | Script + AI hybrid: FTS5 retrieval is script, similarity scoring can use embeddings (AI). |
-| 8. Review Calibration | `pm.calibration.review` | Async (periodic) | Pure script: statistics (hit rates, Wilson intervals, trends). No LLM. |
-| 9. Capacity Modeling | `pm.capacity.model` | Async (periodic) | Pure script: EWMA + expertise matrix + bus factor computation. No LLM. |
-| 10. Anomaly Detection | `pm.detection.anomaly` | Async (continuous) | Pure script: statistical baselines (MAD, z-scores) + corroboration. No LLM. |
+| 8. Review Calibration | `pm.calibration.review` | Async (periodic), Async (monitored in review workflows) | Pure script: statistics (hit rates, Wilson intervals, trends). No LLM. |
+| 9. Capacity Modeling | `pm.capacity.model` | Async (periodic), Sync (sprint planning query) | Pure script: EWMA + expertise matrix + bus factor computation. No LLM. |
+| 10. Anomaly Detection | `pm.detection.anomaly` | Async (continuous), Sync (detection pass in monitoring workflow) | Pure script: statistical baselines (MAD, z-scores) + corroboration. No LLM. |
 
 **Key observation:** 8 of 10 modules are pure script workers. They need zero LLM inference. This is by design — the intelligence stack is primarily mathematical/statistical, not generative. LLMs are expensive; SQL queries and math are cheap.
+
+**Important: Workers can operate in multiple modes.** The same worker (e.g., `pm.analytics.velocity`) may run async when updating background projections, but sync when a sprint planning workflow needs fresh velocity data before ranking the backlog. The execution mode is determined by the *workflow stage*, not the worker. A worker doesn't know or care whether it's running sync or async — it receives a task, computes, and returns a result. The orchestrator decides whether to block on that result.
+
+**Scope of this table:** This table covers the 10 intelligence modules specified in this document. PM workflows (`WORKFLOWS.md`) use additional worker roles for workflow-specific stages that are not intelligence modules:
+
+| Category | Worker Roles | Defined In |
+| --- | --- | --- |
+| Triage | `pm.triage.classifier`, `pm.synthesis.risk_assessor` | `WORKFLOWS.md § 2` |
+| Planning | `pm.planning.ranker`, `pm.planning.proposer` | `WORKFLOWS.md § 3` |
+| Discovery | `pm.discovery.structurer`, `pm.discovery.validator`, `pm.valuation.assessor` | `WORKFLOWS.md § 4` |
+| Review | `pm.review.analyzer`, `pm.review.scope_checker`, `pm.review.evaluator`, `pm.review.verdict` | `WORKFLOWS.md § 5` |
+| Reporting | `pm.reporting.retrospective`, `pm.reporting.release_notes`, `pm.synthesis.pattern_miner` | `WORKFLOWS.md §§ 6-7` |
+| Memory | `pm.memory.recorder`, `pm.memory.decay_checker`, `pm.memory.linker` | `WORKFLOWS.md § 8` |
+| Infrastructure | Notification workers, human gates | `orchestrator/INTERFACES.md` |
+
+These workflow-specific workers have simpler contracts (often just composing intelligence module outputs or writing to the data layer) and don't require the algorithm-level specification that intelligence modules do.
 
 ### What This Document Specifies
 

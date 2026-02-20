@@ -290,18 +290,22 @@ The data layer is exposed through direct API calls (MCP tools, REST, A2A). These
 
 Each intelligence module from `INTELLIGENCE_MODULES.md` is a **worker role specification**. The module defines what computation happens; the worker system defines how and where it runs.
 
-| Intelligence Module | Worker Role | Typical Implementation | Sync/Async |
+| Intelligence Module | Worker Role | Typical Implementation | Modes |
 | --- | --- | --- | --- |
-| Cycle Time Analytics | `pm.analytics.cycle_time` | Script (SQL + math) | Async (projection) |
-| Velocity Engine | `pm.analytics.velocity` | Script (SQL + math) | Async (projection) |
+| Cycle Time Analytics | `pm.analytics.cycle_time` | Script (SQL + math) | Async (projection) / Sync (query) |
+| Velocity Engine | `pm.analytics.velocity` | Script (SQL + math) | Async (projection) / Sync (query) |
 | Monte Carlo Simulation | `pm.prediction.monte_carlo` | Script (simulation engine) | Sync (on-demand) |
-| Rework Prediction | `pm.prediction.rework` | Script + AI hybrid | Sync (per-item) |
-| Dependency Graph Analysis | `pm.graph.analysis` | Script (graph algorithms) | Sync (on-demand) |
-| Risk Radar | `pm.synthesis.risk_radar` | Script (aggregation) | Async (periodic snapshot) |
+| Rework Prediction | `pm.prediction.rework` | Script + AI hybrid | Sync (per-item) / Async (batch recal) |
+| Dependency Graph Analysis | `pm.graph.analysis` | Script (graph algorithms) | Sync (on-demand) / Async (refresh) |
+| Risk Radar | `pm.synthesis.risk_radar` | Script (aggregation) | Async (periodic) / Sync (dashboard) |
 | Decision Memory & Learning | `pm.memory.retrieval` | Script + AI hybrid | Sync (on-demand) |
-| Review Calibration | `pm.calibration.review` | Script (statistics) | Async (periodic) |
-| Capacity Modeling | `pm.capacity.model` | Script (EWMA + expertise) | Async (periodic) |
-| Anomaly Detection | `pm.detection.anomaly` | Script (statistical) | Async (continuous) |
+| Review Calibration | `pm.calibration.review` | Script (statistics) | Async (periodic / monitored) |
+| Capacity Modeling | `pm.capacity.model` | Script (EWMA + expertise) | Async (periodic) / Sync (planning) |
+| Anomaly Detection | `pm.detection.anomaly` | Script (statistical) | Async (continuous) / Sync (detection) |
+
+**Workers can operate in multiple modes.** The execution mode is determined by the workflow stage, not the worker. `pm.analytics.velocity` runs async when updating projections in the background, but sync when sprint planning needs fresh data before ranking. The worker doesn't know the difference — it receives a task, computes, returns a result. The orchestrator decides whether to block.
+
+Beyond these 10 intelligence modules, PM workflows use additional worker roles for triage, planning, discovery, review, reporting, and memory operations. See `INTELLIGENCE_MODULES.md` for the complete mapping and `WORKFLOWS.md` for how all roles are used in workflow stages.
 
 **Why this matters:**
 
