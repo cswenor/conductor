@@ -1,6 +1,6 @@
 # Conductor PM Engine Data Model
 
-Status: Draft v2 (implementation-ready foundation)
+Status: Vision — Not implemented in v0.1. Design-only; not yet built. Do not use as implementation reference for the current codebase.
 Audience: PM engine, orchestration, analytics, and MCP tool developers
 Updated: 2026-02-19
 

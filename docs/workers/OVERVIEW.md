@@ -1,6 +1,6 @@
 # Workers & Agents
 
-Status: Normative specification
+Status: Vision — Not implemented in v0.1. Describes planned architecture for a future release. The current worker is a monolithic BullMQ consumer in packages/worker/. Do not use as implementation reference.
 Audience: Engineering, platform integrators, AI agent developers
 Updated: 2026-02-19
 

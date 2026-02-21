@@ -1,6 +1,8 @@
 # Central Enum Registry
 
-> **Status:** Normative. This is the canonical source for all enumerated values in Conductor. All other docs reference this registry. Code implementations MUST match these definitions.
+> **Status:** Normative. This is the primary registry for enumerated values in Conductor. All other docs reference this registry. Code implementations MUST match these definitions.
+>
+> **Completeness note:** This registry covers the primary public enums. Some internal/runtime enums (e.g., `ImplementerBackend`, `RewindContextMode`, `PauseOutcome`, `ResumeOutcome`, pubsub stream event kinds, and cleanup job subtypes) are defined in source but listed in § 12 (Additional Enums) rather than inline above.
 
 ## 1. Run Lifecycle
 
@@ -113,7 +115,7 @@ Events originating from GitHub webhooks.
 | Checks | `check_suite.completed`, `check_run.completed` |
 
 **Source:** `packages/shared/src/events/index.ts:21`
-**Total:** 32 inbound event types
+**Total:** 30 inbound event types
 
 ### 2.4 InternalEventType
 
@@ -323,6 +325,32 @@ Lifecycle state of a queued job.
 | `dead` | Job exhausted retries (moved to DLQ) |
 
 **Source:** `packages/shared/src/types/index.ts:67`
+
+### 6.3 RunJobData Action / Intent
+
+Fields on the `RunJobData` payload for the `runs` queue.
+
+| Field | Values | Description |
+|-------|--------|-------------|
+| `action` | `run`, `retry`, `cancel`, `rewind` | What the run job should do |
+| `intent` | `start`, `resume`, `retry` | How the worker should initialize the run |
+
+**Source:** `packages/shared/src/queue/index.ts:37`
+
+### 6.4 Cleanup Job Subtypes
+
+The `cleanup` queue processes multiple subtype jobs:
+
+| Subtype | Description |
+|---------|-------------|
+| `worktree` | Remove a specific worktree from disk |
+| `expired_leases` | Release expired port leases |
+| `old_jobs` | Remove stale BullMQ job records |
+| `mirror_flush` | Force-flush deferred mirror events |
+| `stream_events` | Clean up old stream event records |
+| `agent_messages` | Archive old agent message records |
+
+**Source:** `packages/shared/src/queue/index.ts:66`, `packages/worker/src/index.ts`
 
 ---
 
@@ -606,7 +634,57 @@ Valid rewind targets for the rewind operator action.
 
 ---
 
-## 12. Extension Policy
+## 12. Additional Enums (Internal / Runtime)
+
+These enums are defined in the codebase but are internal to specific subsystems. They are listed here for completeness.
+
+### 12.1 ImplementerBackend
+
+Which execution backend the implementer agent uses.
+
+| Value | Description |
+|-------|-------------|
+| `raw` | Provider + tool loop via `runImplementerWithTools()` |
+| `agent_sdk` | Anthropic Agent SDK streaming via `sdkQuery()` |
+
+**Source:** `packages/shared/src/runs/index.ts:21`
+
+### 12.2 RewindContextMode
+
+How the rewind system restores prior context.
+
+**Source:** `packages/shared/src/types/index.ts:165`
+(See `RewindCheckpoint` in § 11.4 for rewind target values.)
+
+### 12.3 PauseOutcome / ResumeOutcome
+
+Result codes for pause/resume run commands.
+
+**PauseOutcome values:** `paused`, `already_paused`, `wrong_phase`, `stale_run`, `transition_failed`
+
+**ResumeOutcome values:** `resumed`, `not_paused`, `wrong_phase`, `stale_run`, `transition_failed`
+
+**Source:** `packages/shared/src/run-commands/index.ts:440`
+
+### 12.4 Pubsub Stream Event Kinds
+
+Event kind strings used by the Redis Pub/Sub SSE push system.
+
+| Value | Description |
+|-------|-------------|
+| `run.phase_changed` | Run transitioned to new phase |
+| `run.updated` | Run record updated |
+| `gate.evaluated` | Gate evaluation completed |
+| `operator.action` | Operator action recorded |
+| `agent.invocation` | Agent invocation status change |
+| `project.updated` | Project record updated |
+| `refresh_required` | Client should refresh full state |
+
+**Source:** `packages/shared/src/pubsub/index.ts`
+
+---
+
+## 13. Extension Policy
 
 ### 12.1 Adding New Enum Values
 
@@ -630,7 +708,7 @@ Treated as **remove old + add new**. Requires migration, version bump, and depre
 
 ---
 
-## 13. Cross-References
+## 14. Cross-References
 
 | Topic | Document |
 |-------|----------|
@@ -639,3 +717,18 @@ Treated as **remove old + add new**. Requires migration, version bump, and depre
 | API response schemas | `docs/API_CONTRACTS.md` |
 | Error classes | `docs/ERROR_HANDLING.md` |
 | Metric labels using enums | `docs/OBSERVABILITY.md` |
+
+---
+
+## Appendix A: Codex Adversarial Review Resolution
+
+**Review date:** 2026-02-21
+**Reviewer:** Codex (read-only sandbox)
+**Findings:** 4 total — 1 BLOCKING, 1 HIGH, 2 MEDIUM
+
+| # | Severity | Section | Finding | Resolution |
+|---|----------|---------|---------|------------|
+| 1 | BLOCKING | Status line | "Canonical source for ALL enumerated values" overstated — ImplementerBackend, RewindContextMode, PauseOutcome, ResumeOutcome all missing | Changed status line to "primary registry"; added § 12 (Additional Enums) for internal/runtime enums |
+| 2 | HIGH | §6 | Queue enums incomplete: missing RunJobData.action/intent fields and cleanup job subtypes | Added §6.3 (RunJobData Action/Intent) and §6.4 (Cleanup Job Subtypes) |
+| 3 | MEDIUM | §2.3 | InboundEventType total count stated as 32; actual count is 30 | Fixed to 30 |
+| 4 | MEDIUM | Status line | Stream event kind enums (pubsub) omitted entirely | Added §12.4 (Pubsub Stream Event Kinds) |

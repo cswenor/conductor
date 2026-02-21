@@ -1,396 +1,210 @@
 # Data Model Authority
 
-> **Status:** Normative. This is the master index for all database schemas in Conductor. Individual component DATA_MODEL.md files contain the detailed table definitions; this document provides the unified architecture, cross-database relationships, naming conventions, and migration strategy.
+> **Status:** Normative (v0.1 implementation). This document describes the schema that is actually implemented in code today.
 
-## 1. Database Architecture
+## 1. Architecture (Actual v0.1)
 
-Conductor uses three databases, each owned by a specific component:
+Conductor v0.1 uses **one** SQLite database file, opened through `better-sqlite3`.
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                          Conductor System                               │
-│                                                                         │
-│  ┌─────────────────────┐  ┌──────────────────────┐  ┌────────────────┐ │
-│  │  CORE DATABASE       │  │  ORCHESTRATOR DB      │  │  PM ENGINE DB  │ │
-│  │  PostgreSQL          │  │  PostgreSQL            │  │  SQLite        │ │
-│  │                      │  │                        │  │                │ │
-│  │  Runs, Gates,        │  │  Workflow Templates,   │  │  Work Items,   │ │
-│  │  Policies, Audit,    │  │  Workers, Tasks,       │  │  Dependencies, │ │
-│  │  GitHub Integration, │  │  Phase History,        │  │  Iterations,   │ │
-│  │  Auth (users/sessions)│  │  Notifications         │  │  Memory,       │ │
-│  │                      │  │                        │  │  AI Projections│ │
-│  └──────────┬───────────┘  └──────────┬─────────────┘  └───────┬────────┘ │
-│             │                         │                        │          │
-│             └─────────────────────────┼────────────────────────┘          │
-│                                       │                                   │
-│  ┌────────────────────────────────────┴──────────────────────────────┐   │
-│  │  REDIS (Ephemeral)                                                │   │
-│  │  BullMQ job queues, worker heartbeats, distributed locks          │   │
-│  │  Reconstructable from database state — NOT a persistence layer    │   │
-│  └───────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+- There is no runtime PostgreSQL database.
+- There is no separate runtime "orchestrator DB".
+- There is no separate runtime "PM-engine DB".
+- Redis is used for BullMQ queues/pubsub, not primary persistence.
 
-| Database | Engine | Owner | Purpose | Schema Doc |
-| --- | --- | --- | --- | --- |
-| **Core** | PostgreSQL 16+ | Conductor API server | Operational state, policy, audit, auth, GitHub integration | `docs/DATA_MODEL.md` |
-| **Orchestrator** | PostgreSQL 16+ (same instance, separate schema) | Orchestrator service | Workflow execution, workers, phase transitions, notifications | `docs/orchestrator/DATA_MODEL.md` |
-| **PM Engine** | SQLite (via `better-sqlite3`) | PM Intelligence service | Work item planning, dependency graphs, AI projections, memory | `docs/pm-engine/DATA_MODEL.md` |
-| **Redis** | Redis 7+ | BullMQ | Job queues, worker heartbeats, distributed locks | `docs/orchestrator/DATA_MODEL.md` § Redis |
+Runtime initialization and safety settings:
 
-### 1.1 Why Three Databases?
+- Shared DB init: `packages/shared/src/db/index.ts`
+- Engine: `new Database(config.path, ...)` from `better-sqlite3`
+- Pragmas at startup:
+  - `journal_mode = WAL`
+  - `foreign_keys = ON`
+- Migrations run at startup before returning the DB handle.
 
-| Decision | Rationale |
-| --- | --- |
-| **Core + Orchestrator in PostgreSQL** | Shared ACID transactions for run lifecycle; separate schemas for ownership clarity |
-| **PM Engine in SQLite** | Local-first design; PM intelligence runs without network dependency; portable |
-| **Redis as ephemeral queue** | BullMQ requires Redis; all queue state is reconstructable from PostgreSQL |
+## 2. Database Path Resolution
 
-### 1.2 PostgreSQL Schema Separation
+`DATABASE_PATH` is the single source of DB location for both web and worker.
 
-Core and Orchestrator share a PostgreSQL instance but use separate schemas:
+- Web config default: `./conductor.db` in `packages/web/src/lib/config.ts`
+- Web bootstrap path resolution: relative paths are resolved against monorepo root in `packages/web/src/lib/bootstrap.ts`
+- Worker config default: `./conductor.db` in `packages/worker/src/index.ts`
+- Worker path resolution: relative paths are resolved against monorepo root in `packages/worker/src/index.ts`
 
-```sql
-CREATE SCHEMA IF NOT EXISTS conductor;   -- Core tables
-CREATE SCHEMA IF NOT EXISTS orchestrator; -- Orchestrator tables
-```
+Result: web + worker point at the same SQLite file by default.
 
-Cross-schema references use fully qualified names: `orchestrator.workers`, `conductor.runs`.
+## 3. Migration System (Actual)
 
----
+Migration implementation is in TypeScript, forward-only, and `up`-only.
 
-## 2. Table Inventory
+- Migration registry: `packages/shared/src/db/migrations/index.ts`
+- Current ordered list: `001` through `024`
+- Migration interface:
+  - `version: number`
+  - `name: string`
+  - `up: (db) => void`
+- Version tracking table: `schema_versions` (created by `runMigrations` in `packages/shared/src/db/index.ts`)
+- Apply logic: run each migration with `version > MAX(schema_versions.version)`
+- Transaction model: each migration runs inside one SQLite transaction, then records `(version, name)`
 
-### 2.1 Core Database (45 tables)
+Important constraints of the current system:
 
-| Category | Tables | Primary Keys |
+- No down-migrations
+- No migration checksums
+- No SQL-file migration runner
+- No multi-database migration orchestration
+
+### 3.1 Migration Registry (001-024)
+
+| Version | Name | Change |
 | --- | --- | --- |
-| **Auth** | `users`, `sessions`, `api_keys`, `user_api_keys` | `user_id`, `session_id`, `key_id`, `(user_id, provider)` |
-| **Projects** | `projects`, `repos` | `project_id`, `repo_id` |
-| **Work Items** | `tasks` | `task_id` |
-| **Runs** | `runs`, `worktrees`, `port_leases` | `run_id`, `worktree_id`, `port_lease_id` |
-| **Gates** | `gate_definitions`, `gate_evaluations` | `gate_id`, `gate_evaluation_id` |
-| **Policies** | `policy_definitions`, `policy_sets`, `policy_set_entries`, `policy_violations`, `policy_audit_entries` | `policy_id`, `policy_set_id`, etc. |
-| **Execution** | `agent_invocations`, `tool_invocations`, `artifacts`, `routing_decisions` | respective `*_id` PKs |
-| **Operator** | `operator_actions`, `overrides`, `evidences` | respective `*_id` PKs |
-| **GitHub** | `github_writes`, `webhook_deliveries` | `github_write_id`, `delivery_id` |
-| **Events** | `events` | `event_id` |
-| **Jobs** | `jobs` | `job_id` |
+| 001 | `initial_schema` | Creates base schema (core tables/indexes) |
+| 002 | `add_violation_fk` | Rebuilds `tool_invocations` to add FK `violation_id -> policy_violations.violation_id` |
+| 003 | `github_writes_payload` | Adds `github_writes.payload_json` |
+| 004 | `events_source` | Adds `events.source` |
+| 005 | `pending_github_installations` | Creates `pending_github_installations` |
+| 006 | `users_and_sessions` | Creates `users`, `sessions` |
+| 007 | `projects_user_id` | Adds `projects.user_id` |
+| 008 | `pending_installations_user_id` | Adds `pending_github_installations.user_id` |
+| 009 | `token_encryption_nonces` | Adds token nonce/encryption columns to `users` |
+| 010 | `strict_ownership` | Enforces ownership constraints; rebuilds `projects` and `pending_github_installations` |
+| 011 | `user_api_keys` | Creates `user_api_keys` |
+| 012 | `repo_clone_tracking` | Adds clone tracking columns to `repos` |
+| 013 | `worktree_metadata` | Adds `worktrees.branch_name`, `worktrees.base_commit` |
+| 014 | `mirroring_rate_limits` | Creates `mirror_deferred_events` |
+| 015 | `mirror_deferred_summary` | Adds `mirror_deferred_events.summary` |
+| 016 | `github_writes_number` | Adds `github_writes.github_number` |
+| 017 | `operator_actions_actor_columns` | Adds `operator_actions.actor_type`, `actor_display_name` |
+| 018 | `stream_events` | Creates `stream_events` |
+| 019 | `agent_messages` | Creates `agent_messages` |
+| 020 | `gate_decisions` | Creates `gate_decisions`; adds `runs.approval_cycle` |
+| 021 | `implementer_backend` | Adds `runs.implementer_backend` |
+| 022 | `workflow_config` | Adds workflow config columns to `projects` and `runs` |
+| 023 | `workflow_epoch` | Adds `runs.workflow_epoch` |
+| 024 | `rewind_context` | Adds `runs.rewind_context_mode`, `runs.rewind_context_summary` |
 
-### 2.2 Orchestrator Database (20 tables)
+## 4. ID Format (Actual)
 
-| Category | Tables | Primary Keys |
+Primary Conductor entity IDs are **TEXT with stable prefixes**, not UUID v7.
+
+Examples from generators in `packages/shared/src/...`:
+
+- `proj_...` (`projects.project_id`)
+- `repo_...` (`repos.repo_id`)
+- `task_...` (`tasks.task_id`)
+- `run_...` (`runs.run_id`)
+- `ps_...` (`policy_sets.policy_set_id`)
+- `wt_...` (`worktrees.worktree_id`)
+- `pl_...` (`port_leases.port_lease_id`)
+- `ghw_...` (`github_writes.github_write_id`)
+- `ai_...` (`agent_invocations.agent_invocation_id`)
+- `ti_...` (`tool_invocations.tool_invocation_id`)
+- `art_...` (`artifacts.artifact_id`)
+- `evt_...` (`events.event_id`)
+- `ge_...` (`gate_evaluations.gate_evaluation_id`)
+- `gd_...` (`gate_decisions.gate_decision_id`)
+- `oa_...` (`operator_actions.operator_action_id`)
+- `ov_...` (`overrides.override_id`)
+- `am_...` (`agent_messages.agent_message_id`)
+- `def_...` (`mirror_deferred_events.deferred_event_id`)
+- `user_...` (`users.user_id`)
+- `sess_...` (`sessions.session_id`)
+
+Current exceptions:
+
+- `jobs.job_id` is UUID v4 from `crypto.randomUUID()` (`packages/shared/src/jobs/index.ts`)
+- `webhook_deliveries.delivery_id` is GitHub-provided (`X-GitHub-Delivery`), not Conductor-generated
+- `stream_events.id` is `INTEGER PRIMARY KEY AUTOINCREMENT`
+
+## 5. Authoritative Table Inventory (Current v0.1)
+
+All tables below exist in the live schema after migrations `001`-`024` (plus runtime `schema_versions`).
+
+| Table | Primary Key | Key Columns (non-exhaustive) |
 | --- | --- | --- |
-| **Execution** | `runs`, `run_phases`, `tasks`, `task_dependencies` | `run_id`, `phase_id`, `task_id`, `dependency_id` |
-| **Workers** | `workers`, `worker_capabilities`, `circuit_breakers` | `worker_id`, `(worker_id, operation)`, `worker_type` |
-| **Templates** | `workflow_templates`, `workflow_overrides` | `template_id`, `override_id` |
-| **Events** | `orchestrator_events` | `event_id` |
-| **Artifacts** | `artifacts` | `artifact_id` |
-| **Config** | `projects`, `project_workers`, `notification_channels`, `user_notification_preferences` | `project_id`, etc. |
+| `agent_invocations` | `agent_invocation_id` | `run_id`, `agent`, `action`, `status`, `tokens_input`, `tokens_output`, `started_at`, `completed_at` |
+| `agent_messages` | `agent_message_id` | `agent_invocation_id`, `run_id`, `turn_index`, `role`, `content_json`, `content_size_bytes`, `created_at` |
+| `artifacts` | `artifact_id` | `run_id`, `type`, `version`, `content_markdown`, `blob_ref`, `checksum_sha256`, `validation_status`, `source_tool_invocation_id`, `github_write_id` |
+| `events` | `event_id` | `project_id`, `repo_id`, `task_id`, `run_id`, `type`, `class`, `source`, `payload_json`, `sequence`, `idempotency_key`, `processed_at`, `causation_id`, `correlation_id`, `github_write_id` |
+| `evidences` | `evidence_id` | `run_id`, `kind`, location fields, `redacted_text`, `redacted_hash`, `raw_blob_ref`, `created_at` |
+| `gate_decisions` | `gate_decision_id` | `run_id`, `gate_id`, `cycle`, `decision`, `actor_id`, `comment`, `created_at` |
+| `gate_definitions` | `gate_id` | `kind`, `description`, `default_config_json` |
+| `gate_evaluations` | `gate_evaluation_id` | `run_id`, `gate_id`, `kind`, `status`, `reason`, `details_json`, `causation_event_id`, `evaluated_at` |
+| `github_writes` | `github_write_id` | `run_id`, `kind`, `target_node_id`, `target_type`, `idempotency_key`, `payload_hash`, `payload_json`, `status`, `error`, `github_id`, `github_number`, `github_url`, `retry_count`, `sent_at` |
+| `jobs` | `job_id` | `queue`, `job_type`, `payload_json`, `idempotency_key`, `status`, `priority`, claim/lease fields, retry fields, `run_id`, `project_id` |
+| `mirror_deferred_events` | `deferred_event_id` | `run_id`, `event_type`, `formatted_body`, `summary`, `idempotency_suffix`, `created_at` |
+| `operator_actions` | `operator_action_id` | `run_id`, `action`, `operator`, `actor_type`, `actor_display_name`, `comment`, `from_phase`, `to_phase`, `github_write_id`, `created_at` |
+| `overrides` | `override_id` | `run_id`, `kind`, `target_id`, `scope`, constraint fields, `policy_set_id`, `operator`, `justification`, `expires_at`, `github_write_id` |
+| `pending_github_installations` | `(installation_id, user_id)` | `setup_action`, `state`, `created_at` |
+| `policy_audit_entries` | `audit_id` | `run_id`, `policy_id`, `policy_set_id`, `enforcement_point`, `target`, `decision`, `violation_id`, `evaluated_at` |
+| `policy_definitions` | `policy_id` | `severity`, `description`, `check_points_json`, `default_config_json` |
+| `policy_set_entries` | `(policy_set_id, policy_id)` | `enabled`, `severity_override`, `config_json` |
+| `policy_sets` | `policy_set_id` | `project_id`, `config_hash`, `replaces_policy_set_id`, `created_by`, `created_at` |
+| `policy_violations` | `violation_id` | `run_id`, `policy_id`, `policy_set_id`, `severity`, `description`, `evidence_id`, `tool_invocation_id`, `resolved_by_override_id`, `detected_at` |
+| `port_leases` | `port_lease_id` | `project_id`, `worktree_id`, `port`, `purpose`, `is_active`, `leased_at`, `expires_at`, `released_at` |
+| `projects` | `project_id` | `user_id`, `name`, GitHub org/install fields, defaults, port range, `workflow_config_json`, `created_at`, `updated_at` |
+| `repos` | `repo_id` | `project_id`, GitHub identity fields, `profile_id`, `status`, `last_indexed_at`, `clone_path`, `cloned_at`, `last_fetched_at` |
+| `routing_decisions` | `routing_decision_id` | `run_id`, `inputs_json`, `agent_graph_json`, `required_gates_json`, `optional_gates_json`, `reasoning`, `decided_at` |
+| `runs` | `run_id` | lineage (`run_number`, parents), lifecycle (`phase`, `step`), policy/event counters, pause/blocked fields, git/PR fields, revision counters, `approval_cycle`, `implementer_backend`, workflow fields, rewind context fields, result/timestamps |
+| `schema_versions` | `version` | `name`, `applied_at` |
+| `sessions` | `session_id` | `user_id`, `token_hash`, `user_agent`, `ip_address`, `expires_at`, `created_at`, `last_active_at` |
+| `stream_events` | `id` (autoincrement) | `kind`, `project_id`, `run_id`, `payload_json`, `created_at` |
+| `tasks` | `task_id` | `project_id`, `repo_id`, GitHub issue identity/content fields, `active_run_id`, sync/activity timestamps |
+| `tool_invocations` | `tool_invocation_id` | `agent_invocation_id`, `run_id`, `tool`, redacted args/result hash fields, policy fields, `violation_id`, `status`, `duration_ms`, `created_at` |
+| `user_api_keys` | `(user_id, provider)` | `api_key`, `api_key_nonce`, `key_encrypted`, `created_at`, `updated_at` |
+| `users` | `user_id` | `github_id`, `github_node_id`, `github_login`, profile fields, OAuth token fields + nonce/encryption fields, `status`, `created_at`, `updated_at`, `last_login_at` |
+| `webhook_deliveries` | `delivery_id` | `event_type`, `action`, `repository_node_id`, `sender_id`, `payload_summary_json`, `payload_hash`, `signature_valid`, `status`, `job_id`, `error`, `ignore_reason`, `received_at`, `processed_at` |
+| `worktrees` | `worktree_id` | `run_id`, `project_id`, `repo_id`, `path`, `status`, `branch_name`, `base_commit`, `last_heartbeat_at`, `created_at`, `destroyed_at` |
 
-### 2.3 PM Engine Database (40+ tables)
+## 6. Canonical Constraints to Rely On
 
-| Category | Tables | Primary Keys |
+Selected constraints/index guarantees that are active in this schema:
+
+- `projects.github_installation_id` is unique (`idx_projects_installation_unique`)
+- `repos.github_node_id` is unique
+- `tasks.github_node_id` is unique
+- `events.idempotency_key` is unique
+- `events` enforces run/sequence coupling and unique `(run_id, sequence)` when `run_id IS NOT NULL`
+- `github_writes.idempotency_key` is unique
+- `port_leases` has one active lease per `(project_id, port)`
+- `pending_github_installations` primary key is `(installation_id, user_id)`
+- `worktrees` allows only one active worktree per run (`idx_worktrees_active_run` where `destroyed_at IS NULL`)
+- `gate_decisions` enforces one decision per `(run_id, gate_id, cycle)`
+
+## 7. What Is Not in the v0.1 Runtime Schema
+
+The following are not part of the actual running data model today:
+
+- Any PostgreSQL schema (`conductor.*`, `orchestrator.*`)
+- Any separate PM-engine SQLite schema (`pm_*` tables)
+- Any runtime cross-database foreign keys or synchronization contracts between multiple primary databases
+
+## 8. Cross-References
+
+Additional docs that align with this implementation:
+
+- `docs/PORTS_AND_HEALTH.md` (runtime topology, web/worker + shared SQLite)
+- `docs/IDEMPOTENCY.md` (deduplication keys over `webhook_deliveries`, `events`, `github_writes`)
+- `docs/RATE_LIMITING.md` (`mirror_deferred_events` behavior)
+- `docs/DEPLOYMENT.md` (`DATABASE_PATH` examples for web + worker)
+
+Primary code anchors for this authority doc:
+
+- `packages/shared/src/db/index.ts`
+- `packages/shared/src/db/migrations/index.ts`
+- `packages/shared/src/db/migrations/001_initial_schema.ts`
+- `packages/shared/src/db/migrations/002_add_violation_fk.ts` through `packages/shared/src/db/migrations/024_rewind_context.ts`
+- `packages/shared/src/types/index.ts`
+- `packages/web/src/lib/config.ts`
+- `packages/web/src/lib/bootstrap.ts`
+- `packages/worker/src/index.ts`
+
+## Appendix A: Codex Adversarial Review Resolution
+
+This appendix resolves the previously reported findings.
+
+| Finding | Resolution in This Doc | Evidence |
 | --- | --- | --- |
-| **Work Items** | `pm_work_items`, `pm_work_item_labels`, `pm_work_item_repo_links`, `pm_external_items` | `work_item_id`, etc. |
-| **AI** | `pm_work_item_ai_current`, `pm_work_item_ai_history` | `work_item_id`, `ai_snapshot_id` |
-| **Value** | `pm_value_profiles`, `pm_value_profile_history` | `work_item_id`, `value_snapshot_id` |
-| **Dependencies** | `pm_dependencies`, `pm_dependency_closure`, `pm_dependency_metrics` | `dependency_id`, etc. |
-| **Iterations** | `pm_iterations`, `pm_iteration_items` | `iteration_id`, etc. |
-| **Stakeholders** | `pm_stakeholders`, `pm_work_item_stakeholders`, `pm_urgency_signals` | `stakeholder_id`, etc. |
-| **Memory** | `pm_decisions`, `pm_outcomes`, `pm_decision_tags`, `pm_outcome_tags`, FTS tables, view | `decision_id`, `outcome_id` |
-| **Review** | `pm_review_findings` | `finding_id` |
-| **Initiatives** | `pm_initiatives`, `pm_initiative_items` | `initiative_id` |
-| **Events** | `pm_event_types`, `pm_event_project_sequences`, `pm_events` | `event_type`, `project_id`, `event_id` |
-| **Sync** | `pm_sync_cursors`, `pm_sync_inbox`, `pm_sync_conflicts` | `sync_cursor_id`, `inbox_id`, `conflict_id` |
-| **Subscriptions** | `pm_event_subscriptions`, `pm_event_delivery_log` | `subscription_id`, `delivery_id` |
-| **Config** | `pm_project_settings` | `project_id` |
-
----
-
-## 3. Cross-Database Relationships
-
-These three databases are linked by shared identifiers, not foreign keys (cross-database FKs are not possible):
-
-```
-┌──────────────────┐      ┌──────────────────────┐      ┌──────────────────┐
-│    CORE DB        │      │   ORCHESTRATOR DB     │      │   PM ENGINE DB   │
-│                   │      │                       │      │                  │
-│  projects         │◄────►│  projects             │◄────►│  (project_id     │
-│  .project_id      │      │  .project_id          │      │   in all tables) │
-│                   │      │                       │      │                  │
-│  tasks            │──────│  runs                 │──────│  pm_work_items   │
-│  .task_id         │      │  .work_item_id        │      │  .work_item_id   │
-│  .github_node_id  │      │  .work_item_type      │      │  .work_item_uid  │
-│                   │      │                       │      │                  │
-│  runs             │◄────►│  runs                 │      │  pm_external_    │
-│  .run_id          │      │  .run_id              │      │  items           │
-│                   │      │  .correlation_id      │      │  .external_      │
-│                   │      │                       │      │   node_id        │
-│  users            │      │  workers              │      │                  │
-│  .user_id         │      │  .worker_id           │      │                  │
-│  (github node_id) │      │                       │      │                  │
-└──────────────────┘      └──────────────────────┘      └──────────────────┘
-```
-
-### 3.1 Shared Identifiers
-
-| Identifier | Format | Where Used | Invariant |
-| --- | --- | --- | --- |
-| `project_id` | UUID v7 | All three DBs | Created in Core, referenced by ID in Orchestrator and PM Engine |
-| `run_id` | UUID v7 | Core + Orchestrator | Created in Orchestrator, mirrored to Core |
-| `work_item_id` | Integer (PM) / TEXT (Core `task_id`) | PM Engine + Orchestrator | PM Engine is source of truth; Orchestrator references by `work_item_id` |
-| `github_node_id` | GitHub opaque ID | Core (`tasks`, `repos`) + PM Engine (`pm_external_items`) | GitHub is source of truth; used for dedup on sync |
-| `user_id` | GitHub `node_id` | Core (auth) + PM Engine (actor fields) | Core is source of truth for user identity |
-| `correlation_id` | UUID v7 | Core + Orchestrator events | Links events across databases for the same logical operation |
-
-### 3.2 Cross-Database Consistency
-
-Since foreign keys cannot span databases, consistency is maintained by:
-
-1. **Sync on write:** When Core creates a project, Orchestrator and PM Engine are notified via event bus
-2. **Idempotent upsert:** All cross-database writes use `ON CONFLICT ... DO UPDATE`
-3. **Correlation IDs:** Events in different databases share `correlation_id` for tracing
-4. **Eventual consistency:** PM Engine may lag behind Core/Orchestrator; this is acceptable since PM intelligence is advisory, not authoritative for operational state
-
----
-
-## 4. Naming Conflicts Resolution
-
-Several table names appear in multiple databases. This is intentional — they represent different facets of the same concept:
-
-### 4.1 `runs`
-
-| Database | Full Name | Purpose | Phase Storage |
-| --- | --- | --- | --- |
-| Core | `conductor.runs` | Operational record: policy set, PR, git state | `phase` (canonical enum from PROTOCOL.md) |
-| Orchestrator | `orchestrator.runs` | Execution record: workflow template, counters, priority | `current_phase` (maps to template phase name) |
-
-**Resolution:** Same `run_id` in both tables. Core holds the authoritative phase (per PROTOCOL.md invariant: "Run phase may change only via orchestrator-emitted events"). Orchestrator holds execution details. Queries that need both join on `run_id`.
-
-### 4.2 `tasks`
-
-| Database | Full Name | Purpose | Identity |
-| --- | --- | --- | --- |
-| Core | `conductor.tasks` | GitHub issue/PR registration | `task_id` (TEXT), `github_node_id` |
-| Orchestrator | `orchestrator.tasks` | Worker execution assignment | `task_id` (UUID), maps to `operation` enum |
-
-**Resolution:** Different concepts with the same name. Core `tasks` are work items (issues/PRs). Orchestrator `tasks` are execution units (a single worker assignment within a run). Cross-reference: `orchestrator.runs.work_item_id` → `conductor.tasks.task_id`.
-
-### 4.3 `artifacts`
-
-| Database | Full Name | Type Enum |
-| --- | --- | --- |
-| Core | `conductor.artifacts` | `plan`, `review`, `test_report`, `other` |
-| Orchestrator | `orchestrator.artifacts` | `PLAN`, `CODE`, `TEST_REPORT`, `REVIEW`, `PATCHSET`, `REVIEW_FINDINGS`, `RELEASE_NOTES`, `DEPLOY_LOG`, `METRICS`, `CUSTOM` |
-
-**Resolution:** Orchestrator has the richer enum (12 types vs 4). Core's `other` maps to Orchestrator-specific types. Same `artifact_id` used in both.
-
-### 4.4 `projects`
-
-| Database | Full Name | Purpose |
-| --- | --- | --- |
-| Core | `conductor.projects` | Project ownership, GitHub org binding, port ranges |
-| Orchestrator | `orchestrator.projects` | Workflow defaults, autonomy level, PM engine URL |
-
-**Resolution:** Same `project_id`. Core holds auth/ownership; Orchestrator holds execution configuration.
-
-### 4.5 `events` / `orchestrator_events` / `pm_events`
-
-Three separate event streams:
-
-| Stream | Database | Scope | Ordering |
-| --- | --- | --- | --- |
-| `conductor.events` | Core | Run lifecycle, gates, policies | Per-run sequence |
-| `orchestrator.orchestrator_events` | Orchestrator | Workflow execution, worker activity | Per-run via `run_id` |
-| `pm_events` | PM Engine | Planning, dependencies, memory | Per-project monotonic sequence |
-
-All three use `correlation_id` for cross-stream tracing.
-
----
-
-## 5. Identity Model
-
-### 5.1 Primary Keys
-
-| Entity | PK Format | Generated By | Rationale |
-| --- | --- | --- | --- |
-| Users | GitHub `node_id` (TEXT) | GitHub | Immutable across username changes |
-| Projects | UUID v7 | Conductor | Sortable by creation time |
-| Repos | UUID v7 | Conductor | — |
-| Runs | UUID v7 | Orchestrator | Sortable, unique across instances |
-| Tasks (Core) | UUID v7 | Conductor | — |
-| Tasks (Orchestrator) | UUID v7 | Orchestrator | — |
-| Work Items (PM) | INTEGER AUTOINCREMENT | PM Engine | SQLite-native, fast |
-| Events | UUID v7 (Core/Orch) / INTEGER (PM) | Each database | Engine-appropriate |
-
-### 5.2 GitHub Identity Mapping
-
-GitHub entities use `node_id` as the stable identifier:
-
-```
-GitHub Entity     → Conductor column          → Never use as key
-─────────────────────────────────────────────────────────────────
-Repository        → repos.github_node_id      → repos.github_name (mutable)
-Issue/PR          → tasks.github_node_id      → tasks.github_issue_number (mutable on transfer)
-User              → users.user_id             → users.login (mutable)
-```
-
----
-
-## 6. Migration Strategy
-
-### 6.1 Migration Tool
-
-| Database | Migration Tool | File Location |
-| --- | --- | --- |
-| Core + Orchestrator (PostgreSQL) | Raw SQL files with version numbers | `migrations/postgres/` |
-| PM Engine (SQLite) | Raw SQL files with version numbers | `migrations/sqlite/` |
-
-### 6.2 Version Tracking
-
-Each database tracks its schema version:
-
-```sql
--- PostgreSQL (shared by Core + Orchestrator)
-CREATE TABLE conductor._schema_version (
-  version     INTEGER PRIMARY KEY,
-  description TEXT NOT NULL,
-  applied_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  checksum    TEXT NOT NULL  -- SHA-256 of migration file
-);
-
--- SQLite (PM Engine)
-CREATE TABLE _schema_version (
-  version     INTEGER PRIMARY KEY,
-  description TEXT NOT NULL,
-  applied_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  checksum    TEXT NOT NULL
-);
-```
-
-### 6.3 Migration File Naming
-
-```
-migrations/
-  postgres/
-    0001_initial_core_schema.sql
-    0002_initial_orchestrator_schema.sql
-    0003_add_policy_sets.sql
-    0004_add_auth_tables.sql
-    ...
-  sqlite/
-    0001_initial_pm_schema.sql
-    0002_add_ai_projections.sql
-    0003_add_dependency_closure.sql
-    ...
-```
-
-### 6.4 Migration Rules
-
-1. **Forward-only.** Migrations are never modified after deployment. Fix-ups are new migrations.
-2. **Idempotent guards.** Each migration checks state before modifying: `CREATE TABLE IF NOT EXISTS`, `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
-3. **Rollback script.** Each migration has a corresponding `down` file: `0003_add_policy_sets.down.sql`. Rollbacks are manual (operator runs explicitly), never automatic.
-4. **Data migrations separate.** Schema changes and data transforms are in separate migration files. Schema first, data second.
-5. **Version gates.** Application startup checks `_schema_version` and refuses to start if migrations are pending:
-   ```
-   Error: Database schema version 3, application requires version 5.
-   Run: conductor migrate up
-   ```
-
-### 6.5 Breaking Change Policy
-
-| Change Type | Breaking? | Requires |
-| --- | --- | --- |
-| Add table | No | Migration only |
-| Add nullable column | No | Migration only |
-| Add NOT NULL column with default | No | Migration only |
-| Add NOT NULL column without default | **Yes** | Data migration + schema migration |
-| Remove column | **Yes** | Deprecation period (1 minor version) |
-| Rename column | **Yes** | Add new + copy + deprecate old |
-| Change column type | **Yes** | Add new column + data migration |
-| Drop table | **Yes** | Deprecation period (1 minor version) |
-
----
-
-## 7. Index Strategy
-
-### 7.1 Required Indexes (All Databases)
-
-Every table with a `run_id` or `project_id` FK MUST have an index on that column. This is non-negotiable for query performance.
-
-### 7.2 Critical Indexes
-
-| Table | Index | Type | Purpose |
-| --- | --- | --- | --- |
-| `conductor.runs` | `idx_runs_phase` | B-tree | Filter by current phase |
-| `conductor.runs` | `idx_runs_paused` (partial: `WHERE paused_at IS NOT NULL`) | B-tree | Find paused runs |
-| `conductor.events` | `idx_events_unprocessed` (partial: `WHERE processed_at IS NULL`) | B-tree | Event processing loop |
-| `conductor.events` | `idx_events_run_sequence` on `(run_id, sequence)` | B-tree (unique) | Event ordering per run |
-| `conductor.github_writes` | `idx_github_writes_retry` (partial: `WHERE status IN ('queued','failed')`) | B-tree | Retry processing |
-| `conductor.jobs` | `idx_jobs_claimable` (partial: `WHERE status IN ('queued','processing')`) | B-tree | Job claiming |
-| `orchestrator.tasks` | `idx_tasks_state` on `(state, priority)` | B-tree | Worker task claiming |
-| `orchestrator.workers` | `idx_workers_status` | B-tree | Active worker lookup |
-| `pm_events` | `idx_pm_events_project_seq` on `(project_id, sequence)` | B-tree (unique) | Event ordering |
-| `pm_dependencies` | `idx_deps_successor` on `(successor_work_item_id)` | B-tree | Reverse dependency lookup |
-| `pm_work_items` | `idx_work_items_state_priority` on `(state, priority_band)` | B-tree | Backlog queries |
-
-### 7.3 Unique Constraints (Data Integrity)
-
-| Table | Constraint | Purpose |
-| --- | --- | --- |
-| `conductor.github_writes` | `UNIQUE(idempotency_key)` | Prevent duplicate GitHub API calls |
-| `conductor.events` | `UNIQUE(idempotency_key)` | Event deduplication |
-| `conductor.port_leases` | `UNIQUE(project_id, port) WHERE is_active = TRUE` | One active lease per port |
-| `orchestrator.run_phases` | `UNIQUE(run_id, sequence_num)` | Phase ordering integrity |
-| `pm_events` | `UNIQUE(project_id, sequence)` | Event ordering |
-| `pm_events` | `UNIQUE(idempotency_key)` | Event deduplication |
-| `pm_dependencies` | `UNIQUE(predecessor, successor, relation_type) WHERE status = 'active'` | No duplicate active deps |
-
----
-
-## 8. Data Flow Between Databases
-
-```
-GitHub Webhook → Core DB (webhook_deliveries)
-                    │
-                    ├──► Orchestrator DB (runs, tasks, phases)
-                    │         │
-                    │         ├──► PM Engine DB (work item sync)
-                    │         │
-                    │         └──► Redis (job queues)
-                    │
-                    └──► Core DB (events, github_writes)
-
-Operator Action → Core DB (operator_actions)
-                    │
-                    └──► Orchestrator DB (workflow_overrides)
-
-PM Intelligence Query → PM Engine DB (read)
-                           │
-                           └──► Orchestrator DB (advisory: routing, estimation)
-```
-
-**Write ownership:** Each database is written to by exactly one service. Cross-database writes go through the event bus, never direct SQL.
-
-| Database | Write Owner | Other Services |
-| --- | --- | --- |
-| Core DB | Conductor API server | Read-only for others |
-| Orchestrator DB | Orchestrator service | Read-only for API, PM Engine |
-| PM Engine DB | PM Intelligence service | Read-only for Orchestrator |
-| Redis | BullMQ (any service can enqueue) | All services read/write queues |
-
----
-
-## 9. Cross-References
-
-| Topic | Document |
-| --- | --- |
-| Core table definitions | `docs/DATA_MODEL.md` |
-| Orchestrator table definitions | `docs/orchestrator/DATA_MODEL.md` |
-| PM Engine table definitions | `docs/pm-engine/DATA_MODEL.md` |
-| Auth tables (users, sessions, api_keys) | `docs/AUTH.md` § 2.3, § 3.3 |
-| Worker credential tables | `docs/WORKER_CREDENTIALS.md` § Database Schema |
-| Event schema and ordering | `docs/PROTOCOL.md` § Event Schema |
-| Run phase transitions | `docs/PROTOCOL.md` § Run Phases |
-| Canonical enums | Issue #168 (central enum registry) |
+| PostgreSQL-vs-SQLite mismatch | Replaced with single-DB SQLite architecture via `better-sqlite3`; removed 3-DB runtime claims | `packages/shared/src/db/index.ts`, `packages/web/src/lib/bootstrap.ts`, `packages/worker/src/index.ts` |
+| Wrong ID format (UUID claims) | Corrected to prefixed TEXT IDs for Conductor-generated entities; documented current exceptions explicitly | ID generators in `packages/shared/src/*` (e.g., `runs`, `projects`, `events`, `outbox`, `auth`, `gates`) |
+| Wrong table names (e.g., `api_keys`) | Corrected to actual table names from migrations (including `user_api_keys`) | `packages/shared/src/db/migrations/011_user_api_keys.ts` and full migration inventory |
+| Missing down-migration accuracy | Corrected migration model: forward-only, `up`-only, no `down` path in interface/registry | `packages/shared/src/db/migrations/index.ts`, `packages/shared/src/db/index.ts` |
+| Non-existent orchestrator/PM-engine tables documented as real | Removed from authoritative schema and explicitly listed as not in runtime v0.1 | Full migration set `001`-`024` and current table inventory in Section 5 |

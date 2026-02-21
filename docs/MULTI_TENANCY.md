@@ -4,12 +4,14 @@
 
 ## 1. Tenancy Model (v0.1)
 
-Conductor v0.1 is **single-tenant, multi-project**:
+Conductor v0.1 is **multi-user, per-user-isolated, multi-project**:
 
-- **One operator** (authenticated via GitHub OAuth) owns the Conductor instance
-- **Multiple projects** organize work across repos
-- **All projects belong to the same operator**
-- **No shared access** — the instance owner sees everything; no other users exist
+- **Any GitHub user** can authenticate via OAuth and create an account (`users` table, migration 006)
+- **Each user owns their own projects** — project isolation is enforced via `projects.user_id NOT NULL`
+- **Multiple projects** organize work across repos, all scoped to the owning user
+- **No cross-user access** — a user can only see and modify their own projects
+
+> **Note:** The codebase supports multiple concurrent users from day one. The data model is "multi-tenant by design" — each user is effectively their own tenant within the shared instance.
 
 ```
 Conductor Instance (single-tenant)
@@ -42,18 +44,20 @@ Conductor Instance (single-tenant)
 All data tables enforce project isolation through foreign key relationships:
 
 ```
-projects (project_id PK, user_id NOT NULL FK → users)
-├── repos (repo_id PK, project_id FK)
-├── tasks (task_id PK, project_id FK, repo_id FK)
-├── runs (run_id PK, project_id FK, repo_id FK, task_id FK)
-│   ├── events (event_id PK, run_id FK)
-│   ├── agent_invocations (invocation_id PK, run_id FK)
-│   ├── artifacts (artifact_id PK, run_id FK)
-│   ├── github_writes (write_id PK, run_id FK)
-│   └── worktrees (worktree_id PK, run_id FK, project_id FK)
-├── port_leases (port_lease_id PK, project_id FK)
-└── policies (policy_id PK, project_id FK)
+users (user_id PK)
+└── projects (project_id PK, user_id NOT NULL FK → users)
+    ├── repos (repo_id PK, project_id FK)
+    ├── tasks (task_id PK, project_id FK, repo_id FK)
+    ├── runs (run_id PK, project_id FK, repo_id FK, task_id FK)
+    │   ├── events (event_id PK, run_id TEXT — no FK constraint, TEXT join)
+    │   ├── agent_invocations (invocation_id PK, run_id FK)
+    │   ├── artifacts (artifact_id PK, run_id FK)
+    │   ├── github_writes (write_id PK, run_id FK)
+    │   └── worktrees (worktree_id PK, run_id FK, project_id FK)
+    └── port_leases (port_lease_id PK, project_id FK)
 ```
+
+> **Note:** There is no `policies` table in the current schema. Policy evaluation is handled in-memory by the agent runtime. The `workflow_configs` table (migration 021) stores per-project workflow configuration.
 
 ### 2.2 Isolation Invariants
 
@@ -61,13 +65,13 @@ projects (project_id PK, user_id NOT NULL FK → users)
 |-----------|-------------|----------|
 | Every project has an owner | `projects.user_id NOT NULL` | Migration 010 |
 | One project per GitHub installation | `UNIQUE(github_installation_id)` | Migration 010 |
-| All queries filter by project or user | `WHERE project_id = ?` or `JOIN projects ... WHERE user_id = ?` | All data access functions |
-| No cross-project joins without filter | Code review policy | All query functions |
+| Most queries filter by project or user | `WHERE project_id = ?` or `JOIN projects ... WHERE user_id = ?` | Most data access functions |
+| No cross-project joins without filter | Code review policy | Route-level enforcement; core shared functions may not be ownership-scoped by default |
 | Cascade deletion on user removal | `ON DELETE CASCADE` from users → projects | Migration 010 |
 
 ### 2.3 Authorization Model
 
-Every API request passes through two gates:
+Most project-scoped API requests pass through two gates:
 
 1. **Authentication:** `withAuth` middleware validates session cookie, attaches `AuthUser` to request
 2. **Authorization:** `canAccessProject(user, project)` checks `project.userId === user.userId`
@@ -81,7 +85,7 @@ export function canAccessProject(user: AuthUser, project: Project): boolean {
 }
 ```
 
-This function is called on **every** project-scoped API route before data access.
+This function is called on project-scoped API routes. **Intentionally unauthenticated endpoints** include `GET /api/health`, `GET /api/health/redis`, `GET /api/github/status`, and `POST /api/webhooks/github` (webhook reception is signature-validated, not session-authenticated).
 
 ---
 
@@ -95,7 +99,7 @@ This function is called on **every** project-scoped API route before data access
 | List runs | Filtered by `project_id` parameter OR `user_id` via join | `GET /api/projects/:id/runs` |
 | List tasks | Always requires `project_id` parameter | `listTasks(db, projectId)` |
 | Analytics | All queries join through projects and filter by `project_id` | Dashboard aggregations |
-| Events | Scoped by `run_id` which inherits `project_id` | `GET /api/runs/:id/events` |
+| Events | Scoped by `run_id` which inherits `project_id` | Returned via `GET /api/runs/:id` (no dedicated events endpoint in v0.1) |
 
 ### 3.2 Cross-Project Aggregation
 
@@ -216,7 +220,7 @@ This is accurate — the database schema enforces project isolation from day one
 
 ### 7.2 MVP_SCOPE.md States "Project Ownership Enforced"
 
-Correct. Migration 010 enforces `projects.user_id NOT NULL` and `canAccessProject()` gates every API call. Cross-project data leakage is not possible through the API layer.
+Substantially correct. Migration 010 enforces `projects.user_id NOT NULL` and `canAccessProject()` gates project-scoped API routes. Route-level enforcement is the primary isolation mechanism. Note that core shared data access functions (in `packages/shared/src/`) are not always ownership-scoped by default — route handlers are responsible for passing the correct `projectId` and verifying ownership before calling shared functions.
 
 ---
 
@@ -229,3 +233,19 @@ Correct. Migration 010 enforces `projects.user_id NOT NULL` and `canAccessProjec
 | Database schema and migrations | `docs/DATA_MODEL_AUTHORITY.md` |
 | Resource quotas and rate limiting | `docs/RATE_LIMITING.md` |
 | Project hierarchy | `docs/PROJECTS.md` |
+
+---
+
+## Appendix A: Codex Adversarial Review Resolution
+
+**Review date:** 2026-02-21
+**Reviewer:** Codex (read-only sandbox)
+**Findings:** 5 total — 2 BLOCKING, 2 HIGH, 1 MEDIUM
+
+| # | Severity | Section | Finding | Resolution |
+|---|----------|---------|---------|------------|
+| 1 | BLOCKING | §1 | "Single-tenant, one operator, no other users exist" — code supports multiple OAuth users via migration 006 and GitHub callback | Rewrote §1 to accurately describe multi-user, per-user-isolated model |
+| 2 | HIGH | §2.1 | Schema diagram includes non-existent `policies` table; `events.run_id` shown as FK but is plain TEXT | Fixed diagram: removed `policies`, added note about TEXT join, added `users` as root, added `workflow_configs` note |
+| 3 | BLOCKING | §2.2, §7.2 | "All queries filter by project or user" and "cross-project leakage is not possible" — overstated; core shared functions not always ownership-scoped | Fixed to "most queries"; added route-layer enforcement note; clarified shared function responsibility |
+| 4 | HIGH | §2.3 | "Every API request passes through two gates" — health, webhook, github/status endpoints are intentionally unauthenticated | Fixed to "most project-scoped requests"; listed intentionally unauthenticated endpoints |
+| 5 | MEDIUM | §3.1 | `GET /api/runs/:id/events` — no dedicated events endpoint; events returned via run detail endpoint | Fixed to reflect actual endpoint structure |

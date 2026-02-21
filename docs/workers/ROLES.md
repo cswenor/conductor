@@ -1,6 +1,6 @@
 # Worker Roles
 
-Status: Normative specification
+Status: Vision — Not implemented in v0.1. Describes planned role/registry system for a future release. Current worker uses hardcoded Planner/Implementer/Reviewer step handlers. Do not use as implementation reference.
 Audience: Engineering, platform integrators, AI agent developers
 Updated: 2026-02-19
 

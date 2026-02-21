@@ -1,6 +1,6 @@
 # Conductor PM Engine Interfaces (MCP + A2A + Web API)
 
-Status: Draft v1.1 (implementation-ready)
+Status: Vision — Not implemented in v0.1. Design-only; not yet built. Do not use as implementation reference for the current codebase.
 Owner: PM Engine
 Updated: 2026-02-19
 

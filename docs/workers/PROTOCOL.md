@@ -1,6 +1,6 @@
 # Worker Protocol
 
-Status: Normative specification
+Status: Vision — Not implemented in v0.1. Describes planned worker protocol for a future pluggable worker registry. Current worker uses fixed step handlers. Do not use as implementation reference.
 Audience: Engineering, worker implementors
 Updated: 2026-02-19
 

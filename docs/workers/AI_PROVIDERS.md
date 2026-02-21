@@ -1,6 +1,6 @@
 # AI Providers
 
-Status: Normative specification
+Status: Vision — Not implemented in v0.1. Current implementation supports Anthropic only. Multi-provider support described here is planned for a future release.
 Audience: Engineering, platform integrators
 Updated: 2026-02-19
 

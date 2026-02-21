@@ -1,6 +1,6 @@
 # Conductor PM Engine Workflows
 
-Status: Normative specification
+Status: Vision — Not implemented in v0.1. Describes planned PM engine workflow architecture for a future release.
 Audience: Engineering, AI agent developers, platform integrators
 Updated: 2026-02-19
 

@@ -1,6 +1,6 @@
 # Orchestrator Interfaces
 
-Status: Normative specification
+Status: Vision — Not implemented in v0.1. Describes planned architecture for a future release. Do not use as implementation reference for the current codebase.
 Audience: Engineering, UX, platform integrators
 Updated: 2026-02-19
 

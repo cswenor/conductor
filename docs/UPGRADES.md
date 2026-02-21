@@ -68,12 +68,12 @@ As of v0.1.0, there are **24 migrations**:
 
 | Range | Category | Examples |
 |-------|----------|---------|
-| 001 | Initial schema | 24 core tables (projects, repos, tasks, runs, events, etc.) |
-| 002-005 | Schema fixes | FK constraints, column additions |
-| 006-010 | Auth spine | Users, sessions, API keys, ownership enforcement |
-| 011-015 | Agent & stream | Agent messaging, stream events V2, operator actions |
-| 016-019 | Mirroring & config | GitHub mirroring, repo tracking, configuration |
-| 020-024 | Control gates | Gate decisions, workflow config, epoch versioning, rewind |
+| 001 | Initial schema | Core tables: projects, repos, tasks, runs, events, agent_invocations, etc. |
+| 002-005 | Schema fixes | FK constraints, column additions, index corrections |
+| 006-010 | Auth spine | Users, sessions, user_api_keys, ownership enforcement |
+| 011-015 | Agent & messaging | Agent invocations, operator actions, message tables |
+| 016-019 | Mirroring & tracking | GitHub mirroring (016), repo tracking (017), stream events v2 (018), config (019) |
+| 020-024 | Control gates | Gate decisions, workflow config, epoch versioning, rewind support |
 
 ---
 
@@ -116,7 +116,7 @@ As of v0.1.0, there are **24 migrations**:
 | v0.1.x | 1 | 24 | Initial release |
 | v0.2.x | 25+ | TBD | Will add new migrations |
 
-**Rule:** The application checks `MAX(version) FROM schema_versions` on startup. If the schema version is higher than the application expects, it logs a warning and proceeds (forward compatibility). If lower, it runs pending migrations.
+**Rule:** The application calls `runMigrations(db)` on startup, which runs all pending migrations (versions higher than current). There is no max-version check — if the schema is already at or beyond the latest migration, no migrations run and the app proceeds normally. **There is no "schema higher than expected" warning path in the current implementation.**
 
 ### 3.2 Package Version Alignment
 
@@ -136,24 +136,30 @@ All packages in the monorepo share the same version:
 
 ### 4.1 Standard Upgrade (Single Instance)
 
+> **Note:** The repository does not include `./scripts/backup.sh` or `./scripts/restore.sh`. The `docker-compose.yml` defines only a `redis` service — there are no `conductor` or `worker` Docker Compose services. The examples below use manual equivalents.
+
 ```bash
-# 1. Pre-flight
-./scripts/backup.sh                    # Backup current database
-docker compose run --rm conductor node -e "
-  const { initDatabase } = require('./packages/shared/dist/db');
-  const db = initDatabase({ path: '/data/conductor.db' });
+# 1. Pre-flight — check current schema version
+node -e "
+  const Database = require('better-sqlite3');
+  const db = new Database(process.env.DATABASE_PATH || './conductor.db');
   console.log('Schema version:', db.prepare('SELECT MAX(version) as v FROM schema_versions').get());
 "
 
-# 2. Pull new version
-docker compose pull
+# 2. Backup database (manual — no backup.sh script exists)
+cp conductor.db conductor.db.bak-$(date +%Y%m%d-%H%M%S)
 
-# 3. Rolling restart (worker first)
-docker compose up -d --no-deps worker
-sleep 10
-docker compose up -d --no-deps conductor
+# 3. Pull new code
+git pull
 
-# 4. Verify
+# 4. Rebuild
+pnpm install && pnpm build
+
+# 5. Restart services (web + worker started separately in development)
+# Stop: Ctrl-C on pnpm dev:web and pnpm dev:worker
+# Start: pnpm dev:web && pnpm dev:worker
+
+# 6. Verify
 curl -sf http://localhost:3000/api/health
 ```
 
@@ -162,24 +168,25 @@ curl -sf http://localhost:3000/api/health
 When upgrading across a minor version boundary (e.g., v0.1 → v0.2):
 
 ```bash
-# 1. Stop all services (cold upgrade)
-docker compose down
+# 1. Stop all services
+# Stop pnpm dev:web and pnpm dev:worker
 
-# 2. Backup
-./scripts/backup.sh
+# 2. Backup database (manual)
+cp conductor.db conductor.db.bak-$(date +%Y%m%d-%H%M%S)
 
-# 3. Pull new version
-docker compose pull
+# 3. Pull new code
+git pull && pnpm install && pnpm build
 
-# 4. Run migrations explicitly
-docker compose run --rm conductor node -e "
-  const { initDatabase } = require('./packages/shared/dist/db');
-  initDatabase({ path: '/data/conductor.db' });
+# 4. Run migrations explicitly (migrations run automatically on startup)
+node -e "
+  const { initDatabase } = require('./packages/shared/dist/db/index.js');
+  initDatabase(process.env.DATABASE_PATH || './conductor.db');
   console.log('Migrations complete');
 "
 
 # 5. Start services
-docker compose up -d
+pnpm dev:web &
+pnpm dev:worker &
 
 # 6. Verify
 curl -sf http://localhost:3000/api/health
@@ -189,10 +196,10 @@ curl -sf http://localhost:3000/api/health
 
 | Check | Command | Required? |
 |-------|---------|-----------|
-| No active runs | Check dashboard or `SELECT COUNT(*) FROM runs WHERE phase NOT IN ('completed','cancelled')` | Recommended |
-| Database backup | `./scripts/backup.sh` | Required |
-| Disk space | `df -h /data` | > 2x database size |
-| Current version | `docker compose exec conductor node -e "console.log(require('./package.json').version)"` | Informational |
+| No active runs | Check dashboard or `SELECT COUNT(*) FROM runs WHERE phase NOT IN ('completed','cancelled')` against `conductor.db` | Recommended |
+| Database backup | `cp conductor.db conductor.db.bak-$(date +%Y%m%d)` | Required |
+| Disk space | `df -h .` | > 2x database size |
+| Current version | `node -e "console.log(require('./packages/web/package.json').version)"` | Informational |
 
 ---
 
@@ -207,19 +214,20 @@ curl -sf http://localhost:3000/api/health
 ### 5.2 Rollback Steps
 
 ```bash
-# 1. Stop services
-docker compose down
+# 1. Stop services (Ctrl-C on pnpm dev:web and pnpm dev:worker)
 
-# 2. Restore database from pre-upgrade backup
-./scripts/restore.sh /backups/conductor_<pre-upgrade>.db.gz
+# 2. Restore database from pre-upgrade backup (no restore.sh script — manual)
+cp conductor.db.bak-<pre-upgrade-timestamp> conductor.db
 
 # 3. Deploy previous version
-# (requires previous Docker image tag or git checkout)
 git checkout v0.1.0
-docker compose build
-docker compose up -d
+pnpm install && pnpm build
 
-# 4. Verify
+# 4. Start services
+pnpm dev:web &
+pnpm dev:worker &
+
+# 5. Verify
 curl -sf http://localhost:3000/api/health
 ```
 
@@ -324,3 +332,18 @@ Currently no config file (all env vars). If a config file is introduced:
 | Backup and restore procedures | `docs/DEPLOYMENT.md` § 5 |
 | API endpoint specifications | `docs/API_CONTRACTS.md` |
 | Event payload formats | `docs/EVENT_MODEL.md` |
+
+---
+
+## Appendix A: Codex Adversarial Review Resolution
+
+**Review date:** 2026-02-21
+**Reviewer:** Codex (read-only sandbox)
+**Findings:** 4 total — 2 BLOCKING, 1 HIGH, 1 MEDIUM
+
+| # | Severity | Section | Finding | Resolution |
+|---|----------|---------|---------|------------|
+| 1 | BLOCKING | §4, §5 | `./scripts/backup.sh` and `./scripts/restore.sh` don't exist in the repo | Replaced with manual `cp` commands and noted no backup scripts exist |
+| 2 | BLOCKING | §4.1, §4.2, §4.3 | Docker Compose services `conductor` and `worker` not defined — only `redis` is in `docker-compose.yml` | Rewrote upgrade/rollback procedures using `pnpm dev:web` / `pnpm dev:worker` |
+| 3 | HIGH | §3.1 | "Schema higher than expected logs warning and proceeds" — no max-version check or warning path in `db/index.ts` | Replaced with accurate description of forward-only migration behavior |
+| 4 | MEDIUM | §1.5 | Migration category mapping inaccurate (stream-events is migration 018, not in 011-015) | Fixed category table to match actual migration file contents |
