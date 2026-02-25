@@ -2,7 +2,7 @@
 name: issue
 description: Create new issues (PM interview) or work on existing issues. Use without arguments to create, with issue number to execute.
 argument-hint: '[issue-number]'
-allowed-tools: Read, Glob, Bash(./tools/scripts/worktree-detect.sh *), Bash(./tools/scripts/worktree-setup.sh *), Bash(./tools/scripts/tmux-session.sh *), Bash(./tools/scripts/find-plan.sh *), Bash(./tools/scripts/codex-mcp-overrides.sh), Bash(git status *), Bash(git checkout *), Bash(git pull *), Bash(git fetch *), Bash(git rebase *), Bash(git diff *), Bash(git worktree *), Bash(gh issue view * --json comments *), Bash(gh repo view *), Bash(gh pr checkout *), Bash(make setup), Bash(codex --version *), Bash(codex exec -s read-only *), Bash(codex exec -s workspace-write *), Bash(codex exec -c *), mcp__github__get_issue, mcp__github__create_issue, mcp__github__update_issue, mcp__github__add_issue_comment, mcp__github__search_issues, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__get_pull_request_reviews, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__pm_intelligence__get_issue_status, mcp__pm_intelligence__get_board_summary, mcp__pm_intelligence__move_issue, mcp__pm_intelligence__sync_from_github, mcp__pm_intelligence__add_dependency, mcp__pm_intelligence__triage_issue, mcp__pm_intelligence__auto_label, mcp__pm_intelligence__decompose_issue, mcp__pm_intelligence__recover_context, mcp__pm_intelligence__get_session_history, mcp__pm_intelligence__predict_completion, mcp__pm_intelligence__predict_rework, mcp__pm_intelligence__suggest_approach, mcp__pm_intelligence__get_issue_dependencies, mcp__pm_intelligence__check_readiness, mcp__pm_intelligence__detect_scope_creep, mcp__pm_intelligence__explain_delay, mcp__pm_intelligence__record_decision, mcp__pm_intelligence__get_history_insights, AskUserQuestion, EnterPlanMode, TaskOutput
+allowed-tools: Read, Glob, Bash(./tools/scripts/worktree-detect.sh *), Bash(./tools/scripts/worktree-setup.sh *), Bash(./tools/scripts/tmux-session.sh *), Bash(./tools/scripts/find-plan.sh *), Bash(./tools/scripts/codex-mcp-overrides.sh), Bash(git status *), Bash(git checkout *), Bash(git pull *), Bash(git fetch *), Bash(git rebase *), Bash(git diff *), Bash(git worktree *), Bash(gh issue view * --json comments *), Bash(gh repo view *), Bash(gh pr checkout *), Bash({{SETUP_COMMAND}}), Bash(codex --version *), Bash(codex exec -s read-only *), Bash(codex exec -s workspace-write *), Bash(codex exec -c *), mcp__github__get_issue, mcp__github__create_issue, mcp__github__update_issue, mcp__github__add_issue_comment, mcp__github__search_issues, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__get_pull_request_reviews, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__pm_intelligence__get_issue_status, mcp__pm_intelligence__get_board_summary, mcp__pm_intelligence__move_issue, mcp__pm_intelligence__sync_from_github, mcp__pm_intelligence__add_dependency, mcp__pm_intelligence__triage_issue, mcp__pm_intelligence__auto_label, mcp__pm_intelligence__decompose_issue, mcp__pm_intelligence__recover_context, mcp__pm_intelligence__get_session_history, mcp__pm_intelligence__predict_completion, mcp__pm_intelligence__predict_rework, mcp__pm_intelligence__suggest_approach, mcp__pm_intelligence__get_issue_dependencies, mcp__pm_intelligence__check_readiness, mcp__pm_intelligence__detect_scope_creep, mcp__pm_intelligence__explain_delay, mcp__pm_intelligence__record_decision, mcp__pm_intelligence__get_history_insights, AskUserQuestion, EnterPlanMode, TaskOutput
 ---
 
 # /issue - Issue Creation & Execution
@@ -27,10 +27,10 @@ Create new issues via PM interview OR work on existing issues.
 
 ```yaml
 repo:
-  owner: cswenor
-  repo: conductor
-  project_id: 
-  project_number: 
+  owner: {{OWNER}}
+  repo: {{REPO}}
+  project_id: {{PROJECT_ID}}
+  project_number: {{PROJECT_NUMBER}}
 
 tools:
   prefer: MCP (mcp__github__*)
@@ -349,8 +349,8 @@ Run these in parallel:
 
 Use `mcp__github__get_issue` with:
 
-- owner: "cswenor"
-- repo: "conductor"
+- owner: "{{OWNER}}"
+- repo: "{{REPO}}"
 - issue_number: $ARGUMENTS
 
 Extract: title, state (open/closed), labels, body
@@ -366,7 +366,7 @@ gh issue view $ARGUMENTS --json comments --jq '.comments[] | {author: .author.lo
 #### 1c. Get Project State
 
 ```bash
-pm status $ARGUMENTS
+export PATH="./tools/scripts:$PATH" && pm status $ARGUMENTS
 ```
 
 Extract the `workflow` field. **If the command fails** (non-zero exit, issue not in project, network error), set `workflow = null` — this will trigger MISMATCH(not_in_project) in Step 4, which offers to add the issue to the project.
@@ -379,15 +379,15 @@ Search for linked PRs using multiple strategies:
 
 Use `mcp__github__search_issues` with queries:
 
-- `repo:cswenor/conductor is:pr "Fixes #$ARGUMENTS"`
-- `repo:cswenor/conductor is:pr "Closes #$ARGUMENTS"`
-- `repo:cswenor/conductor is:pr "Resolves #$ARGUMENTS"`
+- `repo:{{OWNER}}/{{REPO}} is:pr "Fixes #$ARGUMENTS"`
+- `repo:{{OWNER}}/{{REPO}} is:pr "Closes #$ARGUMENTS"`
+- `repo:{{OWNER}}/{{REPO}} is:pr "Resolves #$ARGUMENTS"`
 
 **Strategy 4: Issue URL (High confidence)**
 
 Search for issue URL in PR body:
 
-- `repo:cswenor/conductor is:pr "github.com/cswenor/conductor/issues/$ARGUMENTS"`
+- `repo:{{OWNER}}/{{REPO}} is:pr "github.com/{{OWNER}}/{{REPO}}/issues/$ARGUMENTS"`
 
 Deduplicate results by PR number.
 
@@ -542,7 +542,7 @@ Then display:
 ```markdown
 ## Issue #<num> started in background
 
-Window: `cnd-<num>` | Branch: `<type>/<short-desc>`
+Window: `{{prefix}}-<num>` | Branch: `<type>/<short-desc>`
 
 Watch your tmux status bar for the alert indicator when it needs input.
 Switch with: `Ctrl-b + <window-number>`
@@ -569,7 +569,7 @@ Then run `/issue <num>` again to continue setup.
 
 For dev with port isolation:
 eval "$(./tools/scripts/worktree-setup.sh <num> --print-env)"
-pnpm install && make dev
+pnpm install && {{DEV_COMMAND}}
 ```
 
 **Do NOT continue working in main repo.** The user (or Claude) must switch to the worktree.
@@ -592,7 +592,7 @@ Then display:
 ```markdown
 ## Issue #<num> ready in tmux
 
-Window: `cnd-<num>` | Worktree: `<worktree-path>`
+Window: `{{prefix}}-<num>` | Worktree: `<worktree-path>`
 
 Watch your tmux status bar for the alert indicator when it needs input.
 Switch with: `Ctrl-b + <window-number>`
@@ -631,7 +631,7 @@ Then display:
 ```markdown
 ## Issue #<num> started in background
 
-Window: `cnd-<num>` | Branch: `<type>/<short-desc>`
+Window: `{{prefix}}-<num>` | Branch: `<type>/<short-desc>`
 
 Watch your tmux status bar for the alert indicator when it needs input.
 Switch with: `Ctrl-b + <window-number>`
@@ -826,11 +826,11 @@ If you're seeing this, you're in the correct worktree (exit 0).
 
 1.5. **Background environment setup** (before plan mode):
 
-Kick off make setup in the background so the environment bootstraps while you plan.
+Kick off {{SETUP_COMMAND}} in the background so the environment bootstraps while you plan.
 
 Call the Bash tool with these exact parameters:
 
-- command: "make setup"
+- command: "{{SETUP_COMMAND}}"
 - run_in_background: true
 - description: "Background environment setup for issue #<num>"
 
@@ -838,10 +838,10 @@ The Bash tool returns a result that includes a task_id. Store this task_id for
 checking after plan mode exits.
 
 Behavior: The command starts in a separate process and returns control to you
-immediately (within seconds). You do not wait for make setup to finish.
+immediately (within seconds). You do not wait for {{SETUP_COMMAND}} to finish.
 
 **If the Bash call fails or does not return a task_id:** Warn the user
-("Background setup failed to launch, you may need to run `make setup` manually")
+("Background setup failed to launch, you may need to run `{{SETUP_COMMAND}}` manually")
 and set task_id to null. Continue to step 2 (EnterPlanMode) regardless — setup
 failure must never block planning.
 
@@ -969,10 +969,10 @@ Every plan MUST include a traceability table mapping each acceptance criterion t
 
 #### After ExitPlanMode (START)
 
-Before beginning implementation, check the background make setup result.
+Before beginning implementation, check the background {{SETUP_COMMAND}} result.
 
 **If task_id is null** (step 1.5 failed to launch): Skip the TaskOutput call.
-Report "Background setup was not launched. Run `make setup` manually if needed."
+Report "Background setup was not launched. Run `{{SETUP_COMMAND}}` manually if needed."
 Proceed to implementation.
 
 **If task_id exists:** Call the TaskOutput tool with these exact parameters:
@@ -985,12 +985,12 @@ Interpret the result and always report to the user:
 
 - Completed with exit code 0: Report "Environment ready." Proceed to implementation.
 - Completed with non-zero exit code: Report "Background setup failed." Show the
-  first 20 lines of output. Suggest the user run make setup manually. Do NOT block
+  first 20 lines of output. Suggest the user run {{SETUP_COMMAND}} manually. Do NOT block
   implementation.
 - Still running: Report "Setup is still running in the background. You can start
   working. Check back with TaskOutput if needed before running tests."
 
-**Post-Implementation:** After implementation is complete, follow **Sub-Playbook: Post-Implementation Sequence** (Steps 1-5). Do NOT skip directly to `make test` or `pm move` Review`.
+**Post-Implementation:** After implementation is complete, follow **Sub-Playbook: Post-Implementation Sequence** (Steps 1-5). Do NOT skip directly to `{{TEST_COMMAND}}` or `pm move` Review`.
 
 ### CONTINUE Mode
 
@@ -1043,7 +1043,7 @@ options:
 
 Same as START mode step 1.5. Call the Bash tool with:
 
-- command: "make setup"
+- command: "{{SETUP_COMMAND}}"
 - run_in_background: true
 - description: "Background environment setup for issue #<num>"
 
@@ -1105,7 +1105,7 @@ report that setup was not launched. If task_id exists, call TaskOutput with
 block: false using the task_id from step 3.5. Always report the result to the
 user: ready, failed (with output), or still running.
 
-**Post-Implementation:** After implementation is complete, follow **Sub-Playbook: Post-Implementation Sequence** (Steps 1-5). Do NOT skip directly to `make test` or `pm move` Review`.
+**Post-Implementation:** After implementation is complete, follow **Sub-Playbook: Post-Implementation Sequence** (Steps 1-5). Do NOT skip directly to `{{TEST_COMMAND}}` or `pm move` Review`.
 
 ### REVIEW Mode
 
@@ -1269,6 +1269,12 @@ Execute: `pm move <num> Done`
 
 ## Allowed Mutations
 
+**Shell PATH:** The `pm` CLI lives at `./tools/scripts/pm`. Always prefix Bash commands that use `pm` with:
+
+```bash
+export PATH="./tools/scripts:$PATH" && pm <command>
+```
+
 **This skill can execute:**
 
 - `pm add <num> <priority>` - Add issue to project
@@ -1295,7 +1301,7 @@ Execute: `pm move <num> Done`
 - `gh pr create` - Create PR
 - `cd <worktree-path> && claude` - Switch to worktree
 - `eval "$(./tools/scripts/worktree-setup.sh <num> --print-env)"` - Apply port isolation
-- `pnpm install && make dev` - Initialize and start worktree dev server
+- `pnpm install && {{DEV_COMMAND}}` - Initialize and start worktree dev server
 
 **Execution scope note:** The `allowed-tools` frontmatter restricts tools during skill execution (mode detection, briefing, plan mode entry). After ExitPlanMode, the skill has ended and Claude Code resumes normal operation with standard tool permissions. The Post-Implementation Sequence runs in this normal context.
 
@@ -1321,13 +1327,13 @@ This skill exists because Claude tends to:
 **The Bash tool resets working directory after each command.** When working in a worktree:
 
 1. **Use absolute paths** for all file operations:
-   - Read: `/Users/.../cnd-306/path/to/file.ts` (not `path/to/file.ts`)
+   - Read: `/Users/.../{{prefix}}-306/path/to/file.ts` (not `path/to/file.ts`)
    - Edit: Use full absolute path
    - Bash: `cd /path/to/worktree && command` or use absolute paths in commands
 
 2. **Never assume you're in the worktree** - verify with `pwd` if uncertain
 
-3. **Track which worktree you're in** - the path tells you the issue number (e.g., `cnd-306` = issue #306)
+3. **Track which worktree you're in** - the path tells you the issue number (e.g., `{{prefix}}-306` = issue #306)
 
 4. **Don't mix worktrees** - if you need to work on a different issue, that issue has its own worktree
 

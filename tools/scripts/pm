@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# pm — CLI wrapper for PM Intelligence
+# Delegates to tools/mcp/pm-intelligence/build/cli.js
+# Installed by claude-pm-toolkit
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLI="$SCRIPT_DIR/../mcp/pm-intelligence/build/cli.js"
+
+if [[ ! -f "$CLI" ]]; then
+  echo "Error: PM CLI not found at $CLI" >&2
+  echo "Run: cd tools/mcp/pm-intelligence && npm run build" >&2
+  exit 1
+fi
+
+exec node "$CLI" "$@"
