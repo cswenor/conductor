@@ -116,7 +116,7 @@ Post-implementation checklist: commit → tests → PR → review transition
 Tip: Run mcp__pm_intelligence__record_outcome() to record this session's work for future learning."
 
   jq -n --arg ctx "$REMINDER_TEXT" \
-    '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":$ctx}}'
+    '{"stopReason":$ctx}'
 fi
 
 exit 0
