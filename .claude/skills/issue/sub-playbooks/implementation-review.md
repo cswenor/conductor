@@ -9,6 +9,15 @@ Adversarial code review from Codex after implementation. Evidence-based: finding
 - `codex_available` is true
 - Implementation complete, changes committed
 
+## Tool Choice: MCP vs CLI
+
+All Codex interactions use the **MCP tools** (`mcp__codex__codex` and `mcp__codex__codex-reply`), NOT `codex exec` via Bash. Benefits:
+
+- No shell quoting issues (spaces in paths, special characters in prompts)
+- No dependency on `codex-mcp-overrides.sh`
+- Works from worktrees (MCP tool doesn't depend on local node_modules)
+- Structured parameters instead of CLI flag parsing
+
 ## Risk-Proportional Depth
 
 Before launching the full review loop, assess change size:
@@ -33,46 +42,29 @@ For **Small** changes: Run one Codex review pass. If APPROVED, proceed. If findi
 
 ### Step 1: Initial Review
 
-Codex has full filesystem access in `-s workspace-write` mode. It can run `git diff`, read files, browse the codebase, **and write verification artifacts** — test scripts, reproduction cases, or validation helpers. **Do NOT pre-generate a diff or patch file** — Codex decides what context it needs and how to verify.
+Codex has full filesystem access in `workspace-write` sandbox. It can run `git diff`, read files, browse the codebase, **and write verification artifacts** — test scripts, reproduction cases, or validation helpers. **Do NOT pre-generate a diff or patch file** — Codex decides what context it needs and how to verify.
 
-```bash
-set -o pipefail
-ITER=1
-codex exec \
-  $(./tools/scripts/codex-mcp-overrides.sh) \
-  --json \
-  -s workspace-write \
-  --skip-git-repo-check \
-  -o /tmp/codex-impl-review-<issue_num>-${ITER}.txt \
-  "You are an adversarial code reviewer for issue #<issue_num>. The branch is based on main. Review the implementation against the issue's acceptance criteria. Use git diff, git log, and file reads as needed. You CAN write and run test scripts to verify claims — prefer proving over guessing. Output your findings as JSON: {\"verdict\": \"APPROVED\"|\"CHANGES_NEEDED\", \"findings\": [{\"id\": \"F1\", \"category\": \"security\"|\"correctness\"|\"performance\"|\"style\", \"severity\": \"high\"|\"medium\"|\"low\", \"file\": \"path\", \"line\": N, \"description\": \"...\", \"suggestion\": \"...\"}], \"summary\": \"...\"}. Every finding MUST include file and line. End with APPROVED if no blocking findings, or CHANGES_NEEDED." \
-  2>/tmp/codex-impl-stderr-<issue_num>-${ITER}.txt \
-  | tee /tmp/codex-impl-events-<issue_num>-${ITER}.jsonl
-CODEX_EXIT=${PIPESTATUS[0]}
+```
+mcp__codex__codex({
+  prompt: "You are an adversarial code reviewer for issue #<issue_num>. The branch is based on main. Review the implementation against the issue's acceptance criteria. Use git diff, git log, and file reads as needed. You CAN write and run test scripts to verify claims — prefer proving over guessing. Output your findings as JSON: {\"verdict\": \"APPROVED\"|\"CHANGES_NEEDED\", \"findings\": [{\"id\": \"F1\", \"category\": \"security\"|\"correctness\"|\"performance\"|\"style\", \"severity\": \"high\"|\"medium\"|\"low\", \"file\": \"path\", \"line\": N, \"description\": \"...\", \"suggestion\": \"...\"}], \"summary\": \"...\"}. Every finding MUST include file and line. End with APPROVED if no blocking findings, or CHANGES_NEEDED.",
+  sandbox: "workspace-write",
+  cwd: "<repo_root>"
+})
 ```
 
-**Why `-s workspace-write`:** The reviewer should be able to **prove** findings, not just claim them. Writing a quick test that demonstrates a null pointer, running a script that exposes a race condition, or creating a reproduction case — these are more valuable than prose opinions. This is the Google ADK "agents that prove, not guess" principle taken to its logical conclusion. The sandbox still prevents network access and system modifications.
+**Why `workspace-write`:** The reviewer should be able to **prove** findings, not just claim them. Writing a quick test that demonstrates a null pointer, running a script that exposes a race condition, or creating a reproduction case — these are more valuable than prose opinions. This is the Google ADK "agents that prove, not guess" principle taken to its logical conclusion. The sandbox still prevents network access and system modifications.
 
-**Why `exec` instead of `review --base main`:** The `review` subcommand has documented issues: 0-byte `-o` output, mutual flag exclusion with `--base`/`--uncommitted`/`[PROMPT]`, and unreliable stdin consumption. Using `exec` lets Codex explore freely — it can read full files for context around changes, check related tests, inspect configs, and run any git command it needs. This produces higher-quality review than feeding a raw patch.
-
-**Session ID capture:**
-
-```bash
-CODEX_SESSION_ID=$(head -1 /tmp/codex-impl-events-<issue_num>-${ITER}.jsonl | jq -r '.thread_id')
-```
+**Thread ID capture:** The MCP tool response includes a `threadId`. Store it for the resume/reply flow in Step 5.
 
 **Key properties:**
-- `-s workspace-write` lets Codex read AND write (tests, scripts, verification artifacts)
-- `--json` outputs JSONL events for session ID capture
-- `-o` is on `exec` level, before prompt
+- `workspace-write` lets Codex read AND write (tests, scripts, verification artifacts)
 - Codex has full codebase access — no pre-generated diff needed
-- Stderr captured to file (not discarded) for error diagnostics
-- Per-iteration output files prevent collision across iterations
 - Any files Codex creates during review are visible to Claude for evaluation
 
 ### Step 2: Check for Failures
 
-1. If `CODEX_EXIT` is non-zero: read stderr from `/tmp/codex-impl-stderr-<issue_num>-${ITER}.txt`. Surface via AskUserQuestion with "Retry" / "Override" / "Show error".
-2. If output file is missing or 0 bytes (`[ ! -s /tmp/codex-impl-review-<issue_num>-${ITER}.txt ]`): context exhaustion. Surface via AskUserQuestion with "Retry" / "Override".
+1. If MCP tool returns an error: Surface via AskUserQuestion with "Retry" / "Override" / "Show error".
+2. If response is empty or truncated: context exhaustion. Surface via AskUserQuestion with "Retry" / "Override".
 
 ### Step 3: Parse Findings via JSON Schema
 
@@ -126,7 +118,7 @@ The Review Ledger is a JSON file at `/tmp/codex-review-ledger-<issue_num>.json` 
 
 ```json
 {
-  "issue": <issue_num>,
+  "issue": "<issue_num>",
   "iteration": 2,
   "findings": [
     {
@@ -150,17 +142,6 @@ The Review Ledger is a JSON file at `/tmp/codex-review-ledger-<issue_num>.json` 
       "raised_iteration": 1,
       "status": "justified",
       "resolution": "Field is validated at API boundary (middleware.ts:30), null is impossible here"
-    },
-    {
-      "id": "F3",
-      "category": "performance",
-      "severity": "low",
-      "file": "src/query.ts",
-      "line": 88,
-      "description": "N+1 query in loop",
-      "raised_iteration": 2,
-      "status": "open",
-      "resolution": null
     }
   ]
 }
@@ -208,7 +189,7 @@ options:
   - label: "Continue — fix and re-submit (Recommended)"
     description: "Claude addresses feedback and re-submits for review"
   - label: "Override — proceed to tests"
-    description: "Skip Codex findings and proceed to make test"
+    description: "Skip Codex findings and proceed to {{TEST_COMMAND}}"
   - label: "Show full Codex output"
     description: "Display the complete Codex review output"
 ```
@@ -232,21 +213,13 @@ Include the suggestion disposition in the per-iteration display (Step 3).
 
 This step is skipped entirely when the user chooses "Override" — Override supersedes all finding handling.
 
-After handling suggestions and addressing findings, Claude resumes the Codex session **by session ID**:
+After handling suggestions and addressing findings, Claude continues the Codex conversation using the stored thread ID:
 
-```bash
-set -o pipefail
-ITER=$((ITER + 1))
-echo "This is Claude (Anthropic). <respond to Codex — answer questions if asked, explain revisions if findings were raised. The review ledger at /tmp/codex-review-ledger-<issue_num>.json shows current finding statuses. Re-run git diff to see updated code. You can write verification scripts if needed.>" | \
-  codex exec \
-    $(./tools/scripts/codex-mcp-overrides.sh) \
-    --json \
-    -s workspace-write \
-    --skip-git-repo-check \
-    -o /tmp/codex-impl-review-<issue_num>-${ITER}.txt \
-    resume "$CODEX_SESSION_ID" \
-    2>/tmp/codex-impl-stderr-<issue_num>-${ITER}.txt \
-  | tee /tmp/codex-impl-events-<issue_num>-${ITER}.jsonl
+```
+mcp__codex__codex-reply({
+  threadId: "<stored_thread_id>",
+  prompt: "This is Claude (Anthropic). I've addressed your findings. The review ledger at /tmp/codex-review-ledger-<issue_num>.json shows current finding statuses. Re-run git diff to see updated code. You can write verification scripts if needed. Please re-review and update your verdict."
+})
 ```
 
 **Dialogue guidance:** This is a two-way conversation, not a one-way submission:
@@ -257,11 +230,8 @@ echo "This is Claude (Anthropic). <respond to Codex — answer questions if aske
 - Do not include review-content instructions (e.g., "re-review the ENTIRE diff", "check for X") — Codex decides what to review
 
 **Key properties:**
-- Uses `resume "$CODEX_SESSION_ID"` (NOT `resume --last`) for worktree isolation
-- `$CODEX_SESSION_ID` was captured in Step 1
-- `-o` before `resume` subcommand
-- Stderr captured to file per iteration (NOT discarded with `2>/dev/null`)
-- Per-iteration output files: `-<issue_num>-${ITER}.txt`
+- Uses `mcp__codex__codex-reply` with `threadId` to continue the conversation
+- Thread ID was captured from the initial `mcp__codex__codex` response
 - Repeat Steps 2-4 for each iteration
 
 ### Step 6: Termination

@@ -2,7 +2,7 @@
 name: issue
 description: Create new issues (PM interview) or work on existing issues. Use without arguments to create, with issue number to execute.
 argument-hint: '[issue-number]'
-allowed-tools: Read, Glob, Bash(./tools/scripts/worktree-detect.sh *), Bash(./tools/scripts/worktree-setup.sh *), Bash(./tools/scripts/tmux-session.sh *), Bash(./tools/scripts/find-plan.sh *), Bash(./tools/scripts/codex-mcp-overrides.sh), Bash(git status *), Bash(git checkout *), Bash(git pull *), Bash(git fetch *), Bash(git rebase *), Bash(git diff *), Bash(git worktree *), Bash(gh issue view * --json comments *), Bash(gh repo view *), Bash(gh pr checkout *), Bash({{SETUP_COMMAND}}), Bash(codex --version *), Bash(codex exec -s read-only *), Bash(codex exec -s workspace-write *), Bash(codex exec -c *), mcp__github__get_issue, mcp__github__create_issue, mcp__github__update_issue, mcp__github__add_issue_comment, mcp__github__search_issues, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__get_pull_request_reviews, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__pm_intelligence__get_issue_status, mcp__pm_intelligence__get_board_summary, mcp__pm_intelligence__move_issue, mcp__pm_intelligence__sync_from_github, mcp__pm_intelligence__add_dependency, mcp__pm_intelligence__triage_issue, mcp__pm_intelligence__auto_label, mcp__pm_intelligence__decompose_issue, mcp__pm_intelligence__recover_context, mcp__pm_intelligence__get_session_history, mcp__pm_intelligence__predict_completion, mcp__pm_intelligence__predict_rework, mcp__pm_intelligence__suggest_approach, mcp__pm_intelligence__get_issue_dependencies, mcp__pm_intelligence__check_readiness, mcp__pm_intelligence__detect_scope_creep, mcp__pm_intelligence__explain_delay, mcp__pm_intelligence__record_decision, mcp__pm_intelligence__get_history_insights, AskUserQuestion, EnterPlanMode, TaskOutput
+allowed-tools: Read, Glob, Bash(./tools/scripts/worktree-detect.sh *), Bash(./tools/scripts/worktree-setup.sh *), Bash(./tools/scripts/tmux-session.sh *), Bash(./tools/scripts/find-plan.sh *), Bash(git status *), Bash(git checkout *), Bash(git pull *), Bash(git fetch *), Bash(git rebase *), Bash(git diff *), Bash(git worktree *), Bash(gh issue view * --json comments *), Bash(gh repo view *), Bash(gh pr checkout *), Bash({{SETUP_COMMAND}}), Bash(codex --version *), mcp__codex__codex, mcp__codex__codex-reply, mcp__github__get_issue, mcp__github__create_issue, mcp__github__update_issue, mcp__github__add_issue_comment, mcp__github__search_issues, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__get_pull_request_reviews, mcp__context7__resolve-library-id, mcp__context7__query-docs, mcp__pm_intelligence__get_issue_status, mcp__pm_intelligence__get_board_summary, mcp__pm_intelligence__move_issue, mcp__pm_intelligence__sync_from_github, mcp__pm_intelligence__add_dependency, mcp__pm_intelligence__triage_issue, mcp__pm_intelligence__auto_label, mcp__pm_intelligence__decompose_issue, mcp__pm_intelligence__recover_context, mcp__pm_intelligence__get_session_history, mcp__pm_intelligence__predict_completion, mcp__pm_intelligence__predict_rework, mcp__pm_intelligence__suggest_approach, mcp__pm_intelligence__get_issue_dependencies, mcp__pm_intelligence__check_readiness, mcp__pm_intelligence__detect_scope_creep, mcp__pm_intelligence__explain_delay, mcp__pm_intelligence__record_decision, mcp__pm_intelligence__get_history_insights, AskUserQuestion, EnterPlanMode, TaskOutput
 ---
 
 # /issue - Issue Creation & Execution
@@ -842,12 +842,12 @@ immediately (within seconds). You do not wait for {{SETUP_COMMAND}} to finish.
 
 **If the Bash call fails or does not return a task_id:** Warn the user
 ("Background setup failed to launch, you may need to run `{{SETUP_COMMAND}}` manually")
-and set task_id to null. Continue to step 1.6 regardless — setup
+and set task_id to null. Continue to step 2 regardless — setup
 failure must never block planning.
 
 Rules:
 
-- Proceed immediately to step 1.6 after storing the task_id (or null)
+- Proceed immediately to step 2 (EnterPlanMode) after storing the task_id (or null)
 - Do NOT call TaskOutput before EnterPlanMode
 - Do NOT block planning for any reason related to setup
 - The result is checked after plan mode exits (see "After ExitPlanMode" below)
@@ -856,26 +856,26 @@ Worktree prerequisite: This step only runs when you are already in the correct
 worktree (exit 0 from Step 4.5). If Step 4.5 created a worktree and stopped, this
 step runs on the NEXT /issue <num> invocation from within the worktree.
 
-1.6. **Launch Codex Plan B (BEFORE plan mode — Bash required):**
+2. **Call EnterPlanMode tool** - Only after step 1.5 completes (task_id or null)
 
-   **⚠️ CRITICAL: This MUST happen BEFORE EnterPlanMode.** Plan mode restricts Bash,
-   and Codex launch requires Bash. This also MUST happen before Claude writes Plan A
-   (ordering-based independence).
+3. **Plan title convention:** Start the plan with `# Plan: <title> (#<issue_num>)` so plan files are discoverable by issue number via `./tools/scripts/find-plan.sh`.
+
+4. **Launch Codex Plan B (inside plan mode, BEFORE writing Plan A):**
+
+   **⚠️ This MUST happen before Claude writes Plan A.** Ordering-based independence.
+
+   Uses `mcp__codex__codex` MCP tool (works inside plan mode — no Bash needed).
 
    If `codex_available` is true:
 
    AskUserQuestion: "Ready to plan. Launch Codex for independent Plan B?"
-   - "Yes — launch Codex (Recommended)" — Run Phase 1, Step 1 of Sub-Playbook: Collaborative Planning (Codex writes Plan B to `.codex-work/plan-<issue_num>-<prefix>.md`). Then proceed to step 2.
-   - "Skip — Claude-only plan" — Proceed to step 2, skip step 6.
+   - "Yes — launch Codex (Recommended)" — Run Phase 1, Step 1 of Sub-Playbook: Collaborative Planning. Then proceed to step 5.
+   - "Skip — Claude-only plan" — Proceed to step 5, skip step 7.
 
    If `codex_available` is false:
    Display: "Codex not available — skipping collaborative planning."
 
-2. **Call EnterPlanMode tool** - Only after steps 1.5 and 1.6 complete
-
-3. **Plan title convention:** Start the plan with `# Plan: <title> (#<issue_num>)` so plan files are discoverable by issue number via `./tools/scripts/find-plan.sh`.
-
-4. **Gather planning intelligence** (inside plan mode, before writing Plan A):
+5. **Gather planning intelligence** (inside plan mode, before writing Plan A):
 
    Call these in parallel to inform the plan:
 
@@ -901,7 +901,7 @@ step runs on the NEXT /issue <num> invocation from within the worktree.
 
    **Use intelligence output to enrich the plan, not replace your judgment.** If past approaches failed in this area, call that out. If rework probability is >50%, add a "Risk Mitigation" section.
 
-5. In plan mode, create Plan A that includes:
+6. In plan mode, create Plan A that includes:
    - Acceptance criteria as checkboxes
    - **AC Traceability Table** (see below) — maps each criterion to implementation files and tests
    - Non-goals as DO NOT constraints
@@ -912,9 +912,9 @@ step runs on the NEXT /issue <num> invocation from within the worktree.
    - **Risk flags** from `predict_rework` (if probability >50%)
    - **Scope boundary check** (see below)
 
-6. **Collaborative Planning: Refinement (after Plan A is written):**
+7. **Collaborative Planning: Refinement (after Plan A is written):**
 
-   If collaborative planning was launched in step 1.6:
+   If collaborative planning was launched in step 4:
 
    **⚠️ Refinement iterations use `mcp__codex__codex` MCP tool (works inside plan mode), NOT `codex exec` via Bash.**
 
@@ -931,9 +931,9 @@ step runs on the NEXT /issue <num> invocation from within the worktree.
    })
    ```
 
-   If skipped in step 1.6: skip this step.
+   If skipped in step 4: skip this step.
 
-7. Present the final plan to user for approval via ExitPlanMode
+8. Present the final plan to user for approval via ExitPlanMode
 
    Only start implementing when user approves.
 
@@ -1064,18 +1064,19 @@ Same as START mode step 1.5. Call the Bash tool with:
 Store the returned task_id for checking after plan mode exits. If the call fails
 or returns no task_id, set task_id to null, warn the user, and continue.
 
-3.6. **Launch Codex Plan B (BEFORE plan mode — Bash required):**
-
-   Same pattern as START mode step 1.6. **⚠️ This MUST happen BEFORE EnterPlanMode.**
-   Plan mode restricts Bash, and Codex launch requires Bash.
-
-   If `codex_available` is true, AskUserQuestion to launch Codex for independent Plan B
-   or skip. Codex writes Plan B before Claude writes Plan A.
-
 4. **Call EnterPlanMode tool** - Re-enter plan mode to re-ground in requirements.
-   Only after steps 3.5 and 3.6 complete.
+   Only after step 3.5 completes (task_id or null).
 
-5. In plan mode, write Plan A showing:
+5. **Launch Codex Plan B (inside plan mode, BEFORE writing Plan A):**
+
+   **⚠️ This MUST happen before Claude writes Plan A.** Ordering-based independence.
+
+   Uses `mcp__codex__codex` MCP tool (works inside plan mode — no Bash needed).
+
+   Same pattern as START mode step 4. If `codex_available` is true, AskUserQuestion to
+   launch Codex for independent Plan B or skip. Codex writes Plan B before Claude writes Plan A.
+
+6. In plan mode, write Plan A showing:
    - Acceptance criteria with current status (done/remaining)
    - Non-goals as DO NOT constraints
    - Inline policy snippets
@@ -1084,13 +1085,13 @@ or returns no task_id, set task_id to null, warn the user, and continue.
    - What remains to be done
    - **Scope drift check** (see below)
 
-6. **Collaborative Planning: Refinement (after Plan A is written):**
+7. **Collaborative Planning: Refinement (after Plan A is written):**
 
-   Same as START mode step 6. If collaborative planning was launched in step 3.6,
+   Same as START mode step 7. If collaborative planning was launched in step 5,
    use `mcp__codex__codex` MCP tool for refinement iterations (works inside plan mode).
    Run Phases 2-3 of Sub-Playbook: Collaborative Planning. If skipped, skip this step.
 
-7. Present the final plan to user for approval via ExitPlanMode
+8. Present the final plan to user for approval via ExitPlanMode
 
    Only continue implementing when user approves.
 
@@ -1308,11 +1309,8 @@ export PATH="./tools/scripts:$PATH" && pm <command>
 - `mcp__github__add_issue_comment` - Post comments
 - Git operations: status, checkout, pull, fetch, rebase, worktree
 - `codex --version` - Check Codex CLI availability
-- `./tools/scripts/codex-mcp-overrides.sh` - Emit `-c` flags to inject MCP servers into codex exec
-- `codex exec $(./tools/scripts/codex-mcp-overrides.sh) -s workspace-write ... "Write an implementation plan for issue #<num>. Save to .codex-work/plan-<num>-<prefix>.md"` - Codex independent plan writing (collaborative planning Phase 1)
-- `codex exec $(./tools/scripts/codex-mcp-overrides.sh) -s read-only ... "Review my updated plan for issue #<num> at <path>. I incorporated [X, Y] from your plan..."` - Codex iterative review (collaborative planning Phase 3, fresh session each round)
-- `codex exec $(./tools/scripts/codex-mcp-overrides.sh) -s workspace-write ... "You are an adversarial code reviewer for issue #<num>..."` - Codex implementation review (can write tests/verification scripts)
-- `codex exec $(./tools/scripts/codex-mcp-overrides.sh) -s workspace-write ... resume "$CODEX_SESSION_ID"` - Resume Codex implementation review session (dialogue)
+- `mcp__codex__codex({ prompt, sandbox, cwd })` - Launch Codex session (collaborative planning Phase 1, implementation review)
+- `mcp__codex__codex-reply({ threadId, prompt })` - Continue Codex conversation (implementation review dialogue)
 - `/pm-review <pr-or-issue-number>` - Self-review before Review transition (ANALYSIS_ONLY action)
 
 **Print-only (user must run):**

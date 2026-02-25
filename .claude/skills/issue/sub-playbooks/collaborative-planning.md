@@ -7,8 +7,17 @@ Independent plan generation by both Claude and Codex, followed by iterative refi
 ## Prerequisites
 
 - `codex_available` is true
-- Inside plan mode, BEFORE Claude writes Plan A
+- BEFORE EnterPlanMode (Phase 1 requires Bash for directory setup)
 - Issue context loaded (issue body, acceptance criteria, non-goals)
+
+## Tool Choice: MCP vs CLI
+
+All Codex interactions use the **MCP tools** (`mcp__codex__codex` and `mcp__codex__codex-reply`), NOT `codex exec` via Bash. Benefits:
+
+- No shell quoting issues (spaces in paths, special characters in prompts)
+- No dependency on `codex-mcp-overrides.sh`
+- Works inside plan mode (MCP tools aren't restricted like Bash)
+- Structured parameters instead of CLI flag parsing
 
 ## Overview
 
@@ -24,48 +33,29 @@ Three phases:
 
 ### Step 1: Launch Codex Plan B
 
-This runs inside plan mode, BEFORE Claude writes the plan file. Claude has loaded context (issue, docs, codebase) but has NOT yet written anything to the plan file.
+This runs BEFORE EnterPlanMode. Claude has loaded context (issue, docs, codebase) but has NOT yet written anything to the plan file.
 
-1. Ensure `.codex-work/` directory exists and generate a unique prefix:
+1. Ensure `.codex-work/` directory exists (requires Bash, so do this before plan mode):
 
 ```bash
 mkdir -p .codex-work
-PLAN_B_PREFIX=$(uuidgen | tr -d '-' | head -c 8)
 ```
 
-2. Launch Codex (fresh session, `-s workspace-write`):
+2. Launch Codex via MCP tool (`workspace-write` sandbox):
 
-```bash
-set -o pipefail
-codex exec $(./tools/scripts/codex-mcp-overrides.sh) --json -s workspace-write --skip-git-repo-check \
-  -o /tmp/codex-collab-output-<issue_num>.txt \
-  "Write an implementation plan for issue #<issue_num>. Save to .codex-work/plan-<issue_num>-${PLAN_B_PREFIX}.md" \
-  2>/tmp/codex-collab-stderr-<issue_num>.txt \
-  | tee /tmp/codex-collab-events-<issue_num>.jsonl
 ```
+mcp__codex__codex({
+  prompt: "Write an implementation plan for issue #<issue_num>. Read the issue at https://github.com/<owner>/<repo>/issues/<issue_num> or via gh CLI. Analyze the codebase, then save your plan to .codex-work/plan-<issue_num>.md",
+  sandbox: "workspace-write",
+  cwd: "<repo_root>"
+})
+```
+
+The MCP tool returns the Codex response and a `threadId`. Store the `threadId` for potential follow-up.
 
 3. Check for failures:
-   - Non-zero exit via `PIPESTATUS[0]`
-   - Missing or empty Plan B file (`.codex-work/plan-<issue_num>-${PLAN_B_PREFIX}.md`)
-   - 0-byte `-o` output (context exhaustion)
-
-**Stderr capture (inline, no rerun):** Stderr is redirected to a file on the first run — never suppressed, never requires a rerun. On non-zero exit, read the stderr file for the "Show error" option.
-
-```bash
-set -o pipefail
-codex exec $(./tools/scripts/codex-mcp-overrides.sh) --json -s workspace-write --skip-git-repo-check \
-  -o /tmp/codex-collab-output-<issue_num>.txt \
-  "Write an implementation plan for issue #<issue_num>. Save to .codex-work/plan-<issue_num>-${PLAN_B_PREFIX}.md" \
-  2>/tmp/codex-collab-stderr-<issue_num>.txt \
-  | tee /tmp/codex-collab-events-<issue_num>.jsonl
-CODEX_EXIT=${PIPESTATUS[0]}
-if [ $CODEX_EXIT -ne 0 ]; then
-  CODEX_STDERR=$(cat /tmp/codex-collab-stderr-<issue_num>.txt)
-  # Display CODEX_STDERR in "Show error" option
-fi
-```
-
-**NEVER rerun `codex exec -s workspace-write` to capture stderr.** A rerun can mutate state (create duplicate plan files). Always capture stderr from the original invocation via file redirect.
+   - MCP tool returns an error
+   - Plan B file (`.codex-work/plan-<issue_num>.md`) is missing or empty after Codex completes
 
 On failure: AskUserQuestion with options:
 
@@ -77,11 +67,11 @@ Do NOT auto-fall back on failure.
 
 ### Step 2: Claude Writes Plan A
 
-After Codex completes successfully, Claude writes Plan A to the standard plan file (`.claude/plans/`). Claude writes Plan A WITHOUT reading Plan B first — this preserves independence.
+After Codex completes successfully and EnterPlanMode is called, Claude writes Plan A to the standard plan file (`.claude/plans/`). Claude writes Plan A WITHOUT reading Plan B first — this preserves independence.
 
 ### Step 3: Read Plan B and Extract Questions
 
-After both plans exist, Claude reads Plan B from `.codex-work/plan-<issue_num>-${PLAN_B_PREFIX}.md` and the `-o` output file. Extract any questions Codex surfaced about spec ambiguity.
+After both plans exist, Claude reads Plan B from `.codex-work/plan-<issue_num>.md`. Extract any questions Codex surfaced about spec ambiguity.
 
 **Independence guarantee (START mode):** Ordering-based. Codex writes Plan B first — Plan A does not exist on disk. After Codex finishes, Claude writes Plan A without reading Plan B. Neither agent sees the other's plan before writing their own.
 
@@ -106,7 +96,7 @@ The Plan Ledger is a JSON file at `/tmp/codex-plan-ledger-<issue_num>.json` that
 
 ```json
 {
-  "issue": <issue_num>,
+  "issue": "<issue_num>",
   "iterations": 0,
   "items": [
     {
@@ -126,15 +116,6 @@ The Plan Ledger is a JSON file at `/tmp/codex-plan-ledger-<issue_num>.json` that
       "section": "Performance",
       "status": "rejected",
       "reason": "Out of scope — no caching in acceptance criteria"
-    },
-    {
-      "id": "P3",
-      "source": "codex",
-      "iteration": 2,
-      "proposal": "Split migration into two steps",
-      "section": "Implementation",
-      "status": "open",
-      "reason": null
     }
   ]
 }
@@ -149,21 +130,18 @@ The Plan Ledger is a JSON file at `/tmp/codex-plan-ledger-<issue_num>.json` that
 1. Claude reads both plans and incorporates good ideas from Plan B into Plan A
 2. Claude updates the plan file on disk
 3. Claude updates the Plan Ledger — marking items as `accepted` or `rejected` with reasons
-4. Claude prompts Codex (fresh session, `-s read-only`), including the ledger:
+4. Claude prompts Codex (fresh session, `read-only` sandbox) via MCP tool:
 
-```bash
-set -o pipefail
-COLLAB_ITER=1  # Increment each iteration
-codex exec $(./tools/scripts/codex-mcp-overrides.sh) --json -s read-only --skip-git-repo-check \
-  -o /tmp/codex-collab-review-<issue_num>-${COLLAB_ITER}.txt \
-  "Review my updated plan for issue #<issue_num> at <plan_a_path>. The decision ledger at /tmp/codex-plan-ledger-<issue_num>.json shows what has already been proposed, accepted, and rejected. Do NOT re-propose rejected items. If you have NEW suggestions, propose them. If all your concerns are addressed, respond with CONVERGED. Otherwise list your specific change proposals." \
-  2>/tmp/codex-collab-stderr-<issue_num>-${COLLAB_ITER}.txt \
-  | tee /tmp/codex-collab-events-<issue_num>-${COLLAB_ITER}.jsonl
+```
+mcp__codex__codex({
+  prompt: "Review my updated plan for issue #<issue_num> at <plan_a_path>. The decision ledger at /tmp/codex-plan-ledger-<issue_num>.json shows what has already been proposed, accepted, and rejected. Do NOT re-propose rejected items. If you have NEW suggestions, propose them. If all your concerns are addressed, respond with CONVERGED. Otherwise list your specific change proposals.",
+  sandbox: "read-only",
+  cwd: "<repo_root>"
+})
 ```
 
-5. Read Codex's response from `-o` output
-6. Parse new proposals from Codex's response, add them to the ledger as `open`
-7. Check for failures (same pattern as Phase 1 Step 1.3)
+5. Parse Codex's response for new proposals or CONVERGED signal
+6. Add new proposals to the ledger as `open`
 
 ### Step 2: Per-Iteration Display
 
@@ -219,14 +197,7 @@ On "Show full ledger": Display the JSON ledger formatted as a table, then re-pro
 After convergence (or user override), clean up Plan B artifacts to prevent confusion in later phases:
 
 ```bash
-# Remove Plan B file (no longer needed — its ideas are incorporated into Plan A)
-rm -f .codex-work/plan-<issue_num>-*.md
-# Remove temp files (all per-iteration outputs, stderr, and events)
-rm -f /tmp/codex-collab-output-<issue_num>.txt
-rm -f /tmp/codex-collab-events-<issue_num>*.jsonl
-rm -f /tmp/codex-collab-review-<issue_num>*.txt
-rm -f /tmp/codex-collab-stderr-<issue_num>*.txt
-# Remove plan ledger (decisions are captured in Plan A)
+rm -f .codex-work/plan-<issue_num>*.md
 rm -f /tmp/codex-plan-ledger-<issue_num>.json
 ```
 
@@ -240,10 +211,11 @@ User can override at any iteration display (Step 2) by choosing to accept or swi
 
 | Property                        | Detail                                                                                                                 |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **Fresh sessions**              | Each Codex call is a new `codex exec` invocation. Context passed in the prompt. No `resume` sessions.                  |
+| **MCP tools**                   | All Codex calls use `mcp__codex__codex` / `mcp__codex__codex-reply`. No `codex exec` via Bash.                         |
+| **Fresh sessions**              | Each Codex call is a new `mcp__codex__codex` invocation. Context passed in the prompt.                                 |
 | **No user arbitration**         | Agents iterate until Codex agrees. User only sees the final result via ExitPlanMode. User CAN override at checkpoints. |
 | **Ordering-based independence** | Codex writes Plan B first. Plan A doesn't exist when Codex runs.                                                       |
 | **One canonical plan**          | Claude's plan evolves. No separate "merged plan."                                                                      |
-| **Sandbox modes**               | `-s workspace-write` for Plan B creation. `-s read-only` for plan iterations.                                          |
+| **Sandbox modes**               | `workspace-write` for Plan B creation. `read-only` for plan iterations.                                                |
 | **Plan Ledger**                 | JSON file tracking proposals across iterations. Prevents re-litigation of settled decisions.                            |
-| **Plan B location**             | `.codex-work/plan-<issue_num>-<prefix>.md` — gitignored, outside `find-plan.sh` scope.                                 |
+| **Plan B location**             | `.codex-work/plan-<issue_num>.md` — gitignored, outside `find-plan.sh` scope.                                          |
