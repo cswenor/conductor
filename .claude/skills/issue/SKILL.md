@@ -842,12 +842,12 @@ immediately (within seconds). You do not wait for {{SETUP_COMMAND}} to finish.
 
 **If the Bash call fails or does not return a task_id:** Warn the user
 ("Background setup failed to launch, you may need to run `{{SETUP_COMMAND}}` manually")
-and set task_id to null. Continue to step 2 (EnterPlanMode) regardless — setup
+and set task_id to null. Continue to step 1.6 regardless — setup
 failure must never block planning.
 
 Rules:
 
-- Proceed immediately to step 2 (EnterPlanMode) after storing the task_id (or null)
+- Proceed immediately to step 1.6 after storing the task_id (or null)
 - Do NOT call TaskOutput before EnterPlanMode
 - Do NOT block planning for any reason related to setup
 - The result is checked after plan mode exits (see "After ExitPlanMode" below)
@@ -856,24 +856,26 @@ Worktree prerequisite: This step only runs when you are already in the correct
 worktree (exit 0 from Step 4.5). If Step 4.5 created a worktree and stopped, this
 step runs on the NEXT /issue <num> invocation from within the worktree.
 
-2. **Call EnterPlanMode tool** - Only after step 1.5 completes (task_id or null)
+1.6. **Launch Codex Plan B (BEFORE plan mode — Bash required):**
 
-3. **Plan title convention:** Start the plan with `# Plan: <title> (#<issue_num>)` so plan files are discoverable by issue number via `./tools/scripts/find-plan.sh`.
-
-4. **Launch Codex Plan B (inside plan mode, BEFORE writing Plan A):**
-
-   **⚠️ This MUST happen before Claude writes Plan A.** Ordering-based independence.
+   **⚠️ CRITICAL: This MUST happen BEFORE EnterPlanMode.** Plan mode restricts Bash,
+   and Codex launch requires Bash. This also MUST happen before Claude writes Plan A
+   (ordering-based independence).
 
    If `codex_available` is true:
 
    AskUserQuestion: "Ready to plan. Launch Codex for independent Plan B?"
-   - "Yes — launch Codex (Recommended)" — Run Phase 1, Step 1 of Sub-Playbook: Collaborative Planning (Codex writes Plan B to `.codex-work/plan-<issue_num>-<prefix>.md`). Then proceed to step 5.
-   - "Skip — Claude-only plan" — Proceed to step 5, skip step 6.
+   - "Yes — launch Codex (Recommended)" — Run Phase 1, Step 1 of Sub-Playbook: Collaborative Planning (Codex writes Plan B to `.codex-work/plan-<issue_num>-<prefix>.md`). Then proceed to step 2.
+   - "Skip — Claude-only plan" — Proceed to step 2, skip step 6.
 
    If `codex_available` is false:
    Display: "Codex not available — skipping collaborative planning."
 
-5. **Gather planning intelligence** (inside plan mode, before writing Plan A):
+2. **Call EnterPlanMode tool** - Only after steps 1.5 and 1.6 complete
+
+3. **Plan title convention:** Start the plan with `# Plan: <title> (#<issue_num>)` so plan files are discoverable by issue number via `./tools/scripts/find-plan.sh`.
+
+4. **Gather planning intelligence** (inside plan mode, before writing Plan A):
 
    Call these in parallel to inform the plan:
 
@@ -899,7 +901,7 @@ step runs on the NEXT /issue <num> invocation from within the worktree.
 
    **Use intelligence output to enrich the plan, not replace your judgment.** If past approaches failed in this area, call that out. If rework probability is >50%, add a "Risk Mitigation" section.
 
-6. In plan mode, create Plan A that includes:
+5. In plan mode, create Plan A that includes:
    - Acceptance criteria as checkboxes
    - **AC Traceability Table** (see below) — maps each criterion to implementation files and tests
    - Non-goals as DO NOT constraints
@@ -912,12 +914,24 @@ step runs on the NEXT /issue <num> invocation from within the worktree.
 
 6. **Collaborative Planning: Refinement (after Plan A is written):**
 
-   If collaborative planning was launched in step 4:
+   If collaborative planning was launched in step 1.6:
+
+   **⚠️ Refinement iterations use `mcp__codex__codex` MCP tool (works inside plan mode), NOT `codex exec` via Bash.**
+
    Run Phases 2-3 of Sub-Playbook: Collaborative Planning
    (Questions with recommendations, then Iterative Refinement until convergence)
    Update the plan file with any revisions made during refinement.
 
-   If skipped in step 4: skip this step.
+   For Phase 3 Codex calls, use:
+   ```
+   mcp__codex__codex({
+     prompt: "Review my updated plan for issue #<num> at <plan_a_path>. The decision ledger at /tmp/codex-plan-ledger-<num>.json shows what has already been proposed, accepted, and rejected. Do NOT re-propose rejected items. If you have NEW suggestions, propose them. If all your concerns are addressed, respond with CONVERGED.",
+     sandbox: "read-only",
+     cwd: "<repo_root>"
+   })
+   ```
+
+   If skipped in step 1.6: skip this step.
 
 7. Present the final plan to user for approval via ExitPlanMode
 
@@ -1050,13 +1064,18 @@ Same as START mode step 1.5. Call the Bash tool with:
 Store the returned task_id for checking after plan mode exits. If the call fails
 or returns no task_id, set task_id to null, warn the user, and continue.
 
-4. **Call EnterPlanMode tool** - Re-enter plan mode to re-ground in requirements
+3.6. **Launch Codex Plan B (BEFORE plan mode — Bash required):**
 
-5. **Launch Codex Plan B (inside plan mode, BEFORE writing Plan A):**
+   Same pattern as START mode step 1.6. **⚠️ This MUST happen BEFORE EnterPlanMode.**
+   Plan mode restricts Bash, and Codex launch requires Bash.
 
-   Same pattern as START mode step 4. If `codex_available` is true, AskUserQuestion to launch Codex for independent Plan B or skip. Codex writes Plan B before Claude writes Plan A.
+   If `codex_available` is true, AskUserQuestion to launch Codex for independent Plan B
+   or skip. Codex writes Plan B before Claude writes Plan A.
 
-6. In plan mode, write Plan A showing:
+4. **Call EnterPlanMode tool** - Re-enter plan mode to re-ground in requirements.
+   Only after steps 3.5 and 3.6 complete.
+
+5. In plan mode, write Plan A showing:
    - Acceptance criteria with current status (done/remaining)
    - Non-goals as DO NOT constraints
    - Inline policy snippets
@@ -1065,11 +1084,13 @@ or returns no task_id, set task_id to null, warn the user, and continue.
    - What remains to be done
    - **Scope drift check** (see below)
 
-7. **Collaborative Planning: Refinement (after Plan A is written):**
+6. **Collaborative Planning: Refinement (after Plan A is written):**
 
-   Same as START mode step 6. If collaborative planning was launched in step 5, run Phases 2-3 of Sub-Playbook: Collaborative Planning. If skipped, skip this step.
+   Same as START mode step 6. If collaborative planning was launched in step 3.6,
+   use `mcp__codex__codex` MCP tool for refinement iterations (works inside plan mode).
+   Run Phases 2-3 of Sub-Playbook: Collaborative Planning. If skipped, skip this step.
 
-8. Present the final plan to user for approval via ExitPlanMode
+7. Present the final plan to user for approval via ExitPlanMode
 
    Only continue implementing when user approves.
 
