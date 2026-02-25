@@ -25,15 +25,30 @@ const execFileAsync = promisify(execFile);
 let _db: Database.Database | null = null;
 let _dbPath: string | null = null;
 
-/** Get the repo root (cached) */
+/**
+ * Get the main repo root (cached).
+ * In git worktrees, --show-toplevel returns the worktree root, but .pm/
+ * lives in the main repo. Use --git-common-dir to find the main repo.
+ */
 let _repoRoot: string | null = null;
 async function getRepoRoot(): Promise<string> {
   if (_repoRoot) return _repoRoot;
-  const { stdout } = await execFileAsync("git", [
+  const { stdout: commonDir } = await execFileAsync("git", [
     "rev-parse",
-    "--show-toplevel",
+    "--git-common-dir",
   ]);
-  _repoRoot = stdout.trim();
+  const trimmed = commonDir.trim();
+  if (trimmed === ".git") {
+    // In main repo — use --show-toplevel
+    const { stdout } = await execFileAsync("git", [
+      "rev-parse",
+      "--show-toplevel",
+    ]);
+    _repoRoot = stdout.trim();
+  } else {
+    // In a worktree — commonDir is <main-repo>/.git, go up one level
+    _repoRoot = join(trimmed, "..");
+  }
   return _repoRoot;
 }
 

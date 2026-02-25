@@ -2,14 +2,34 @@
 # pm — CLI wrapper for PM Intelligence
 # Delegates to tools/mcp/pm-intelligence/build/cli.js
 # Installed by claude-pm-toolkit
+#
+# In git worktrees, node_modules lives in the main repo (gitignored).
+# This script always runs the main repo's CLI so node_modules resolves.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLI="$SCRIPT_DIR/../mcp/pm-intelligence/build/cli.js"
+set -euo pipefail
+
+# Find main repo root (works from worktrees and main repo alike)
+if command -v git &>/dev/null; then
+  COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || echo "")"
+  if [[ -n "$COMMON_DIR" && "$COMMON_DIR" != ".git" ]]; then
+    # In a worktree — COMMON_DIR is <main-repo>/.git
+    MAIN_ROOT="$(cd "$COMMON_DIR/.." && pwd)"
+  else
+    # In main repo — resolve from script location
+    MAIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  fi
+else
+  MAIN_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+fi
+
+CLI="$MAIN_ROOT/tools/mcp/pm-intelligence/build/cli.js"
 
 if [[ ! -f "$CLI" ]]; then
   echo "Error: PM CLI not found at $CLI" >&2
-  echo "Run: cd tools/mcp/pm-intelligence && npm run build" >&2
+  echo "Run: cd $MAIN_ROOT/tools/mcp/pm-intelligence && npm run build" >&2
   exit 1
 fi
 
+# Execute from the main repo's MCP directory so node resolves node_modules
+cd "$MAIN_ROOT/tools/mcp/pm-intelligence"
 exec node "$CLI" "$@"
