@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # tmux-session.sh - Portfolio orchestrator for parallel Claude Code development
@@ -77,13 +77,13 @@ seconds_since() {
   local now
   now=$(date -u +%s)
   # macOS date -j -f for parsing ISO timestamps
-  local then
+  local past_ts
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    then=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null || echo "$now")
+    past_ts=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null || echo "$now")
   else
-    then=$(date -d "$ts" +%s 2>/dev/null || echo "$now")
+    past_ts=$(date -d "$ts" +%s 2>/dev/null || echo "$now")
   fi
-  echo $(( now - then ))
+  echo $(( now - past_ts ))
 }
 
 # --- Shared helpers ---
@@ -225,8 +225,11 @@ cmd_start() {
   fi
 
   # Determine repo root (works from any worktree)
+  if ! git rev-parse --git-dir &>/dev/null; then
+    die "Not in a git repository. Run from your project directory."
+  fi
   local repo_root
-  repo_root=$(git rev-parse --git-common-dir 2>/dev/null | xargs dirname)
+  repo_root=$(git rev-parse --git-common-dir | xargs dirname)
   repo_root=$(realpath "$repo_root")
 
   # Determine worktree path
@@ -265,7 +268,7 @@ cmd_start() {
   #   3. Evals port isolation exports
   #   4. Starts claude interactively
   tmux new-window -t "$SESSION_NAME" -n "$window_name" \
-    "export CND_ISSUE_NUM=$issue_num; cd $worktree_path && eval \"\$(./tools/scripts/worktree-setup.sh $issue_num --print-env)\" && claude; echo 'Claude exited. Press enter to close.'; read"
+    "export CND_ISSUE_NUM='${issue_num}'; cd '${worktree_path}' && eval \"\$(./tools/scripts/worktree-setup.sh '${issue_num}' --print-env)\" && claude; echo 'Claude exited. Press enter to close.'; read"
 
   # Best-effort PID capture (the shell running in tmux)
   # We write "pending" and let the first hook event confirm it's alive
@@ -545,7 +548,7 @@ EOF
 # --- Main ---
 
 SUBCOMMAND="${1:-help}"
-shift 2>/dev/null || true
+[ $# -gt 0 ] && shift
 
 case "$SUBCOMMAND" in
   init-and-run) cmd_init_and_run ;;

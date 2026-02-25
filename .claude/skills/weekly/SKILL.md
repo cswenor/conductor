@@ -2,7 +2,7 @@
 name: weekly
 description: Generate AI narrative analysis from weekly JSON snapshots. Use for weekly reports, project health, or progress analysis.
 argument-hint: '[--from YYYY-MM-DD] [--to YYYY-MM-DD]'
-allowed-tools: Read, Write, Glob, Grep, Bash, AskUserQuestion, mcp__github__get_issue, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__search_issues, mcp__github__list_issues, mcp__github__list_pull_requests, mcp__github__get_pull_request_status
+allowed-tools: Read, Write, Glob, Grep, Bash, AskUserQuestion, mcp__github__get_issue, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__search_issues, mcp__github__list_issues, mcp__github__list_pull_requests, mcp__github__get_pull_request_status, mcp__pm_intelligence__get_risk_radar, mcp__pm_intelligence__generate_release_notes, mcp__pm_intelligence__get_dora_metrics, mcp__pm_intelligence__compare_estimates, mcp__pm_intelligence__detect_patterns, mcp__pm_intelligence__get_workflow_health, mcp__pm_intelligence__simulate_sprint, mcp__pm_intelligence__forecast_backlog, mcp__pm_intelligence__get_velocity, mcp__pm_intelligence__get_sprint_analytics, mcp__pm_intelligence__get_board_summary
 ---
 
 # /weekly - AI-Powered Weekly Report Analysis
@@ -50,6 +50,16 @@ Read JSON files from `reports/weekly/`:
 - If analyzing the latest report, read prior weeks to establish baseline
 - Check `reports/stats.csv` for historical metrics summary
 
+**Validate JSON files before processing:**
+
+For each JSON file loaded, verify it parses correctly. If a file is corrupt (truncated, invalid JSON), skip it with a warning rather than crashing:
+
+```
+Warning: reports/weekly/2026-02-01.json is not valid JSON — skipping.
+```
+
+If ALL files in the range are invalid, report the error and exit.
+
 If no JSON files exist:
 
 ```
@@ -61,9 +71,37 @@ or wait for the Monday morning GitHub Action to create one automatically.
 
 ---
 
+## Step 2.7: Gather PM Intelligence (Parallel with Step 3)
+
+Run these PM intelligence tools in parallel to enrich the report with live analytics:
+
+```
+mcp__pm_intelligence__get_risk_radar()
+mcp__pm_intelligence__get_dora_metrics()
+mcp__pm_intelligence__get_workflow_health()
+mcp__pm_intelligence__detect_patterns()
+mcp__pm_intelligence__get_velocity()
+mcp__pm_intelligence__get_sprint_analytics()
+mcp__pm_intelligence__compare_estimates()
+```
+
+**For the latest report only** (period ended within 7 days), also run:
+
+```
+mcp__pm_intelligence__generate_release_notes({ since: "<period_start>", until: "<period_end>" })
+mcp__pm_intelligence__forecast_backlog()
+mcp__pm_intelligence__simulate_sprint()
+```
+
+**Use intelligence output to enrich (not replace) the JSON data.** The JSON is the canonical source of truth for activity counts. Intelligence tools provide analytical context: risk scores, delivery metrics, anomalies, forecasts.
+
+**If any tool call fails**, continue without it — these are enrichment, not gates.
+
+---
+
 ## Step 3: Deep Analysis (MANDATORY before any questions)
 
-**Do the work yourself before asking the user anything.** The data is in the JSON and MD files — read it thoroughly.
+**Do the work yourself before asking the user anything.** The data is in the JSON and MD files — read it thoroughly. Use PM intelligence data from Step 2.7 to add analytical depth.
 
 ### 3a. Categorize What Actually Shipped
 
@@ -287,19 +325,50 @@ Source: `contributors` array in JSON
 - Current open work with assignees
 - Days since last update for each item
 
-**7. Risks & Concerns**
+**7. Risk Dashboard** (from `get_risk_radar` intelligence)
 
-- **Stale items** (from `staleItems` JSON array):
-  - List top 10 stalest items with days-since-update
-  - Group by area for pattern detection
-  - Severity tiers: 14-30 days (amber), 30+ days (red)
-  - Stale epics highlighted separately (they represent blocked roadmap progress)
-- Blocked items
-- Missing expected areas
-- Velocity concerns (compare to prior weeks)
+```markdown
+## Risk Dashboard
+
+**Overall Risk Score:** <score>/100 <trend arrow>
+
+| Category       | Level    | Top Concern                  | Trend |
+|---------------|----------|------------------------------|-------|
+| Delivery      | <level>  | <one-line>                   | <arrow> |
+| Quality       | <level>  | <one-line>                   | <arrow> |
+| Knowledge     | <level>  | <one-line>                   | <arrow> |
+| Process       | <level>  | <one-line>                   | <arrow> |
+| Dependencies  | <level>  | <one-line>                   | <arrow> |
+| Capacity      | <level>  | <one-line>                   | <arrow> |
+```
+
+Include mitigations for any HIGH or CRITICAL risks. Also include:
+
+- **Stale items** (from `staleItems` JSON array + `get_workflow_health`):
+  - Top 10 stalest items with days-since-update
+  - Group by area, severity tiers: 14-30 days (amber), 30+ days (red)
+- **Anomalies** (from `detect_patterns`): Early warnings and unusual patterns
+- Blocked items, missing expected areas
 - Workflow bottlenecks (items stuck in Review, Active pileup)
 
-**8. Week-over-Week Analysis**
+**8. Delivery Metrics** (from `get_dora_metrics` + `get_sprint_analytics`)
+
+```markdown
+## Delivery Metrics
+
+| Metric | This Week | Prior Week | Trend |
+|--------|-----------|------------|-------|
+| Deployment Frequency | <value> | <value> | <arrow> |
+| Lead Time (median) | <value> | <value> | <arrow> |
+| Change Failure Rate | <value> | <value> | <arrow> |
+| MTTR | <value> | <value> | <arrow> |
+| Flow Efficiency | <value> | <value> | <arrow> |
+| Rework Rate | <value> | <value> | <arrow> |
+```
+
+Also include: estimation accuracy from `compare_estimates` (predicted vs actual cycle times).
+
+**9. Week-over-Week Analysis**
 
 Compare to previous weeks:
 
@@ -308,16 +377,32 @@ Compare to previous weeks:
 - Pipeline health: Are items flowing through states or getting stuck?
 - Backlog trajectory: Is open issue count growing or shrinking?
 
-**9. Recommendations**
+**10. Forecasts** (from `forecast_backlog` + `simulate_sprint`, latest report only)
+
+```markdown
+## Forecasts
+
+**Sprint Forecast (Monte Carlo):**
+- P50: <items> items | P80: <items> items | P90: <items> items
+
+**Backlog Completion Forecast:**
+- <N> items remaining → P50: <date> | P80: <date>
+```
+
+Skip this section for historical reports (no forecast data available).
+
+**11. Recommendations**
 
 - 3-5 specific, actionable items
 - Prioritized by impact
-- Reference trends from prior weeks where relevant
+- Reference trends from prior weeks and intelligence data where relevant
+- Include risk mitigations from `get_risk_radar` if applicable
 
-**10. Appendix: Raw Metrics**
+**12. Appendix: Raw Metrics**
 
 - Full metrics table from JSON
 - Historical comparison table if prior data available
+- DORA metrics detail from `get_dora_metrics`
 
 **11. Assumptions & Unknowns** (include when assumptions were made)
 
@@ -429,8 +514,14 @@ If you are analyzing the **most recent** weekly report (i.e., the report period 
 
 ```bash
 # Get current project board state for mutable field verification
-gh project item-list 2 --owner cswenor --format json --limit 200
+gh project item-list  --owner cswenor --format json --limit 200
 ```
+
+**If the live board query fails** (token permissions, network error, project not found):
+
+- Log a warning: "Could not cross-reference live board state — using JSON snapshot as-is"
+- Continue with the JSON data for all fields
+- Note in the Appendix that live cross-referencing was unavailable
 
 If the live state contradicts the JSON for mutable fields:
 

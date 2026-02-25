@@ -1,0 +1,20 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "transcript_path": "/tmp/synthetic-session.jsonl",
+  "cwd": "/home/user/project",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo hello-world",
+    "description": "Print a test message"
+  },
+  "tool_response": {
+    "stdout": "hello-world\n",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "tool_use_id": "toolu_EXAMPLE_NOT_A_REAL_ID"
+}

@@ -52,7 +52,8 @@ server_names=$(jq -r '.mcpServers // {} | keys[]' "$MCP_JSON" 2>/dev/null) || {
   exit 0
 }
 
-for server_name in $server_names; do
+while IFS= read -r server_name; do
+  [ -z "$server_name" ] && continue
   # Extract env vars referenced by this server
   env_vars=$(jq -r --arg name "$server_name" \
     '.mcpServers[$name].env // {} | keys[]' "$MCP_JSON" 2>/dev/null) || continue
@@ -60,7 +61,8 @@ for server_name in $server_names; do
   # Check if all required env vars are set
   all_set=true
   missing_var=""
-  for var_name in $env_vars; do
+  while IFS= read -r var_name; do
+    [ -z "$var_name" ] && continue
     # Get the value template — if it references an env var (${VAR} pattern), check it
     val_template=$(jq -r --arg name "$server_name" --arg var "$var_name" \
       '.mcpServers[$name].env[$var]' "$MCP_JSON" 2>/dev/null) || continue
@@ -74,7 +76,7 @@ for server_name in $server_names; do
         break
       fi
     fi
-  done
+  done <<< "$env_vars"
 
   if ! $all_set; then
     diag "skipping $server_name ($missing_var not set)"
@@ -97,4 +99,4 @@ for server_name in $server_names; do
     echo "-c"
     echo "${server_name}=${command_val}"
   fi
-done
+done <<< "$server_names"

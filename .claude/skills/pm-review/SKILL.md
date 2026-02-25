@@ -2,7 +2,7 @@
 name: pm-review
 description: PM Reviewer persona that analyzes issues/PRs and takes action. Use when reviewing, checking completion, or validating work.
 argument-hint: '[issue-or-pr-number]'
-allowed-tools: Read, Grep, Bash(./tools/scripts/*), Bash(gh issue view *), Bash(gh pr view *), Bash(gh api *), Bash(gh repo view *), Bash(git checkout *), Bash(git pull *), Bash(git show *), Bash(git diff *), mcp__github__get_issue, mcp__github__search_issues, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__get_pull_request_comments, mcp__github__create_pull_request_review, mcp__github__merge_pull_request, mcp__github__add_issue_comment, AskUserQuestion
+allowed-tools: Read, Grep, Bash(./tools/scripts/*), Bash(gh issue view *), Bash(gh pr view *), Bash(gh api *), Bash(gh repo view *), Bash(git checkout *), Bash(git pull *), Bash(git show *), Bash(git diff *), Bash(git rev-parse *), mcp__github__get_issue, mcp__github__search_issues, mcp__github__get_pull_request, mcp__github__get_pull_request_files, mcp__github__get_pull_request_comments, mcp__github__get_pull_request_status, mcp__github__create_pull_request_review, mcp__github__merge_pull_request, mcp__github__add_issue_comment, mcp__pm_intelligence__review_pr, mcp__pm_intelligence__analyze_pr_impact, mcp__pm_intelligence__get_knowledge_risk, mcp__pm_intelligence__predict_rework, mcp__pm_intelligence__record_review_outcome, mcp__pm_intelligence__record_outcome, mcp__pm_intelligence__get_review_calibration, mcp__pm_intelligence__check_readiness, AskUserQuestion
 ---
 
 # /pm-review - PM Reviewer Persona
@@ -172,6 +172,26 @@ Input: $ARGUMENTS
    ```
 6. **Read existing feedback before forming your own opinion.** If someone already reviewed and found issues, verify those issues are addressed.
 
+### PM Intelligence Enrichment (both paths, parallel with above)
+
+Run these intelligence tools to enrich the review context:
+
+```
+mcp__pm_intelligence__review_pr({ prNumber: <pr_number> })
+mcp__pm_intelligence__analyze_pr_impact({ prNumber: <pr_number> })
+mcp__pm_intelligence__predict_rework({ issueNumber: <issue_number> })
+mcp__pm_intelligence__get_knowledge_risk()
+```
+
+- `review_pr`: Structured file classification, scope check, risk assessment, automated verdict
+- `analyze_pr_impact`: Blast radius — dependency impact, knowledge risk, coupling analysis
+- `predict_rework`: Historical rework probability for this type of issue
+- `get_knowledge_risk`: Bus factor and code ownership context
+
+**Use intelligence output to inform (not replace) your manual review.** The tools provide data; you provide judgment. If the automated verdict differs from your analysis, investigate why.
+
+**If any tool call fails**, continue without it — these are enrichment, not gates.
+
 ---
 
 ## Step 2: Handle PR Count
@@ -185,7 +205,11 @@ Input: $ARGUMENTS
 
 ### 1 PR Found:
 
-- Proceed with normal review flow (Step 3)
+- **Check if PR is a draft** via `mcp__github__get_pull_request` (look for `isDraft: true`)
+- If draft: display "PR #X is a draft. Draft PRs are not ready for review." AskUserQuestion:
+  - `ANALYSIS_ONLY` - "Show analysis anyway (draft status noted)"
+  - `SKIP` - "Skip review until PR is ready"
+- If not draft: proceed with normal review flow (Step 3)
 
 ### Multiple PRs Found:
 
@@ -208,7 +232,8 @@ Before reviewing code, verify the PM process was followed and **FIX any violatio
 
 ### 2. Issue is in correct workflow state
 
-- Check with: `./tools/scripts/project-status.sh <issue_number>`
+- Check with: `pm status <issue_number>`
+- **If the command fails** (database not synced, issue not found): Note "Unable to verify workflow state — run `pm sync` first" and continue
 - If PR is open but issue is in Backlog/Ready → Move issue to Review
 - If PR is merged but issue is in Review → Move issue to Done
 - If issue is in Active but no PR exists → Note this is expected (work in progress)
@@ -216,7 +241,7 @@ Before reviewing code, verify the PM process was followed and **FIX any violatio
 ### 3. Issue was properly tracked
 
 - Check issue has area label → If missing, add based on changed files
-- Check issue is in project → If missing, add with `./tools/scripts/project-add.sh`
+- Check issue is in project → If missing, add with `pm add`
 
 ### 4. PR follows conventions
 
@@ -240,8 +265,17 @@ For each violation found:
 1. Get changed files via `mcp__github__get_pull_request_files`
 2. Review PR diff against acceptance criteria
 3. Read the relevant files to understand the changes
-4. Check CI status by examining PR status checks
-5. **Run Critical Analysis Checklist** (see below)
+4. **Check CI status** via `mcp__github__get_pull_request_status`:
+   ```
+   mcp__github__get_pull_request_status {
+     owner: "cswenor",
+     repo: "conductor",
+     pull_number: <pr_number>
+   }
+   ```
+   Note: CI passing is necessary but NOT sufficient. Record CI state for the verdict.
+5. **Check for AC Traceability Table** — if the linked issue has a plan (search comments for "AC Traceability" or check `.claude/plans/`), use it as a verification checklist. This is the structural bridge between planning and review.
+6. **Run Critical Analysis Checklist** (see below)
 
 ### If PR is MERGED:
 
@@ -640,7 +674,7 @@ Execute these steps in order:
 3. **Move issue to Done:**
 
    ```bash
-   ./tools/scripts/project-move.sh <issue_number> Done
+   pm move <issue_number> Done
    ```
 
 4. **Verify issue closed:**
@@ -671,12 +705,25 @@ Execute these steps in order:
 7. **Sync local repo with merged changes:**
 
    ```bash
-   # Switch to main and pull the merged changes
+   # Detect if we're in a worktree or main repo
+   GIT_COMMON=$(git rev-parse --git-common-dir)
+   IS_WORKTREE=false
+   if [ "$GIT_COMMON" != ".git" ] && [ "$GIT_COMMON" != "$(git rev-parse --git-dir)" ]; then
+     IS_WORKTREE=true
+   fi
+
    DEFAULT=$(gh repo view --json defaultBranchRef -q .defaultBranchRef.name)
-   git checkout "$DEFAULT" && git pull
+
+   if [ "$IS_WORKTREE" = "true" ]; then
+     # In a worktree: fetch only (can't checkout main — that's the main repo's branch)
+     git fetch origin "$DEFAULT"
+   else
+     # In main repo: switch to main and pull
+     git checkout "$DEFAULT" && git pull
+   fi
    ```
 
-   This ensures the local repo is up-to-date with the merge before any subsequent work.
+   **Why worktree-safe:** In a worktree, `git checkout main` fails because main is checked out in the main repo. Worktrees can only fetch; the cleanup step (Step 8) handles switching back to the main repo if needed.
 
 8. **Worktree cleanup (optional, only when in worktree):**
 
@@ -812,13 +859,35 @@ Execute these steps in order:
    }
    ```
 
-3. **Move issue to Rework:** `./tools/scripts/project-move.sh <issue_number> Rework`
+3. **Move issue to Rework:** `pm move <issue_number> Rework`
 
 ### FIX_PM_ISSUES
 
 1. Move issue to correct workflow state as needed
 2. Post comments explaining what was fixed
 3. Continue to code review
+
+### Record Review Intelligence (ALL actions)
+
+After executing any action above, record the outcome for learning:
+
+```
+mcp__pm_intelligence__record_review_outcome({
+  prNumber: <pr_number>,
+  verdict: "<APPROVED|CHANGES_NEEDED>",
+  findingsCount: <number>,
+  blockingCount: <number>
+})
+
+mcp__pm_intelligence__record_outcome({
+  issueNumber: <issue_number>,
+  result: "<merged|rework|abandoned>",
+  approachSummary: "<one-line summary>",
+  reviewRounds: <number>
+})
+```
+
+This feeds the review calibration system (`get_review_calibration`) so future reviews learn from past accuracy. Skip silently if either call fails.
 
 ---
 

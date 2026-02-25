@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # worktree-detect.sh - Detect worktree status for an issue
@@ -12,9 +12,36 @@ set -euo pipefail
 #
 # Usage: worktree-detect.sh <issue-number>
 
+show_help() {
+  cat <<'HELPEOF'
+worktree-detect.sh - Detect worktree status for an issue
+
+USAGE
+  worktree-detect.sh <issue-number>
+
+EXIT CODES
+  0 - In correct worktree for this issue (prints "in_correct_worktree")
+  1 - In main repo, no worktree exists (prints "no_worktree")
+  2 - Worktree exists elsewhere (prints absolute path)
+  3 - In a different worktree (prints "in_different_worktree")
+  4 - Broken worktree - metadata exists but directory missing (prints "broken:<path>")
+
+EXAMPLES
+  worktree-detect.sh 294
+  if worktree-detect.sh 294; then echo "Ready to work"; fi
+HELPEOF
+}
+
 ISSUE_NUM="${1:-}"
+
+if [ "$ISSUE_NUM" = "--help" ] || [ "$ISSUE_NUM" = "-h" ]; then
+  show_help
+  exit 0
+fi
+
 if [ -z "$ISSUE_NUM" ]; then
   echo "Usage: worktree-detect.sh <issue-number>" >&2
+  echo "Run worktree-detect.sh --help for details" >&2
   exit 1
 fi
 

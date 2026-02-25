@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pm-intelligence": {
+      "command": "node",
+      "args": ["./tools/mcp/pm-intelligence/build/index.js"]
+    }
+  }
+}

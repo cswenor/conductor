@@ -39,7 +39,7 @@ This runs `typecheck`, `lint`, and `test` in sequence.
 ### Before Starting Work
 
 - [ ] Read the ENTIRE issue (Problem, Non-goals, Acceptance Criteria, Definition of Done)
-- [ ] Issue is in Active state (`./tools/scripts/project-move.sh <num> Active`)
+- [ ] Issue is in Active state (`pm move <num> Active`)
 - [ ] On a feature branch, not main
 - [ ] For Tier 1 work: issue exists and is linked
 
@@ -55,12 +55,12 @@ This runs `typecheck`, `lint`, and `test` in sequence.
 
 - [ ] CI is passing (`gh pr checks <PR_NUMBER>`)
 - [ ] Local tests passed — if tests fail, fix them (never skip or bypass)
-- [ ] Issue is in Review state (`./tools/scripts/project-status.sh <num>`)
+- [ ] Issue is in Review state (`pm status <num>`)
 - [ ] PR body contains `Fixes #<issue>`
 
 ### After Merging
 
-- [ ] Move issue to Done: `./tools/scripts/project-move.sh <num> Done`
+- [ ] Move issue to Done: `pm move <num> Done`
 - [ ] Verify issue closed (auto-closes if PR used `Fixes #`)
 - [ ] Check parent epic if applicable
 
@@ -76,6 +76,110 @@ This runs `typecheck`, `lint`, and `test` in sequence.
 - Tiered PR workflow (when issues are required)
 - Post-merge checklist with exact commands
 - Issue documentation policy
+
+---
+
+## PM Intelligence Tools
+
+The `pm-intelligence` MCP server provides AI-powered project intelligence. Claude should use these tools proactively at the right moments — not just when asked.
+
+### Session Lifecycle
+
+| When | Call | Why |
+|------|------|-----|
+| Starting a new session | `/start` or `mcp__pm_intelligence__optimize_session` | Get situational awareness and a prioritized work plan |
+| Resuming work on an issue | `mcp__pm_intelligence__recover_context` | Full context recovery — what happened, where you left off, what's next |
+| Before picking an issue | `mcp__pm_intelligence__suggest_next_issue` | Data-driven recommendation based on priority, dependencies, risk |
+| After completing work | `mcp__pm_intelligence__record_outcome` | Record what happened for future learning |
+| After making a design decision | `mcp__pm_intelligence__record_decision` | Persist architectural decisions for future reference |
+
+### Issue Intelligence
+
+| When | Call | Why |
+|------|------|-----|
+| Creating a new issue | `mcp__pm_intelligence__triage_issue` | One-call classification: type, priority, estimates, risk, rework probability |
+| Creating a new issue | `mcp__pm_intelligence__auto_label` | Suggest labels from content analysis (type, area, priority, risk) |
+| Planning a large issue | `mcp__pm_intelligence__decompose_issue` | Break into dependency-ordered subtasks with estimates |
+| Issue seems stuck | `mcp__pm_intelligence__explain_delay` | Root cause analysis — why is this slow or blocked? |
+| Planning implementation | `mcp__pm_intelligence__suggest_approach` | Query past decisions/outcomes for what worked in this area |
+| Planning implementation | `mcp__pm_intelligence__predict_completion` | P50/P80/P95 completion date estimates |
+| Assessing risk | `mcp__pm_intelligence__predict_rework` | Probability this issue will need rework before approval |
+| Understanding blockers | `mcp__pm_intelligence__get_issue_dependencies` | Full dependency tree — what blocks this, what this blocks |
+| Checking issue timeline | `mcp__pm_intelligence__get_session_history` | Cross-session event history and workflow transitions |
+
+### Pre-PR Checks
+
+| When | Call | Why |
+|------|------|-----|
+| Before creating PR | `mcp__pm_intelligence__check_readiness` | Pre-review validation with readiness score (0-100) |
+| Before creating PR | `mcp__pm_intelligence__detect_scope_creep` | Compare plan to actual file changes — catch out-of-scope work |
+| Before creating PR | `mcp__pm_intelligence__analyze_pr_impact` | Blast radius: dependency impact, knowledge risk, coupling |
+
+### Review Intelligence
+
+| When | Call | Why |
+|------|------|-----|
+| Reviewing a PR | `mcp__pm_intelligence__review_pr` | Structured analysis: file classification, scope check, risk, verdict |
+| After review verdict | `mcp__pm_intelligence__record_review_outcome` | Record finding dispositions for calibration learning |
+| Checking review accuracy | `mcp__pm_intelligence__get_review_calibration` | Hit rates and false positive patterns |
+
+### Project Health
+
+| When | Call | Why |
+|------|------|-----|
+| Checking project health | `mcp__pm_intelligence__get_risk_radar` | Risk score across 6 categories with mitigations |
+| Checking project health | `mcp__pm_intelligence__get_workflow_health` | Per-issue health scores, stale items, bottlenecks |
+| Checking project health | `mcp__pm_intelligence__get_project_dashboard` | Comprehensive report synthesizing ALL intelligence |
+| Checking team throughput | `mcp__pm_intelligence__get_team_capacity` | Contributor profiles, sprint forecast, area coverage |
+| Checking delivery metrics | `mcp__pm_intelligence__get_dora_metrics` | DORA: deploy frequency, lead time, change failure rate, MTTR |
+| Checking code hotspots | `mcp__pm_intelligence__get_history_insights` | Git hotspots, coupling analysis, commit patterns, risk areas |
+
+### Planning & Forecasting
+
+| When | Call | Why |
+|------|------|-----|
+| Sprint planning | `mcp__pm_intelligence__plan_sprint` | AI-powered sprint planning: deps + capacity + Monte Carlo |
+| Forecasting throughput | `mcp__pm_intelligence__simulate_sprint` | Monte Carlo simulation for sprint throughput (P10-P90) |
+| "When will we finish?" | `mcp__pm_intelligence__forecast_backlog` | Monte Carlo to forecast backlog completion date |
+| What-if analysis | `mcp__pm_intelligence__simulate_dependency_change` | "What if issue X slips by N days?" — cascade modeling |
+| Estimation accuracy | `mcp__pm_intelligence__compare_estimates` | Compare predicted vs actual cycle times |
+| Visualizing dependencies | `mcp__pm_intelligence__visualize_dependencies` | ASCII + Mermaid dependency graph rendering |
+| Analyzing dep graph | `mcp__pm_intelligence__analyze_dependency_graph` | Critical path, bottlenecks, cycle detection |
+
+### Operations & Reporting
+
+| When | Call | Why |
+|------|------|-----|
+| Daily standup | `mcp__pm_intelligence__generate_standup` | Auto-generated standup from project activity |
+| Sprint retro | `mcp__pm_intelligence__generate_retro` | Data-driven retrospective with evidence |
+| Release notes | `mcp__pm_intelligence__generate_release_notes` | Structured release notes from merged PRs |
+| Detecting anomalies | `mcp__pm_intelligence__detect_patterns` | Cross-cutting anomaly detection and early warnings |
+| Stale decisions | `mcp__pm_intelligence__check_decision_decay` | Decisions whose context has drifted |
+| Board overview | `mcp__pm_intelligence__get_board_summary` | Issue counts by state, health score |
+| Velocity tracking | `mcp__pm_intelligence__get_velocity` | PRs merged, issues closed/opened (7d/30d) |
+| Sprint analytics | `mcp__pm_intelligence__get_sprint_analytics` | Cycle time, bottlenecks, flow efficiency, rework patterns |
+| Context efficiency | `mcp__pm_intelligence__get_context_efficiency` | AI session count, rework rate, efficiency score per issue |
+| Memory insights | `mcp__pm_intelligence__get_memory_insights` | Patterns from decision/outcome history |
+
+### Batch Operations
+
+| When | Call | Why |
+|------|------|-----|
+| Cleaning up backlog | `mcp__pm_intelligence__bulk_triage` | Triage all untriaged issues with suggested labels |
+| Moving multiple issues | `mcp__pm_intelligence__bulk_move` | Batch state transitions with dry-run support |
+
+### Proactive Usage Rules
+
+Claude should call intelligence tools **automatically** at these moments — no user prompt needed:
+
+1. **Starting any session** → Call `optimize_session` (or recommend `/start`)
+2. **Resuming work** → Call `recover_context` before reading issue/PR
+3. **Before creating a PR** → Call `check_readiness` and `detect_scope_creep`
+4. **After merging** → Call `record_outcome`
+5. **After any design decision** → Call `record_decision`
+6. **When an issue has been Active >3 days** → Call `explain_delay`
+7. **When user asks "what should I work on?"** → Call `suggest_next_issue`
+8. **When user asks about project health** → Call `get_risk_radar`
 
 ---
 
@@ -115,18 +219,18 @@ This runs `typecheck`, `lint`, and `test` in sequence.
 
 **When tests fail during the Review transition, you MUST fix the failures.**
 
-`project-move.sh Review` runs the test suite before allowing the transition. If tests fail:
+`pm move <num> Review` runs the test suite before allowing the transition. If tests fail:
 
 1. **Read the error output** — understand what failed and why
 2. **Fix the root cause** — do not work around it
 3. **Re-run the tests** — confirm the fix
-4. **Then retry the transition** — `./tools/scripts/project-move.sh <num> Review`
+4. **Then retry the transition** — `pm move <num> Review`
 
 **FORBIDDEN:**
 
 - Re-running with any bypass flags
 - Commenting out or modifying test infrastructure to make tests pass
-- Moving to Review manually (via `gh project item-edit`) to skip the gate
+- Modifying the local database directly to skip the gate
 - Declaring "ready for review" when tests haven't passed
 
 ### PREFER GITHUB MCP TOOLS
@@ -205,8 +309,8 @@ Is this a new feature, bug fix, or code refactor?
 ├─ YES → TIER 1: MUST have issue first
 │        ├─ Search for existing issue: gh issue list --search "keywords"
 │        ├─ Create issue if none exists
-│        ├─ Add to project: ./tools/scripts/project-add.sh <num> <priority>
-│        ├─ Move to Active: ./tools/scripts/project-move.sh <num> Active
+│        ├─ Add to project: pm add <num> <priority>
+│        ├─ Move to Active: pm move <num> Active
 │        ├─ Use prefix: feat: / fix: / refactor:
 │        └─ PR body MUST include: Fixes #<issue-number>
 │
@@ -226,7 +330,7 @@ Before running `gh pr create`, verify:
 1. **Was I given an issue number?** If yes, `Fixes #<num>` is REQUIRED regardless of tier
 2. **Did I choose the right prefix?** (feat/fix/refactor vs chore/docs/ci)
 3. **If Tier 1, do I have an issue?** (Check with `gh issue view <num>`)
-4. **If Tier 1, is the issue in Active state?** (Check with `./tools/scripts/project-status.sh <num>`)
+4. **If Tier 1, is the issue in Active state?** (Check with `pm status <num>`)
 5. **Does my PR body have `Fixes #<num>`?** (Required if issue exists)
 
 **FAILURE TO FOLLOW THIS WILL CAUSE CI CHECK FAILURES.**
@@ -269,7 +373,7 @@ When acting as a reviewer, Claude Code MUST:
 
 1. Post review to PR (what's missing, specific code locations)
 2. Post summary to Issue (criteria NOT met, link to PR review)
-3. Move issue to Rework: `./tools/scripts/project-move.sh <num> Rework`
+3. Move issue to Rework: `pm move <num> Rework`
 
 ### Before Creating PR (MANDATORY)
 
@@ -291,7 +395,7 @@ When acting as a reviewer, Claude Code MUST:
 2. **Move issue to Review:**
 
    ```bash
-   ./tools/scripts/project-move.sh <ISSUE_NUMBER> Review
+   pm move <ISSUE_NUMBER> Review
    ```
 
 3. Request reviewers if not auto-assigned
@@ -304,15 +408,15 @@ When acting as a reviewer, Claude Code MUST:
 2. **Issue is in Review state** - Verify with:
 
    ```bash
-   ./tools/scripts/project-status.sh <ISSUE_NUMBER>
+   pm status <ISSUE_NUMBER>
    ```
 
-   Check the `workflow` field in the output. If not "Review", run `./tools/scripts/project-move.sh <ISSUE_NUMBER> Review`
+   Check the `workflow` field in the output. If not "Review", run `pm move <ISSUE_NUMBER> Review`
 
    **WARNING:** Do NOT use `gh issue view --json projectItems` - it returns incorrect values for custom project fields.
 
 3. **PR has issue link** - PR body must contain `Fixes #<issue>`
-4. **Local tests passed** — enforced by `project-move.sh`
+4. **Local tests passed** — enforced by `pm move`
 
 **This applies every time you claim something is ready, even after amending commits or pushing fixes.** Re-verify the checklist each time before telling the user.
 
@@ -323,7 +427,7 @@ When acting as a reviewer, Claude Code MUST:
 1. **Update the Project Workflow field to "Done":**
 
    ```bash
-   ./tools/scripts/project-move.sh <ISSUE_NUMBER> Done
+   pm move <ISSUE_NUMBER> Done
    ```
 
 2. **Verify the issue is closed** (should auto-close if PR used `Fixes #`)
@@ -341,7 +445,7 @@ When acting as a reviewer, Claude Code MUST:
 1. **Check issue state before acting:**
 
    ```bash
-   ./tools/scripts/project-status.sh <ISSUE_NUMBER>
+   pm status <ISSUE_NUMBER>
    ```
 
 2. **Follow state-appropriate behavior:**

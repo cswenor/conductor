@@ -4,8 +4,7 @@
 # These targets were added by claude-pm-toolkit install.
 # Remove this block to uninstall the Makefile integration.
 
-## Start a Claude Code tmux session with portfolio management
-claude: ## Start Claude Code (tmux portfolio mode)
+claude: ## Start Claude Code with tmux portfolio management
 	@if command -v tmux >/dev/null 2>&1; then \
 		./tools/scripts/tmux-session.sh init-and-run; \
 	else \
@@ -13,16 +12,23 @@ claude: ## Start Claude Code (tmux portfolio mode)
 		claude; \
 	fi
 
-## Show PM toolkit dashboard (toolkit health, worktrees, board summary)
-pm-status: ## PM toolkit dashboard
+pm-status: ## Show PM toolkit dashboard (health, worktrees, board)
 	@./tools/scripts/pm-dashboard.sh
 
-## Validate PM toolkit installation
-pm-validate: ## Validate toolkit installation
-	@./tools/scripts/pm-dashboard.sh && echo "" && echo "For full validation, run: validate.sh"
+pm-validate: ## Validate PM toolkit installation
+	@./tools/scripts/pm-dashboard.sh && echo "" && \
+	echo "Quick validation:" && \
+	errors=0; \
+	for f in tools/scripts/pm.config.sh .claude/settings.json .claude/skills/issue/SKILL.md docs/PM_PLAYBOOK.md; do \
+		if [ ! -f "$$f" ]; then echo "  FAIL: $$f missing"; errors=$$((errors+1)); fi; \
+	done; \
+	if grep -qE '^\w+=".*\{\{' tools/scripts/pm.config.sh 2>/dev/null; then \
+		echo "  FAIL: pm.config.sh has unresolved placeholders"; errors=$$((errors+1)); \
+	fi; \
+	if [ "$$errors" -eq 0 ]; then echo "  All critical files present, no unresolved placeholders."; \
+	else echo "  $$errors issue(s) found. Run install.sh --update to fix."; exit 1; fi
 
-## Archive completed issues older than 30 days
-pm-archive: ## Archive completed issues
+pm-archive: ## Archive completed issues (Done > 7 days)
 	@./tools/scripts/project-archive-done.sh
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 # portfolio-notify.sh - Hook-driven notification handler for portfolio manager
@@ -26,6 +26,13 @@ set -euo pipefail
 
 # --- Guard: no-op outside portfolio sessions ---
 
+# Exit silently if template placeholder has not been resolved (running in toolkit source repo)
+_PM_PREFIX="CND"
+if [[ "$_PM_PREFIX" == *"{"* ]]; then
+  exit 0
+fi
+
+# shellcheck disable=SC2296
 ISSUE_NUM="${CND_ISSUE_NUM:-}"
 
 # If CND_ISSUE_NUM is not set, this is not a portfolio-managed session — silent no-op
@@ -54,6 +61,13 @@ fi
 
 echo "$EVENT_TYPE" > "$STATE_DIR/status"
 date -u +"%Y-%m-%dT%H:%M:%SZ" > "$STATE_DIR/last-event"
+
+# --- Event stream logging (best-effort, non-blocking) ---
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$SCRIPT_DIR/pm-event-log.sh" ]; then
+  "$SCRIPT_DIR/pm-event-log.sh" "$EVENT_TYPE" --issue "$ISSUE_NUM" 2>/dev/null &
+fi
 
 # --- Send alerts for attention-requiring events ---
 

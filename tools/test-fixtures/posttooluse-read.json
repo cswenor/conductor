@@ -1,0 +1,23 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "transcript_path": "/tmp/synthetic-session.jsonl",
+  "cwd": "/home/user/project",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Read",
+  "tool_input": {
+    "file_path": "src/lib/example.ts",
+    "limit": 50
+  },
+  "tool_response": {
+    "type": "text",
+    "file": {
+      "filePath": "src/lib/example.ts",
+      "content": "function hello() { return \"world\"; }",
+      "numLines": 1,
+      "startLine": 1,
+      "totalLines": 1
+    }
+  },
+  "tool_use_id": "toolu_EXAMPLE_NOT_A_REAL_ID"
+}

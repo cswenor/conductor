@@ -112,8 +112,8 @@ Labels are for **taxonomy and workflow flags only**. Workflow state, Priority, R
 
 Workflow, Priority, Risk, and other data live in the GitHub Project, not labels.
 
-**Project Number:** 2
-**Project ID:** `PVT_kwHOAAnhG84BPhvY`
+**Project Number:** {{PROJECT_NUMBER}}
+**Project ID:** `{{PROJECT_ID}}`
 **Organization:** cswenor
 
 ### Workflow (Single Select) — AI-First Model
@@ -171,7 +171,7 @@ Move to Review when:
 - PR is opened with `Fixes #<issue>`
 - All tests passing (CI green)
 
-**Trigger:** Manual via `./tools/scripts/project-move.sh <num> Review` immediately after opening PR.
+**Trigger:** Manual via `pm move <num> Review` immediately after opening PR.
 
 ### Review Exit Criteria
 
@@ -257,77 +257,77 @@ An issue can be `Ready` + `spec:missing` = "you can start, but clarify scope fir
 
 | Item               | Value                  |
 | ------------------ | ---------------------- |
-| **Project Number** | `2`   |
-| **Project ID**     | `PVT_kwHOAAnhG84BPhvY` |
+| **Project Number** | `{{PROJECT_NUMBER}}`   |
+| **Project ID**     | `{{PROJECT_ID}}` |
 | **Organization**   | `cswenor`         |
 
 ### Field IDs
 
 | Field          | Field ID                         |
 | -------------- | -------------------------------- |
-| **Workflow**   | `PVTSSF_lAHOAAnhG84BPhvYzg96Qy0` |
-| **Priority**   | `PVTSSF_lAHOAAnhG84BPhvYzg96Q0Q` |
-| **Area**       | `PVTSSF_lAHOAAnhG84BPhvYzg96Q0U` |
-| **Issue Type** | `PVTSSF_lAHOAAnhG84BPhvYzg96Q0Y` |
-| **Risk**       | `PVTSSF_lAHOAAnhG84BPhvYzg96Q1I` |
-| **Estimate**   | `PVTSSF_lAHOAAnhG84BPhvYzg96Q1M` |
+| **Workflow**   | `{{FIELD_WORKFLOW}}` |
+| **Priority**   | `{{FIELD_PRIORITY}}` |
+| **Area**       | `{{FIELD_AREA}}` |
+| **Issue Type** | `{{FIELD_ISSUE_TYPE}}` |
+| **Risk**       | `{{FIELD_RISK}}` |
+| **Estimate**   | `{{FIELD_ESTIMATE}}` |
 
 ### Workflow Option IDs
 
 | Option  | Option ID  |
 | ------- | ---------- |
-| Backlog | `74b600d5` |
-| Ready   | `962c258c` |
-| Active  | `5ced14d4` |
-| Review  | `a33df598` |
-| Rework  | `0ce2c21a` |
-| Done    | `4440bd88` |
+| Backlog | `{{OPT_WF_BACKLOG}}` |
+| Ready   | `{{OPT_WF_READY}}` |
+| Active  | `{{OPT_WF_ACTIVE}}` |
+| Review  | `{{OPT_WF_REVIEW}}` |
+| Rework  | `{{OPT_WF_REWORK}}` |
+| Done    | `{{OPT_WF_DONE}}` |
 
 ### Priority Option IDs
 
 | Option   | Option ID  |
 | -------- | ---------- |
-| Critical | `e2f43add` |
-| High     | `5ea07c7d` |
-| Normal   | `2a42a8e5` |
+| Critical | `{{OPT_PRI_CRITICAL}}` |
+| High     | `{{OPT_PRI_HIGH}}` |
+| Normal   | `{{OPT_PRI_NORMAL}}` |
 
 ### Area Option IDs
 
 | Option     | Option ID  |
 | ---------- | ---------- |
-| Frontend   | `TODO: add Frontend option to Area field` |
-| Backend    | `TODO: add Backend option to Area field` |
-| Contracts  | `TODO: add Contracts option to Area field` |
-| Infra      | `TODO: add Infra option to Area field` |
-| Design     | `TODO: add Design option to Area field` |
-| Docs       | `TODO: add Docs option to Area field` |
-| PM         | `TODO: add PM option to Area field` |
+| Frontend   | `{{OPT_AREA_FRONTEND}}` |
+| Backend    | `{{OPT_AREA_BACKEND}}` |
+| Contracts  | `{{OPT_AREA_CONTRACTS}}` |
+| Infra      | `{{OPT_AREA_INFRA}}` |
+| Design     | `{{OPT_AREA_DESIGN}}` |
+| Docs       | `{{OPT_AREA_DOCS}}` |
+| PM         | `{{OPT_AREA_PM}}` |
 
 ### Issue Type Option IDs
 
 | Option  | Option ID  |
 | ------- | ---------- |
-| Bug     | `57d21deb` |
-| Feature | `5a2162ad` |
-| Spike   | `e5f6ed28` |
-| Epic    | `f329a2d3` |
-| Chore   | `ce3bef94` |
+| Bug     | `{{OPT_TYPE_BUG}}` |
+| Feature | `{{OPT_TYPE_FEATURE}}` |
+| Spike   | `{{OPT_TYPE_SPIKE}}` |
+| Epic    | `{{OPT_TYPE_EPIC}}` |
+| Chore   | `{{OPT_TYPE_CHORE}}` |
 
 ### Risk Option IDs
 
 | Option | Option ID  |
 | ------ | ---------- |
-| Low    | `614b5103` |
-| Med    | `8d3abc19` |
-| High   | `e07efa9c` |
+| Low    | `{{OPT_RISK_LOW}}` |
+| Med    | `{{OPT_RISK_MEDIUM}}` |
+| High   | `{{OPT_RISK_HIGH}}` |
 
 ### Estimate Option IDs
 
 | Option | Option ID  |
 | ------ | ---------- |
-| S      | `a2fd8d62` |
-| M      | `502e48be` |
-| L      | `a6e5563a` |
+| S      | `{{OPT_EST_SMALL}}` |
+| M      | `{{OPT_EST_MEDIUM}}` |
+| L      | `{{OPT_EST_LARGE}}` |
 
 ---
 
@@ -434,7 +434,7 @@ Issues without `spec:ready` may still be in `Ready` workflow state, but the assi
 ### 1. Update the Project Workflow field to "Done"
 
 ```bash
-./tools/scripts/project-move.sh <ISSUE_NUMBER> Done
+pm move <ISSUE_NUMBER> Done
 ```
 
 ### 2. Verify the issue is closed
@@ -564,7 +564,7 @@ We use continuous flow (Kanban), not fixed sprints.
 2. Look for items with Workflow = "Ready"
 3. Pick highest priority item you can own
 4. Assign yourself to the issue
-5. **Move issue to Active** (`./tools/scripts/project-move.sh <num> Active`)
+5. **Move issue to Active** (`pm move <num> Active`)
 6. Create branch and start work
 
 **WIP Limits:**
@@ -679,8 +679,8 @@ This produces `YYYY-MM-DD.ai.md` with:
 2. **Sync with default branch:** `git checkout main && git pull`
 3. **Search for existing issue:** `gh issue list --search "keywords"`
 4. **Create issue if none exists** (see Tier 1 section above for template)
-5. **Add to project:** `./tools/scripts/project-add.sh <ISSUE_NUMBER> <priority>`
-6. **Move to Active:** `./tools/scripts/project-move.sh <ISSUE_NUMBER> Active`
+5. **Add to project:** `pm add <ISSUE_NUMBER> <priority>`
+6. **Move to Active:** `pm move <ISSUE_NUMBER> Active`
 7. **Create branch:** `git checkout -b <type>/<short-desc>`
 8. **Begin implementation**
 
@@ -697,7 +697,7 @@ This produces `YYYY-MM-DD.ai.md` with:
 ### After Opening a PR
 
 1. **Ensure PR body includes `Fixes #<issue>`** (canonical linkage)
-2. **Move issue to Review:** `./tools/scripts/project-move.sh <num> Review`
+2. **Move issue to Review:** `pm move <num> Review`
 3. Request reviewers if not auto-assigned
 
 ### When Blocked
@@ -709,29 +709,29 @@ This produces `YYYY-MM-DD.ai.md` with:
 ### Completing Work (Post-Merge)
 
 1. Merge PR (auto-closes issue if using `Fixes`)
-2. **Move to Done:** `./tools/scripts/project-move.sh <num> Done`
+2. **Move to Done:** `pm move <num> Done`
 3. **Check off "Code merged"** in Definition of Done
 4. Verify issue is closed
 
 ### When Changes Requested
 
-1. **Move to Rework:** `./tools/scripts/project-move.sh <num> Rework`
+1. **Move to Rework:** `pm move <num> Rework`
 2. Address reviewer feedback
 3. Push updates to PR
-4. **Move back to Review:** `./tools/scripts/project-move.sh <num> Review` when ready for re-review
+4. **Move back to Review:** `pm move <num> Review` when ready for re-review
 
 ### Workflow Transitions
 
-| Transition      | Trigger                          | Who      | Command                        |
-| --------------- | -------------------------------- | -------- | ------------------------------ |
-| → Backlog       | Issue created + project-add      | AI/Human | `project-add.sh <num> <pri>`   |
-| Backlog → Ready | Work authorized                  | AI/Human | `project-move.sh <num> Ready`  |
-| Ready → Active  | **STOP**: Work begins            | AI/Human | `project-move.sh <num> Active` |
-| Active → Review | PR opened                        | AI/Human | `project-move.sh <num> Review` |
-| Review → Rework | Changes requested                | AI/Human | `project-move.sh <num> Rework` |
-| Rework → Review | Feedback addressed, re-requested | AI/Human | `project-move.sh <num> Review` |
-| Review → Done   | PR merged + post-merge checklist | AI/Human | `project-move.sh <num> Done`   |
-| Active → Ready  | Work abandoned (with reason)     | AI/Human | `project-move.sh <num> Ready`  |
+| Transition      | Trigger                          | Who      | Command                     |
+| --------------- | -------------------------------- | -------- | --------------------------- |
+| → Backlog       | Issue created + pm add           | AI/Human | `pm add <num> <pri>`        |
+| Backlog → Ready | Work authorized                  | AI/Human | `pm move <num> Ready`       |
+| Ready → Active  | **STOP**: Work begins            | AI/Human | `pm move <num> Active`      |
+| Active → Review | PR opened                        | AI/Human | `pm move <num> Review`      |
+| Review → Rework | Changes requested                | AI/Human | `pm move <num> Rework`      |
+| Rework → Review | Feedback addressed, re-requested | AI/Human | `pm move <num> Review`      |
+| Review → Done   | PR merged + post-merge checklist | AI/Human | `pm move <num> Done`        |
+| Active → Ready  | Work abandoned (with reason)     | AI/Human | `pm move <num> Ready`       |
 
 **Note:** Review → Done is NOT automated. The post-merge checklist requires running the command manually.
 
@@ -743,33 +743,33 @@ This produces `YYYY-MM-DD.ai.md` with:
 
 ```bash
 # Use the helper script (idempotent - safe to run multiple times)
-./tools/scripts/project-add.sh <ISSUE_NUMBER> <priority>
+pm add <ISSUE_NUMBER> <priority>
 # priority: critical | high | normal
 # Area is derived from the issue's area:* label
 
 # Example:
-./tools/scripts/project-add.sh 42 high
+pm add 42 high
 ```
 
 ### Moving Issues Between States
 
 ```bash
 # Move an issue to a workflow state
-./tools/scripts/project-move.sh <ISSUE_NUMBER> <state>
+pm move <ISSUE_NUMBER> <state>
 # state: Backlog | Ready | Active | Review | Done
 
 # Examples:
-./tools/scripts/project-move.sh 42 Ready    # Authorize work
-./tools/scripts/project-move.sh 42 Active   # Begin implementation (MANDATORY before coding)
-./tools/scripts/project-move.sh 42 Review   # PR opened, ready for review
-./tools/scripts/project-move.sh 42 Done     # Mark complete (after PR merge)
+pm move 42 Ready    # Authorize work
+pm move 42 Active   # Begin implementation (MANDATORY before coding)
+pm move 42 Review   # PR opened, ready for review
+pm move 42 Done     # Mark complete (after PR merge)
 ```
 
 ### Checking Issue Status
 
 ```bash
 # Show current workflow state and labels for an issue
-./tools/scripts/project-status.sh <ISSUE_NUMBER>
+pm status <ISSUE_NUMBER>
 
 # Example output:
 # {
@@ -804,28 +804,28 @@ gh issue create --title "feat: description" \
 - [ ] Tests passing"
 
 # Add issue to project (low-level, prefer helper script above)
-gh project item-add 2 --owner cswenor --url <issue-url>
+gh project item-add {{PROJECT_NUMBER}} --owner cswenor --url <issue-url>
 
 # Get item ID for an issue
-gh project item-list 2 --owner cswenor --format json | jq -r '.items[] | select(.content.number == <ISSUE_NUMBER>) | .id'
+gh project item-list {{PROJECT_NUMBER}} --owner cswenor --format json | jq -r '.items[] | select(.content.number == <ISSUE_NUMBER>) | .id'
 ```
 
 ### Setting Project Fields
 
 ```bash
 # Set Workflow
-gh project item-edit --project-id PVT_kwHOAAnhG84BPhvY --id <ITEM_ID> \
-  --field-id PVTSSF_lAHOAAnhG84BPhvYzg96Qy0 \
+gh project item-edit --project-id {{PROJECT_ID}} --id <ITEM_ID> \
+  --field-id {{FIELD_WORKFLOW}} \
   --single-select-option-id <workflow-option-id>
 
 # Set Priority
-gh project item-edit --project-id PVT_kwHOAAnhG84BPhvY --id <ITEM_ID> \
-  --field-id PVTSSF_lAHOAAnhG84BPhvYzg96Q0Q \
+gh project item-edit --project-id {{PROJECT_ID}} --id <ITEM_ID> \
+  --field-id {{FIELD_PRIORITY}} \
   --single-select-option-id <priority-option-id>
 
 # Set Area
-gh project item-edit --project-id PVT_kwHOAAnhG84BPhvY --id <ITEM_ID> \
-  --field-id PVTSSF_lAHOAAnhG84BPhvYzg96Q0U \
+gh project item-edit --project-id {{PROJECT_ID}} --id <ITEM_ID> \
+  --field-id {{FIELD_AREA}} \
   --single-select-option-id <area-option-id>
 ```
 
@@ -853,10 +853,10 @@ gh pr create --title "chore: description" --body "## Summary
 
 ```bash
 # List all project items with key fields
-gh project item-list 2 --owner cswenor --format json | jq '.items[] | {number: .content.number, title: .title, workflow: .workflow, priority: .priority, area: .area}'
+gh project item-list {{PROJECT_NUMBER}} --owner cswenor --format json | jq '.items[] | {number: .content.number, title: .title, workflow: .workflow, priority: .priority, area: .area}'
 
 # Check specific issue's project fields
-gh project item-list 2 --owner cswenor --format json | jq '.items[] | select(.content.number == <ISSUE_NUMBER>)'
+gh project item-list {{PROJECT_NUMBER}} --owner cswenor --format json | jq '.items[] | select(.content.number == <ISSUE_NUMBER>)'
 ```
 
 ---

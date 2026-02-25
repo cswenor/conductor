@@ -1,0 +1,166 @@
+# pm-post-merge.yml — Auto-move issues to Done when PRs merge
+#
+# Installed by claude-pm-toolkit. Managed file — will be overwritten on update.
+#
+# Requirements:
+#   - Repository secret: PROJECT_WRITE_TOKEN (classic PAT with `project` scope)
+#   - GitHub Project v2 with Workflow field configured
+#
+# What it does:
+#   1. Detects merged PRs with `Fixes #N` / `Closes #N` / `Resolves #N`
+#   2. Queries the issue's current Workflow state in the project
+#   3. Moves the issue to Done (skips if already Done or not in project)
+#   4. Posts a completion comment on the issue
+
+name: PM Post-Merge
+
+on:
+  pull_request:
+    types: [closed]
+
+# Prevent concurrent runs for the same PR
+concurrency:
+  group: pm-post-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  post-merge:
+    # Only run when a PR is merged (not just closed)
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Extract issue numbers from PR body
+        id: extract
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prBody = context.payload.pull_request.body || '';
+            const prTitle = context.payload.pull_request.title;
+
+            // Extract all issue numbers from closing keywords
+            const pattern = /(fixes|closes|resolves)\s+#(\d+)/gi;
+            const issues = [];
+            let match;
+            while ((match = pattern.exec(prBody)) !== null) {
+              const num = parseInt(match[2]);
+              if (!issues.includes(num)) issues.push(num);
+            }
+
+            if (issues.length === 0) {
+              console.log('No issue links found in PR body. Skipping.');
+              core.setOutput('has_issues', 'false');
+              return;
+            }
+
+            console.log(`Found linked issues: ${issues.join(', ')}`);
+            core.setOutput('has_issues', 'true');
+            core.setOutput('issue_numbers', JSON.stringify(issues));
+
+      - name: Move issues to Done
+        if: steps.extract.outputs.has_issues == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_WRITE_TOKEN }}
+          script: |
+            const issues = JSON.parse('${{ steps.extract.outputs.issue_numbers }}');
+            const prNumber = context.payload.pull_request.number;
+            const prTitle = context.payload.pull_request.title;
+            const mergedBy = context.payload.pull_request.merged_by?.login || 'unknown';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Project configuration (injected by installer)
+            const PROJECT_NUMBER = {{PROJECT_NUMBER}};
+            const PROJECT_ID = '{{PROJECT_ID}}';
+            const FIELD_WORKFLOW = '{{FIELD_WORKFLOW}}';
+            const OPT_WF_DONE = '{{OPT_WF_DONE}}';
+
+            for (const issueNumber of issues) {
+              console.log(`\n--- Processing issue #${issueNumber} ---`);
+
+              try {
+                // Step 1: Get the issue's project item ID
+                const result = await github.graphql(`
+                  query($owner: String!, $repo: String!, $issue: Int!) {
+                    repository(owner: $owner, name: $repo) {
+                      issue(number: $issue) {
+                        state
+                        projectItems(first: 20) {
+                          nodes {
+                            id
+                            project { number }
+                            fieldValueByName(name: "Workflow") {
+                              ... on ProjectV2ItemFieldSingleSelectValue { name }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                `, { owner, repo, issue: issueNumber });
+
+                const projectItems = result.repository.issue.projectItems.nodes;
+                const item = projectItems.find(n => n.project.number === PROJECT_NUMBER);
+
+                if (!item) {
+                  console.log(`Issue #${issueNumber} is not on project board #${PROJECT_NUMBER}. Skipping.`);
+                  continue;
+                }
+
+                const currentState = item.fieldValueByName?.name || 'Unset';
+                if (currentState === 'Done') {
+                  console.log(`Issue #${issueNumber} is already Done. Skipping.`);
+                  continue;
+                }
+
+                console.log(`Issue #${issueNumber} is in "${currentState}". Moving to Done.`);
+
+                // Step 2: Move to Done
+                await github.graphql(`
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                    updateProjectV2ItemFieldValue(
+                      input: {
+                        projectId: $projectId
+                        itemId: $itemId
+                        fieldId: $fieldId
+                        value: { singleSelectOptionId: $optionId }
+                      }
+                    ) {
+                      projectV2Item { id }
+                    }
+                  }
+                `, {
+                  projectId: PROJECT_ID,
+                  itemId: item.id,
+                  fieldId: FIELD_WORKFLOW,
+                  optionId: OPT_WF_DONE
+                });
+
+                console.log(`Moved issue #${issueNumber} to Done.`);
+
+                // Step 3: Post completion comment
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  body: [
+                    `## Shipped`,
+                    ``,
+                    `Merged via PR #${prNumber} (\`${prTitle}\`) by @${mergedBy}.`,
+                    `Issue moved to **Done** on the project board.`,
+                    ``,
+                    `---`,
+                    `*Automated by [claude-pm-toolkit](https://github.com/cswenor/claude-pm-toolkit) post-merge workflow*`
+                  ].join('\n')
+                });
+
+                console.log(`Posted completion comment on issue #${issueNumber}.`);
+
+              } catch (error) {
+                console.error(`Failed to process issue #${issueNumber}: ${error.message}`);
+                // Don't fail the workflow for individual issue errors
+              }
+            }

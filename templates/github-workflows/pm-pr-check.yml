@@ -1,0 +1,281 @@
+# pm-pr-check.yml — PR quality gate for PM workflow compliance
+#
+# Installed by claude-pm-toolkit. Managed file — will be overwritten on update.
+#
+# Requirements:
+#   - Repository secret: PROJECT_WRITE_TOKEN (classic PAT with `project` scope)
+#   - GitHub Project v2 with Workflow field configured
+#
+# What it checks:
+#   1. Conventional commit format in PR title
+#   2. Issue link (Fixes #N) for feat/fix/refactor PRs
+#   3. Linked issue is in Active or Rework state
+#   4. Linked issue exists on the project board
+#
+# Behavior:
+#   - feat/fix/refactor PRs: All 4 checks enforced
+#   - chore/docs/ci/test PRs: Only conventional commit check enforced
+#   - Posts a status summary comment on the PR
+
+name: PM PR Check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, ready_for_review]
+
+# Prevent concurrent runs for the same PR
+concurrency:
+  group: pm-pr-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pm-check:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: read
+    steps:
+      - name: PM Quality Gate
+        id: check
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_WRITE_TOKEN }}
+          script: |
+            const prTitle = context.payload.pull_request.title;
+            const prBody = context.payload.pull_request.body || '';
+            const prNumber = context.payload.pull_request.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Project configuration (injected by installer)
+            const PROJECT_NUMBER = {{PROJECT_NUMBER}};
+
+            const findings = [];
+            let hasBlocker = false;
+
+            // ---------------------------------------------------------------
+            // Check 1: Conventional commit format
+            // ---------------------------------------------------------------
+            const conventionalPattern = /^(feat|fix|docs|refactor|test|chore|contracts|ci)(\(.+\))?!?:\s.+/;
+            if (!conventionalPattern.test(prTitle)) {
+              findings.push({
+                check: 'Conventional Commit',
+                status: 'fail',
+                message: `PR title \`${prTitle}\` does not match \`<type>(<scope>): <description>\``,
+                help: 'Types: feat, fix, docs, refactor, test, chore, contracts, ci'
+              });
+              hasBlocker = true;
+            } else {
+              findings.push({
+                check: 'Conventional Commit',
+                status: 'pass',
+                message: `Title follows conventional format`
+              });
+            }
+
+            // Determine if this PR requires an issue link
+            const requiresIssue = /^(feat|fix|refactor)(\(.+\))?!?:/i.test(prTitle);
+
+            if (!requiresIssue) {
+              findings.push({
+                check: 'Issue Link',
+                status: 'skip',
+                message: 'Not required for chore/docs/ci/test PRs'
+              });
+              findings.push({
+                check: 'Workflow State',
+                status: 'skip',
+                message: 'Not required for chore/docs/ci/test PRs'
+              });
+              findings.push({
+                check: 'Project Board',
+                status: 'skip',
+                message: 'Not required for chore/docs/ci/test PRs'
+              });
+            } else {
+              // ---------------------------------------------------------------
+              // Check 2: Issue link present
+              // ---------------------------------------------------------------
+              const issuePattern = /(fixes|closes|resolves)\s+#(\d+)/i;
+              const issueMatch = prBody.match(issuePattern);
+
+              if (!issueMatch) {
+                findings.push({
+                  check: 'Issue Link',
+                  status: 'fail',
+                  message: 'No `Fixes #N` / `Closes #N` / `Resolves #N` found in PR body',
+                  help: 'Add `Fixes #<issue-number>` to the PR description'
+                });
+                hasBlocker = true;
+
+                // Can't check further without an issue number
+                findings.push({
+                  check: 'Workflow State',
+                  status: 'skip',
+                  message: 'Cannot check — no issue linked'
+                });
+                findings.push({
+                  check: 'Project Board',
+                  status: 'skip',
+                  message: 'Cannot check — no issue linked'
+                });
+              } else {
+                const issueNumber = parseInt(issueMatch[2]);
+                findings.push({
+                  check: 'Issue Link',
+                  status: 'pass',
+                  message: `Linked to issue #${issueNumber}`
+                });
+
+                // ---------------------------------------------------------------
+                // Check 3 & 4: Issue on project board and in correct state
+                // ---------------------------------------------------------------
+                try {
+                  const result = await github.graphql(`
+                    query($owner: String!, $repo: String!, $issue: Int!) {
+                      repository(owner: $owner, name: $repo) {
+                        issue(number: $issue) {
+                          state
+                          title
+                          projectItems(first: 20) {
+                            nodes {
+                              id
+                              project { number }
+                              fieldValueByName(name: "Workflow") {
+                                ... on ProjectV2ItemFieldSingleSelectValue { name }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  `, { owner, repo, issue: issueNumber });
+
+                  const issue = result.repository.issue;
+                  const projectItems = issue.projectItems.nodes;
+                  const item = projectItems.find(n => n.project.number === PROJECT_NUMBER);
+
+                  if (!item) {
+                    findings.push({
+                      check: 'Project Board',
+                      status: 'fail',
+                      message: `Issue #${issueNumber} is not on project board #${PROJECT_NUMBER}`,
+                      help: `Run: pm add ${issueNumber} normal`
+                    });
+                    hasBlocker = true;
+                    findings.push({
+                      check: 'Workflow State',
+                      status: 'skip',
+                      message: 'Cannot check — issue not on project board'
+                    });
+                  } else {
+                    findings.push({
+                      check: 'Project Board',
+                      status: 'pass',
+                      message: `Issue #${issueNumber} is on project board`
+                    });
+
+                    const workflowState = item.fieldValueByName?.name || 'Unset';
+                    const validStates = ['Active', 'Rework', 'Review'];
+
+                    if (validStates.includes(workflowState)) {
+                      findings.push({
+                        check: 'Workflow State',
+                        status: 'pass',
+                        message: `Issue #${issueNumber} is in "${workflowState}" state`
+                      });
+                    } else {
+                      findings.push({
+                        check: 'Workflow State',
+                        status: 'fail',
+                        message: `Issue #${issueNumber} is in "${workflowState}" state (expected Active, Rework, or Review)`,
+                        help: `Run: pm move ${issueNumber} Active`
+                      });
+                      hasBlocker = true;
+                    }
+                  }
+                } catch (error) {
+                  findings.push({
+                    check: 'Project Board',
+                    status: 'warn',
+                    message: `Could not query project board: ${error.message}`
+                  });
+                  findings.push({
+                    check: 'Workflow State',
+                    status: 'warn',
+                    message: 'Skipped due to project board query failure'
+                  });
+                }
+              }
+            }
+
+            // ---------------------------------------------------------------
+            // Build summary comment
+            // ---------------------------------------------------------------
+            const statusIcon = (s) => {
+              if (s === 'pass') return ':white_check_mark:';
+              if (s === 'fail') return ':x:';
+              if (s === 'warn') return ':warning:';
+              return ':heavy_minus_sign:';
+            };
+
+            const rows = findings.map(f => {
+              const help = f.help ? `<br><sub>${f.help}</sub>` : '';
+              return `| ${statusIcon(f.status)} | ${f.check} | ${f.message}${help} |`;
+            });
+
+            const overall = hasBlocker ? ':x: **Checks failed**' : ':white_check_mark: **All checks passed**';
+
+            const body = [
+              `## PM Quality Gate ${hasBlocker ? ':x:' : ':white_check_mark:'}`,
+              '',
+              '| Status | Check | Details |',
+              '|--------|-------|---------|',
+              ...rows,
+              '',
+              overall,
+              '',
+              '---',
+              `*Automated by [claude-pm-toolkit](https://github.com/cswenor/claude-pm-toolkit) PR check*`
+            ].join('\n');
+
+            // ---------------------------------------------------------------
+            // Post or update comment
+            // ---------------------------------------------------------------
+            const COMMENT_TAG = '<!-- pm-pr-check -->';
+            const fullBody = `${COMMENT_TAG}\n${body}`;
+
+            // Look for existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 50
+            });
+
+            const existingComment = comments.find(c => c.body?.includes(COMMENT_TAG));
+
+            if (existingComment) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existingComment.id,
+                body: fullBody
+              });
+              console.log(`Updated existing comment #${existingComment.id}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: fullBody
+              });
+              console.log('Posted new PR check comment');
+            }
+
+            // ---------------------------------------------------------------
+            // Set check result
+            // ---------------------------------------------------------------
+            if (hasBlocker) {
+              core.setFailed('PM quality gate failed. See PR comment for details.');
+            }
