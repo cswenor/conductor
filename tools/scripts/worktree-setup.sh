@@ -5,6 +5,7 @@ set -euo pipefail
 #
 # Creates a git worktree at ../$PREFIX-<issue-number>/ with:
 # - Feature branch checked out (creates if needed)
+# - Symlinks .env* and .mcp.json from main repo (gitignored files)
 # - Prints shell exports for port isolation (no env files created)
 #
 # Port offset formula: (issue_number % 79) * 100 + 3200
@@ -56,6 +57,7 @@ USAGE
 
 OPTIONS
   --print-env  Only print shell export statements (for eval)
+  --no-env     Skip symlinking .env* and .mcp.json files from main repo
 
 ENVIRONMENT
   WORKTREE_PORT_OFFSET  Override the calculated port offset (optional)
@@ -80,12 +82,14 @@ HELPEOF
 ISSUE_NUM="${1:-}"
 BRANCH_NAME="${2:-}"
 PRINT_ENV_ONLY=false
+SKIP_ENV_SYMLINK=false
 
 # Check for flags
 for arg in "$@"; do
   case "$arg" in
     --help|-h) show_help; exit 0 ;;
     --print-env) PRINT_ENV_ONLY=true ;;
+    --no-env) SKIP_ENV_SYMLINK=true ;;
   esac
 done
 
@@ -219,6 +223,40 @@ fi
 echo ""
 echo "Worktree created successfully!"
 echo ""
+
+# --- Symlink gitignored config files from main repo ---
+if [ "$SKIP_ENV_SYMLINK" = false ]; then
+  ENV_COUNT=0
+
+  # Symlink .env* files (credentials, local config)
+  for env_file in "$REPO_ROOT"/.env*; do
+    [ -f "$env_file" ] || continue  # skip if glob didn't match
+    basename_f=$(basename "$env_file")
+    target="$WORKTREE_PATH/$basename_f"
+    if [ -e "$target" ]; then
+      # Don't overwrite git-tracked files (e.g., .env.example)
+      continue
+    fi
+    ln -s "$env_file" "$target"
+    ENV_COUNT=$((ENV_COUNT + 1))
+  done
+
+  # Symlink .mcp.json (MCP server config, typically gitignored/untracked)
+  if [ -f "$REPO_ROOT/.mcp.json" ] && [ ! -e "$WORKTREE_PATH/.mcp.json" ]; then
+    ln -s "$REPO_ROOT/.mcp.json" "$WORKTREE_PATH/.mcp.json"
+    ENV_COUNT=$((ENV_COUNT + 1))
+  fi
+
+  if [ "$ENV_COUNT" -gt 0 ]; then
+    echo "Symlinked $ENV_COUNT config file(s) from main repo"
+    # List what was linked
+    for link in "$WORKTREE_PATH"/.env* "$WORKTREE_PATH/.mcp.json"; do
+      [ -L "$link" ] || continue
+      echo "  $(basename "$link") -> $(readlink "$link")"
+    done
+    echo ""
+  fi
+fi
 
 # Display port mapping from config
 if [ ${#PORT_NAMES[@]} -gt 0 ]; then
