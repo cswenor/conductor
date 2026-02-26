@@ -4,7 +4,7 @@ set -euo pipefail
 # portfolio-notify.sh - Hook-driven notification handler for portfolio manager
 #
 # Called by Claude Code hooks to update issue status and send alerts.
-# This script is a NO-OP when CND_ISSUE_NUM is not set (i.e., when running
+# This script is a NO-OP when <PREFIX>_ISSUE_NUM is not set (i.e., when running
 # outside of a portfolio-managed tmux window).
 #
 # Usage: portfolio-notify.sh <event-type>
@@ -17,25 +17,43 @@ set -euo pipefail
 #   complete          - Issue work done (manual / SessionEnd)
 #
 # Environment:
-#   CND_ISSUE_NUM    - Issue number (set by tmux-session.sh when creating window)
-#   TMUX_PANE        - tmux pane identifier (set by tmux automatically)
+#   <PREFIX>_ISSUE_NUM - Issue number (set by tmux-session.sh when creating window)
+#   TMUX_PANE          - tmux pane identifier (set by tmux automatically)
 #
-# The script ONLY acts when CND_ISSUE_NUM is set. This env var is set by
+# The script ONLY acts when <PREFIX>_ISSUE_NUM is set. This env var is set by
 # tmux-session.sh when creating a portfolio window. No fallbacks — if the
 # var isn't set, this is not a portfolio session and we exit silently.
 
+# --- Resolve prefix from config ---
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+_resolve_prefix() {
+  local search_dir="$SCRIPT_DIR"
+  while [ "$search_dir" != "/" ]; do
+    if [ -f "$search_dir/.claude-pm-toolkit.json" ]; then
+      local val
+      val=$(jq -r '.prefix_lower // empty' "$search_dir/.claude-pm-toolkit.json" 2>/dev/null)
+      if [ -n "$val" ]; then
+        echo "$val"
+        return
+      fi
+    fi
+    search_dir="$(dirname "$search_dir")"
+  done
+  echo "wt"  # fallback if no config found
+}
+
+PREFIX=$(_resolve_prefix)
+PREFIX_UPPER=$(echo "$PREFIX" | tr '[:lower:]' '[:upper:]')
+
 # --- Guard: no-op outside portfolio sessions ---
 
-# Exit silently if template placeholder has not been resolved (running in toolkit source repo)
-_PM_PREFIX="CND"
-if [[ "$_PM_PREFIX" == *"{"* ]]; then
-  exit 0
-fi
+# Use bash indirect expansion to read ${PREFIX_UPPER}_ISSUE_NUM
+_issue_var="${PREFIX_UPPER}_ISSUE_NUM"
+ISSUE_NUM="${!_issue_var:-}"
 
-# shellcheck disable=SC2296
-ISSUE_NUM="${CND_ISSUE_NUM:-}"
-
-# If CND_ISSUE_NUM is not set, this is not a portfolio-managed session — silent no-op
+# If <PREFIX>_ISSUE_NUM is not set, this is not a portfolio-managed session — silent no-op
 if [ -z "$ISSUE_NUM" ]; then
   exit 0
 fi
@@ -50,7 +68,7 @@ fi
 
 # --- State directory ---
 
-STATE_DIR="$HOME/.cnd/portfolio/$ISSUE_NUM"
+STATE_DIR="$HOME/.$PREFIX/portfolio/$ISSUE_NUM"
 
 # If state directory doesn't exist, this issue isn't portfolio-managed — no-op
 if [ ! -d "$STATE_DIR" ]; then
@@ -64,7 +82,6 @@ date -u +"%Y-%m-%dT%H:%M:%SZ" > "$STATE_DIR/last-event"
 
 # --- Event stream logging (best-effort, non-blocking) ---
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -x "$SCRIPT_DIR/pm-event-log.sh" ]; then
   "$SCRIPT_DIR/pm-event-log.sh" "$EVENT_TYPE" --issue "$ISSUE_NUM" 2>/dev/null &
 fi

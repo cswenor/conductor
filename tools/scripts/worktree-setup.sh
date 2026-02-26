@@ -3,7 +3,7 @@ set -euo pipefail
 
 # worktree-setup.sh - Create a worktree with port isolation for parallel development
 #
-# Creates a git worktree at ../cnd-<issue-number>/ with:
+# Creates a git worktree at ../$PREFIX-<issue-number>/ with:
 # - Feature branch checked out (creates if needed)
 # - Prints shell exports for port isolation (no env files created)
 #
@@ -26,6 +26,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORTS_CONF="$SCRIPT_DIR/worktree-ports.conf"
 URLS_CONF="$SCRIPT_DIR/worktree-urls.conf"
+
+# Resolve prefix from config (supports both source repo and installed repos)
+_resolve_prefix() {
+  local search_dir="$SCRIPT_DIR"
+  # Walk up from script dir to find .claude-pm-toolkit.json
+  while [ "$search_dir" != "/" ]; do
+    if [ -f "$search_dir/.claude-pm-toolkit.json" ]; then
+      local val
+      val=$(jq -r '.prefix_lower // empty' "$search_dir/.claude-pm-toolkit.json" 2>/dev/null)
+      if [ -n "$val" ]; then
+        echo "$val"
+        return
+      fi
+    fi
+    search_dir="$(dirname "$search_dir")"
+  done
+  echo "wt"  # fallback if no config found
+}
+PREFIX=$(_resolve_prefix)
 
 show_help() {
   cat <<'HELPEOF'
@@ -124,7 +143,7 @@ fi
 
 # If --print-env, output the exports (suitable for eval)
 if [ "$PRINT_ENV_ONLY" = true ]; then
-  echo "export COMPOSE_PROJECT_NAME=cnd-$ISSUE_NUM"
+  echo "export COMPOSE_PROJECT_NAME=$PREFIX-$ISSUE_NUM"
 
   # Port exports
   for i in "${!PORT_ENV_VARS[@]}"; do
@@ -171,7 +190,7 @@ REPO_ROOT=$(realpath "$(dirname "$GIT_COMMON_DIR")")
 # Worktree location: sibling directory to main repo
 # Note: Can't use `realpath -m` because -m is GNU-only (not available on macOS)
 # Instead, resolve the parent directory (which exists) and append the worktree name
-WORKTREE_PATH="$(cd "$REPO_ROOT/.." && pwd)/cnd-$ISSUE_NUM"
+WORKTREE_PATH="$(cd "$REPO_ROOT/.." && pwd)/$PREFIX-$ISSUE_NUM"
 
 # Check if worktree already exists
 if git worktree list --porcelain | grep -q "worktree $WORKTREE_PATH"; then
@@ -216,4 +235,6 @@ echo "Next steps:"
 echo "  cd $WORKTREE_PATH && claude"
 echo ""
 echo "Then in the worktree, run full setup:"
-echo "  make setup"
+# Read setup command from config
+SETUP_CMD=$(jq -r '.setup_command // "make setup"' "$(git rev-parse --show-toplevel 2>/dev/null || echo .)/.claude-pm-toolkit.json" 2>/dev/null || echo "make setup")
+echo "  $SETUP_CMD"

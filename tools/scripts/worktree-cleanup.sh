@@ -57,6 +57,26 @@ EXAMPLES
 HELPEOF
 }
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Resolve prefix from config (supports both source repo and installed repos)
+_resolve_prefix() {
+  local search_dir="$SCRIPT_DIR"
+  while [ "$search_dir" != "/" ]; do
+    if [ -f "$search_dir/.claude-pm-toolkit.json" ]; then
+      local val
+      val=$(jq -r '.prefix_lower // empty' "$search_dir/.claude-pm-toolkit.json" 2>/dev/null)
+      if [ -n "$val" ]; then
+        echo "$val"
+        return
+      fi
+    fi
+    search_dir="$(dirname "$search_dir")"
+  done
+  echo "wt"  # fallback if no config found
+}
+PREFIX=$(_resolve_prefix)
+
 ISSUE_NUM="${1:-}"
 CHECK_ONLY=false
 FORCE=false
@@ -80,11 +100,11 @@ fi
 
 # Find worktree for this issue from git's authoritative list
 # Use awk instead of grep to avoid exit 1 on no match (which trips set -e)
-WORKTREE_PATH=$(git worktree list --porcelain | awk -v issue="$ISSUE_NUM" '
+WORKTREE_PATH=$(git worktree list --porcelain | awk -v issue="$ISSUE_NUM" -v pfx="$PREFIX" '
   /^worktree / {
     path = substr($0, 10)  # Remove "worktree " prefix
-    # Check if path ends with /cnd-<issue> or IS cnd-<issue>
-    if (path ~ "/cnd-" issue "$" || path == "cnd-" issue) {
+    # Check if path ends with /<prefix>-<issue> or IS <prefix>-<issue>
+    if (path ~ "/" pfx "-" issue "$" || path == pfx "-" issue) {
       print path
       exit
     }
